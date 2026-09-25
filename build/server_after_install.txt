@@ -2,6 +2,9 @@ LAN Messenger Server is installed.
 
 NEXT STEPS
 1. Open "LAN Messenger Server console" from the Start menu.
+   - Installed "just for me" (no administrator): the server runs in your
+     system tray while you are signed in, and starts when you sign in.
+     Allow it in Windows Firewall when Windows asks (once).
    - Background-service mode (recommended): the server is already running.
      The console asks you to sign in with an administrator account.
    - Tray mode: the console starts the server and keeps it running in the
