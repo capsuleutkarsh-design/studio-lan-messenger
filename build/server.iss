@@ -194,7 +194,26 @@ begin
   Result := True;
 end;
 
+{ Browse with the Windows folder picker, which also lists Network (shares on other PCs / a NAS);
+  the built-in one only shows this PC's drives }
+procedure BrowseClick(Sender: TObject);
+var
+  I: Integer;
+  Dir: String;
+begin
+  for I := 0 to 3 do
+    if Sender = PathsPage.Buttons[I] then
+    begin
+      Dir := PathsPage.Values[I];
+      if BrowseForFolder('Choose the folder. Network locations are under "Network" - or type a ' +
+                         '\\server\share path in the box instead.', Dir, True) then
+        PathsPage.Values[I] := Dir;
+    end;
+end;
+
 procedure InitializeWizard;
+var
+  I: Integer;
 begin
   PathsPage := CreateInputDirPage(wpSelectTasks, 'Where to keep the data',
     'Choose where the server stores its database, shared files, backups and log.',
@@ -211,6 +230,8 @@ begin
   PathsPage.Values[1] := RegValue('StorageDir', AddBackslash(DataDirValue) + 'files');
   PathsPage.Values[2] := RegValue('BackupDir', AddBackslash(DataDirValue) + 'backups');
   PathsPage.Values[3] := RegValue('LogDir', DataDirValue);
+  for I := 0 to 3 do
+    PathsPage.Buttons[I].OnClick := @BrowseClick;
   OldDefaults[0] := AddBackslash(DataDirValue) + 'files';
   OldDefaults[1] := AddBackslash(DataDirValue) + 'backups';
   OldDefaults[2] := DataDirValue;
@@ -221,33 +242,67 @@ begin
   Result := (PathsPage <> nil) and (PageID = PathsPage.ID) and Upgrading;
 end;
 
-function CheckFolder(Title, P: String; LocalOnly: Boolean): Boolean;
+{ Where a mapped drive letter (Z:) points, e.g. '\\NAS01\Messenger' ('' if unknown). Setup runs as
+  administrator and Windows hides the user's mapped drives from it, but remembered mappings are in HKCU. }
+function MappedRemote(Letter: String): String;
+begin
+  if not RegQueryStringValue(HKCU, 'Network\' + Uppercase(Letter), 'RemotePath', Result) then
+    Result := '';
+end;
+
+function CheckFolder(Title: String; Index: Integer; LocalOnly: Boolean): Boolean;
 var
   Kind: Cardinal;
+  P, Remote: String;
 begin
   Result := False;
-  P := Trim(P);
+  P := Trim(PathsPage.Values[Index]);
   if (P = '') or ((not IsUNC(P)) and ((Length(P) < 3) or (Copy(P, 2, 2) <> ':\'))) then
   begin
     MsgBox(Title + ': enter a full folder path, e.g. D:\Messenger or \\server\share\Messenger.', mbError, MB_OK);
     Exit;
   end;
   Kind := DriveKind(P);
+  if (not IsUNC(P)) and ((Kind = 1) or (Kind = 4)) then
+  begin
+    { a mapped network drive: offer its real network path (the service can't use drive letters) }
+    Remote := MappedRemote(Copy(P, 1, 1));
+    if Remote <> '' then
+    begin
+      Remote := RemoveBackslashUnlessRoot(Remote) + Copy(P, 3, Length(P));
+      if LocalOnly then
+      begin
+        MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a network drive (' + MappedRemote(Copy(P, 1, 1)) + '). ' +
+               Title + ' must be on a disk of this PC - a database on a network share can get damaged.',
+               mbError, MB_OK);
+        Exit;
+      end;
+      if MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a mapped network drive. The background service can''t use ' +
+                'drive letters, only the network path.' + #13#10 + #13#10 + 'Use this instead?' + #13#10 +
+                Remote, mbConfirmation, MB_YESNO) <> IDYES then
+        Exit;
+      PathsPage.Values[Index] := Remote;
+      P := Remote;
+      Kind := 4;
+    end
+    else if Kind = 1 then
+    begin
+      MsgBox(Title + ': drive ' + Copy(P, 1, 2) + ' is not available to the setup.' + #13#10 + #13#10 +
+             'If it is a mapped network drive, type its network path instead, e.g. \\NAS01\Messenger\files ' +
+             '(in File Explorer > This PC, right-click the drive > Properties shows it).', mbError, MB_OK);
+      Exit;
+    end
+    else
+    begin
+      MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a mapped network drive. The background service can''t see ' +
+             'mapped drives - type its \\server\share\... path instead.', mbError, MB_OK);
+      Exit;
+    end;
+  end;
   if LocalOnly and (Kind = 4) then
   begin
     MsgBox(Title + ' must be on a disk of this PC. A database on a network share can get damaged.',
            mbError, MB_OK);
-    Exit;
-  end;
-  if Kind = 1 then
-  begin
-    MsgBox(Title + ': drive ' + Copy(P, 1, 2) + ' does not exist on this PC.', mbError, MB_OK);
-    Exit;
-  end;
-  if (Kind = 4) and not IsUNC(P) then
-  begin
-    MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a mapped network drive. The background service can''t see ' +
-           'mapped drives - use the \\server\share\... path instead.', mbError, MB_OK);
     Exit;
   end;
   if not ForceDirectories(P) then
@@ -276,10 +331,10 @@ begin
       PathsPage.Values[I + 1] := NewDefaults[I];
   for I := 0 to 2 do
     OldDefaults[I] := NewDefaults[I];
-  Result := CheckFolder('Server data', PathsPage.Values[0], True) and
-            CheckFolder('Shared files', PathsPage.Values[1], False) and
-            CheckFolder('Backups', PathsPage.Values[2], False) and
-            CheckFolder('Server log', PathsPage.Values[3], False);
+  Result := CheckFolder('Server data', 0, True) and
+            CheckFolder('Shared files', 1, False) and
+            CheckFolder('Backups', 2, False) and
+            CheckFolder('Server log', 3, False);
   if not Result then Exit;
   HasShare := IsUNC(PathsPage.Values[1]) or IsUNC(PathsPage.Values[2]) or IsUNC(PathsPage.Values[3]);
   if HasShare and WizardIsTaskSelected('service') then
