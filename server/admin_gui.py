@@ -1530,6 +1530,23 @@ class ConsoleLoginDialog(QDialog):
         self.error.setText("Connecting...")
         QApplication.processEvents()
         err = api.connect(self.user.text().strip(), self.pw.text())
+        if err and api.pin_mismatch:
+            old_fp, new_fp = api.pin_mismatch
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Security warning")
+            box.setText(f"The server at {api.label} is not the one this PC connected to before.")
+            box.setInformativeText(
+                "This is expected ONLY if the messenger server was reinstalled or replaced.\n"
+                "Otherwise another computer may be pretending to be the server - don't connect.\n\n"
+                f"Remembered: {old_fp[:47]}...\nNow:        {new_fp[:47]}...")
+            trust = box.addButton("The server was replaced - trust it", QMessageBox.AcceptRole)
+            box.addButton("Don't connect", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not trust:
+                self.error.setText("Not connected: the server's identity could not be confirmed.")
+                return
+            err = api.connect(self.user.text().strip(), self.pw.text(), trust=new_fp)
         if err:
             self.error.setText(err)
             return

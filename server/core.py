@@ -15,6 +15,7 @@ import re
 import secrets
 import shutil
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -49,6 +50,7 @@ class Session:
         self.addr = addr
         self.since = time.time()
         self.queue: asyncio.Queue = asyncio.Queue()
+        self.queued = 0                # bytes waiting to be written
         self.closed = False
         self.writer_task = None
         self.must_change = ""          # reason text while the user must change their password
@@ -60,10 +62,11 @@ class Session:
         """Queue an already-encoded line (lets one encoding be shared by many recipients)."""
         if self.closed:
             return
-        if self.queue.qsize() > 5000:          # client stopped reading
+        if self.queue.qsize() > 5000 or self.queued > MAX_QUEUED:       # client stopped reading
             log.warning("Dropping slow session of user %s", self.user_id)
             self.close()
             return
+        self.queued += len(data)
         self.queue.put_nowait(data)
 
     async def writer_loop(self):
@@ -86,6 +89,7 @@ class Session:
                     break
                 self.writer.write(b"".join(parts) if len(parts) > 1 else data)
                 await self.writer.drain()
+                self.queued -= sum(len(p) for p in parts)
         except (ConnectionError, OSError, AttributeError, RuntimeError):
             pass            # peer went away (TLS transports raise AttributeError after closing)
         finally:
@@ -96,6 +100,13 @@ class Session:
         if not self.closed:
             self.closed = True
             self.queue.put_nowait(None)
+
+
+MAX_QUEUED = 64 * 1024 * 1024      # bytes queued for one client before it counts as not reading
+FIRST_LINE = 64 * 1024              # longest first line accepted before sign-in
+MAX_CONNECTIONS = 4000              # open sockets in total
+MAX_PER_IP = 300                    # open sockets from one PC (chat + transfers + screen share)
+MAX_UPLOADS = 4                     # parallel uploads per user
 
 
 def safe_filename(name: str) -> str:
@@ -210,7 +221,7 @@ class ServerCore(PlannerMixin):
         else:
             log.warning("TLS is OFF: chat and files travel unencrypted")
         self.server = await asyncio.start_server(self._handle_conn, host="0.0.0.0", port=port,
-                                                 limit=P.MAX_LINE, backlog=2048, ssl=ssl_ctx,
+                                                 limit=FIRST_LINE, backlog=2048, ssl=ssl_ctx,
                                                  ssl_handshake_timeout=20 if ssl_ctx else None)
         try:
             self.udp_transport, _ = await self.loop.create_datagram_endpoint(
@@ -279,7 +290,8 @@ class ServerCore(PlannerMixin):
 
         async def runner():
             return fn(*args, **kwargs)
-        return asyncio.run_coroutine_threadsafe(runner(), self.loop).result(30)
+        slow = fn in (self.backup_now, self.chat_backup_now)
+        return asyncio.run_coroutine_threadsafe(runner(), self.loop).result(900 if slow else 30)
 
     def _emit(self, event: str):
         for cb in self.listeners:
@@ -292,18 +304,23 @@ class ServerCore(PlannerMixin):
         last_purge = time.time()
         while True:
             await asyncio.sleep(60)
-            try:
-                self.expire_statuses()
-                if self._backup_due():
-                    self.backup_now()
-                if archive.due(self.db, self.config):
-                    self.chat_backup_now()
-                self._check_updates()
-                if time.time() - last_purge >= 3600:
-                    last_purge = time.time()
-                    self.purge_files()
-            except Exception:  # noqa: BLE001
-                log.exception("maintenance failed")
+            hourly = time.time() - last_purge >= 3600
+            if hourly:
+                last_purge = time.time()
+            steps = [("statuses", self.expire_statuses, lambda: True),
+                     ("backup", self.backup_now, self._backup_due),
+                     ("chat backup", None, lambda: archive.due(self.db, self.config)),
+                     ("updates", self._check_updates, lambda: True),
+                     ("file purge", self.purge_files, lambda: hourly)]
+            for name, step, when in steps:     # each step on its own: one failure must not stop the rest
+                try:
+                    if when():
+                        if step is None:
+                            await self.chat_backup_async()
+                        else:
+                            step()
+                except Exception:  # noqa: BLE001
+                    log.exception("maintenance step '%s' failed", name)
 
     def purge_files(self):
         days = float(self.config["file_retention_days"] or 0)
@@ -314,6 +331,8 @@ class ServerCore(PlannerMixin):
         if unclaimed > 0:
             seen = {r["id"] for r in rows}
             rows += [r for r in self.db.unclaimed_files(time.time() - unclaimed * 86400) if r["id"] not in seen]
+        seen = {r["id"] for r in rows}
+        rows += [r for r in self.db.orphan_files(time.time() - 86400) if r["id"] not in seen]
         for f in rows:
             try:
                 if os.path.exists(f["path"]):
@@ -331,6 +350,21 @@ class ServerCore(PlannerMixin):
     # ========================================================= connections
     async def _handle_conn(self, reader, writer):
         addr = writer.get_extra_info("peername")
+        ip = addr[0] if addr else "?"
+        conns = self.__dict__.setdefault("_conns", {})
+        if sum(conns.values()) >= MAX_CONNECTIONS or conns.get(ip, 0) >= MAX_PER_IP:
+            log.warning("Refused a connection from %s (too many open connections)", ip)
+            writer.close()
+            return
+        conns[ip] = conns.get(ip, 0) + 1
+        try:
+            await self._handle_conn_inner(reader, writer, addr)
+        finally:
+            conns[ip] -= 1
+            if not conns[ip]:
+                del conns[ip]
+
+    async def _handle_conn_inner(self, reader, writer, addr):
         try:
             line = await asyncio.wait_for(reader.readline(), 30)
             if not line:
@@ -370,22 +404,36 @@ class ServerCore(PlannerMixin):
                                    f"Too many wrong passwords. Try again in {wait} seconds."}))
             await writer.drain()
             return
-        row = self.db.get_user_by_name(username)
-        ok = False
-        if row and not row["disabled"]:
-            ok = await self.loop.run_in_executor(None, Database.check_password, row, password)
+        inflight = self.__dict__.setdefault("_login_inflight", {})
+        if inflight.get(ip, 0) >= 3:        # parallel attempts would all pass the throttle check above
+            writer.write(P.encode({"op": "login_error", "error": "Too many sign-ins at once. Try again."}))
+            await writer.drain()
+            return
+        inflight[ip] = inflight.get(ip, 0) + 1
+        try:
+            row = self.db.get_user_by_name(username)
+            ok = bool(row) and await self.loop.run_in_executor(None, Database.check_password, row, password)
+        finally:
+            inflight[ip] -= 1
+            if not inflight[ip]:
+                del inflight[ip]
+        if ok and row["disabled"]:
+            ok, disabled = False, True
+        else:
+            disabled = False
         if not ok:
             log.warning("Failed login for '%s' from %s", username, ip)
             self._login_failed(ip, username)
             await asyncio.sleep(1)          # slows down password guessing
             error = "Invalid username or password"
-            if row and row["disabled"] and Database.check_password(row, password):
+            if disabled:
                 error = "This account is disabled. Please contact your administrator."
             writer.write(P.encode({"op": "login_error", "error": error}))
             await writer.drain()
             return
         self.failed_logins.pop((ip, username.lower()), None)
         must_change = self.password_change_reason(row, password)
+        reader._limit = P.MAX_LINE          # signed in: full-size messages from now on
         if msg.get("console"):
             await self._console_loop(reader, writer, row, addr, must_change)
             return
@@ -489,7 +537,7 @@ class ServerCore(PlannerMixin):
         except ClientError as e:
             if rid is not None:
                 session.send({"op": "reply", "rid": rid, "ok": False, "error": str(e)})
-        except (ValueError, TypeError, KeyError, AttributeError) as e:
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as e:
             # bad input from the client (wrong types) or a validation message from the database layer
             text = str(e)
             if isinstance(e, ValueError) and "invalid literal" not in text and text:
@@ -849,6 +897,8 @@ class ServerCore(PlannerMixin):
             f = self.db.get_file(str(file_id))
             if not f or not f["complete"] or not self.db.can_access_file(s.user_id, f["id"]):
                 raise ClientError("File not found on server")
+            if f["purged"]:
+                raise ClientError("That file was removed from the server")
         elif not text.strip():
             raise ClientError("Empty message")
         msg_kind = "sticker" if sticker else "file" if file_id else "text"
@@ -914,8 +964,9 @@ class ServerCore(PlannerMixin):
                 "complete": len(rows) < limit}
 
     def h_mark_read(self, s, req):
-        kind, target, _ = self._internal_conv(s, req.get("conv"))
-        up_to = int(req.get("up_to") or 0)
+        kind, target, key = self._internal_conv(s, req.get("conv"))
+        latest = self.db.history(key, None, 1)
+        up_to = min(int(req.get("up_to") or 0), latest[-1]["id"] if latest else 0)
         if kind == "u":
             if self.db.mark_direct_read(s.user_id, target, up_to):
                 self.push_user(target, {"op": "receipt", "conv": P.direct_conv(s.user_id),
@@ -1113,8 +1164,9 @@ class ServerCore(PlannerMixin):
         wait = self.BUZZ_GAP - (time.time() - times.get((s.user_id, target), 0))
         if wait > 0:
             raise ClientError(f"You just buzzed them — wait {int(wait) + 1} s")
+        result = self._post(s, kind, target, direct_key(s.user_id, target), "", "buzz")
         times[(s.user_id, target)] = time.time()
-        return self._post(s, kind, target, direct_key(s.user_id, target), "", "buzz")
+        return result
 
     # ------------------------------------------------------------ reactions
     def h_react(self, s, req):
@@ -1160,7 +1212,7 @@ class ServerCore(PlannerMixin):
                 self.db.update_room(room_id, req.get("name"), req.get("topic"))
             except ValueError as e:
                 raise ClientError(str(e))
-        added = [u for u in self._valid_user_ids(req.get("add")) if u not in before]
+        added = [u for u in self._valid_user_ids(req.get("add")) if u not in before and self.can_see(s.user_id, u)]
         removed = [int(u) for u in req.get("remove") or () if int(u) in before]
         if removed and not is_owner:
             raise ClientError("Only the room owner can remove members")
@@ -1188,8 +1240,14 @@ class ServerCore(PlannerMixin):
 
     def h_change_password(self, s, req):
         row = self.db.get_user(s.user_id)
-        old, new = str(req.get("old", "")), str(req.get("new", ""))
+        old, new = str(req.get("old", ""))[:200], str(req.get("new", ""))[:200]
+        key = ("change", s.user_id)
+        recent = [t for t in self.failed_logins.get(key, []) if time.time() - t < self.LOGIN_WINDOW]
+        self.failed_logins[key] = recent
+        if len(recent) >= self.MAX_USER_FAILS:
+            raise ClientError("Too many wrong passwords. Try again in a few minutes.")
         if not Database.check_password(row, old):
+            recent.append(time.time())
             raise ClientError("Current password is wrong")
         if new == old:
             raise ClientError("The new password must be different from the current one")
@@ -1199,8 +1257,10 @@ class ServerCore(PlannerMixin):
         except ValueError as e:
             raise ClientError(str(e))
         s.must_change = ""
-        for sess in self.sessions.get(s.user_id, ()):
-            sess.must_change = ""
+        for sess in list(self.sessions.get(s.user_id, ())):
+            if sess is not s:               # other PCs signed in with the old password
+                sess.send({"op": "kicked", "reason": "Your password was changed. Please sign in again."})
+                sess.close()
         self.audit(row["username"], "password changed", row["username"])
 
     # ======================================================= password rules
@@ -1298,6 +1358,7 @@ class ServerCore(PlannerMixin):
                 password = str(req.get("password", ""))
                 self.check_password_rules(password, target["username"])
                 self.db.set_password(uid, password, must_change=True)
+                self.kick(uid, "Your password was reset. Please sign in with the new one.")
                 self.audit(actor, "password reset", target["username"], "from the client (HR/IT)")
             elif action == "disable":
                 self._actor = actor
@@ -1367,7 +1428,7 @@ class ServerCore(PlannerMixin):
 
     def h_mute(self, s, req):
         conv = req.get("conv")
-        P.parse_conv(conv)
+        self._internal_conv(s, conv)
         self.db.set_muted(s.user_id, conv, bool(req.get("muted", True)))
         self.push_user(s.user_id, {"op": "muted", "conv": conv, "muted": bool(req.get("muted", True))}, exclude=s)
 
@@ -1433,6 +1494,13 @@ class ServerCore(PlannerMixin):
             raise ClientError("User not found")
         if not self.sessions.get(target):
             raise ClientError(f"{self._user_name(target)} is offline")
+        now = time.time()
+        for sid, sh in list(self.shares.items()):      # unanswered invites expire after 2 minutes
+            if not sh["accepted"] and now - sh["created"] > 120:
+                self.shares.pop(sid, None)
+        if any(sh["inviter"] == s.user_id and sh["invited"] == target and not sh["accepted"]
+               for sh in self.shares.values()):
+            raise ClientError("You already invited them - wait for an answer")
         share_id = secrets.token_hex(8)
         sharer, viewer = (s.user_id, target) if kind == "offer" else (target, s.user_id)
         self.shares[share_id] = {"id": share_id, "sharer": sharer, "viewer": viewer, "accepted": False,
@@ -1728,7 +1796,13 @@ class ServerCore(PlannerMixin):
             writer.write(P.encode({"ok": False, "error": "The server's file storage is not available. "
                                                          "Please tell your administrator."}))
             return
-        if free < size + 200 * 1024 * 1024:          # keep 200 MB spare for the database
+        uploads = self.__dict__.setdefault("_uploads", {})
+        reserved = self.__dict__.setdefault("_reserved", [0])
+        if uploads.get(uid, 0) >= MAX_UPLOADS:
+            writer.write(P.encode({"ok": False, "error": f"At most {MAX_UPLOADS} uploads at a time - "
+                                                         "wait for one to finish"}))
+            return
+        if free < size + reserved[0] + 200 * 1024 * 1024:          # keep 200 MB spare for the database
             log.error("Not enough disk space for '%s' (%s needed, %s free)", name, P.human_size(size),
                       P.human_size(free))
             writer.write(P.encode({"ok": False, "error": "The server is out of disk space. "
@@ -1736,6 +1810,15 @@ class ServerCore(PlannerMixin):
             return
         path = os.path.join(folder, file_id)
         self.db.add_file(file_id, name, size, uid, path)
+        uploads[uid] = uploads.get(uid, 0) + 1
+        reserved[0] += size
+        try:
+            await self._receive_upload(reader, writer, file_id, name, size, uid, path)
+        finally:
+            uploads[uid] -= 1
+            reserved[0] -= size
+
+    async def _receive_upload(self, reader, writer, file_id, name, size, uid, path):
         writer.write(P.encode({"ok": True, "file_id": file_id}))
         await writer.drain()
         remaining = size
@@ -1861,6 +1944,7 @@ class ServerCore(PlannerMixin):
         self.db.update_user(uid, **fields)
         if password:
             self.db.set_password(uid, password, must_change=must_change)
+            self.kick(uid, "Your password was reset. Please sign in with the new one.")
         self._after_user_change(uid)
         changes = [f"{k}: {before[k]!r} -> {v!r}" for k, v in fields.items()
                    if k in before.keys() and before[k] != v]
@@ -1968,7 +2052,8 @@ class ServerCore(PlannerMixin):
         changed = {k: v for k, v in values.items() if old.get(k) != v}
         if changed:
             self.sync_auto_rooms()
-            self.audit(None, "settings changed", "", ", ".join(f"{k}={v}" for k, v in changed.items()))
+            self.audit(None, "settings changed", "", ", ".join(
+                f"{k}={'(hidden)' if 'key' in k or 'password' in k else v}" for k, v in changed.items()))
         return self.admin_config()
 
     def admin_server_info(self):
@@ -2009,7 +2094,11 @@ class ServerCore(PlannerMixin):
             self.last_backup = {"time": time.time(), "path": path, "ok": True,
                                 "size": os.path.getsize(path)}
             log.info("Backup written to %s (%s)", path, P.human_size(os.path.getsize(path)))
-        except OSError as e:
+        except (OSError, sqlite3.Error) as e:
+            try:
+                os.remove(path + ".tmp")
+            except OSError:
+                pass
             self.last_backup = {"time": time.time(), "path": path, "ok": False, "error": str(e)}
             log.error("BACKUP FAILED (%s): %s", path, e)
             self.audit("server", "backup failed", folder, str(e))
@@ -2018,17 +2107,32 @@ class ServerCore(PlannerMixin):
     # ---- readable chat backup + message retention (see server/archive.py)
     last_chat_backup = None
 
-    def chat_backup_now(self):
-        """Append new messages to the chat log files, then drop messages older than the retention period."""
+    def chat_backup_now(self, batches=None):
+        """Append new messages to the chat log files, then drop messages older than the retention period.
+
+        With `batches`, stop after that many 5000-message batches (result["more"] is then True)."""
         try:
-            result = archive.export_chat_logs(self.db, self.config)
-            result["removed"] = archive.apply_retention(self.db, self.config)
+            result = archive.export_chat_logs(self.db, self.config, batches)
+            if not result.get("more"):
+                result["removed"] = archive.apply_retention(self.db, self.config)
             result.update(time=time.time(), ok=True)
-        except OSError as e:
-            log.error("Chat backup failed: %s", e)
+        except Exception as e:  # noqa: BLE001 - reported on the dashboard, retried tomorrow
+            log.exception("Chat backup failed")
             result = {"time": time.time(), "ok": False, "error": str(e), "folder": archive.log_dir(self.config)}
+            archive.mark_run(self.db)
         self.last_chat_backup = result
         return result
+
+    async def chat_backup_async(self):
+        """The nightly run: a batch at a time, so chat keeps flowing during a big first export."""
+        exported = 0
+        while True:
+            result = self.chat_backup_now(batches=1)
+            exported += result.get("messages", 0)
+            if not result.get("more"):
+                result["messages"] = exported
+                return result
+            await asyncio.sleep(0.05)
 
     def _backup_due(self) -> bool:
         if not self.config["backup_enabled"]:
@@ -2054,9 +2158,9 @@ class ServerCore(PlannerMixin):
                             "status": self.chosen_status.get(uid, "online")})
         return sorted(out, key=lambda d: d["name"].lower())
 
-    def kick(self, uid):
+    def kick(self, uid, reason="Disconnected by the administrator"):
         for s in list(self.sessions.get(uid, ())):
-            s.send({"op": "kicked", "reason": "Disconnected by the administrator"})
+            s.send({"op": "kicked", "reason": reason})
             s.close()
 
     def admin_stats(self):

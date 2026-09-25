@@ -72,8 +72,8 @@ the server by itself; enter the server's IP only for PCs on a different subnet /
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.3.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.3.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,

@@ -17,6 +17,7 @@ log = logging.getLogger("server")
 
 MAX_AHEAD = 366 * 86400          # nothing further than a year ahead
 MAX_PENDING = 200                # per person
+LATE_LIMIT = 12 * 3600           # a scheduled message this late (server was off) is not sent any more
 
 
 class PlannerMixin:
@@ -40,7 +41,8 @@ class PlannerMixin:
              "state": r["state"], "message_id": r["message_id"]}
         if r["message_id"]:
             m = self.db.get_message(r["message_id"])
-            if m and not m["deleted"]:
+            # only while the person can still see that chat (they may have left the room since)
+            if m and not m["deleted"] and r["user_id"] in self._participants(m):
                 d["snippet"] = ("Sticker" if m["kind"] == "sticker" else m["body"][:200]
                                 or (f"📎 {m['file_name']}" if m["file_name"] else ""))
                 d["sender_name"] = self._user_name(m["sender_id"])
@@ -97,7 +99,10 @@ class PlannerMixin:
         self._push_reminders(s.user_id)
 
     def h_reminder_snooze(self, s, req):
+        from server.core import ClientError
         r = self._own_reminder(s, req.get("id"))
+        if r["state"] == 2:
+            raise ClientError("That reminder is already done")
         due = self._due(req.get("due_at")) if req.get("due_at") else time.time() + 60 * max(
             1, min(int(req.get("minutes") or 10), 7 * 24 * 60))
         self.db.reschedule_reminder(r["id"], due)
@@ -110,7 +115,11 @@ class PlannerMixin:
     def h_schedule_add(self, s, req):
         from server.core import STICKER_RE, ClientError
         conv = str(req.get("conv") or "")
-        self._internal_conv(s, conv)
+        kind, target, _ = self._internal_conv(s, conv)
+        if kind == "u":
+            other = self.db.get_user(target)
+            if not other or other["deleted"] or not self.can_see(s.user_id, target):
+                raise ClientError("User not found")
         text = req.get("text") or ""
         sticker = str(req.get("sticker") or "")
         if not isinstance(text, str) or len(text) > P.MAX_TEXT:
@@ -154,10 +163,12 @@ class PlannerMixin:
     def h_scheduled(self, s, req):
         return {"scheduled": [self._scheduled_public(r) for r in self.db.scheduled_for(s.user_id)]}
 
-    def _send_scheduled(self, r):
+    def _send_scheduled(self, r, late=False):
         from server.core import ClientError
         user = self.db.get_user(r["user_id"])
         try:
+            if late:
+                raise ClientError("Not sent: the server was off at the scheduled time")
             if not user or user["deleted"] or user["disabled"]:
                 raise ClientError("The account is disabled")
             kind, target = P.parse_conv(r["conv"])
@@ -169,6 +180,9 @@ class PlannerMixin:
         except (ClientError, ValueError) as e:
             self.db.set_scheduled_state(r["id"], "failed", error=str(e))
             log.info("Scheduled message %s not sent: %s", r["id"], e)
+        except Exception:  # noqa: BLE001 - never retry a broken row forever
+            log.exception("Scheduled message %s failed", r["id"])
+            self.db.set_scheduled_state(r["id"], "failed", error="Server error")
         self._push_scheduled(r["user_id"])
 
     # ------------------------------------------------------------ the clock
@@ -183,11 +197,14 @@ class PlannerMixin:
     def run_due(self, now=None):
         now = now or time.time()
         for r in self.db.due_scheduled(now):
-            self._send_scheduled(r)
+            self._send_scheduled(r, late=now - r["due_at"] > LATE_LIMIT)
         fired = {}
         for r in self.db.due_reminders(now):
-            self.db.set_reminder_state(r["id"], 1)
-            fired.setdefault(r["user_id"], []).append(self._reminder_public(self.db.get_reminder(r["id"])))
+            try:              # each item on its own: one bad row must not hold up everyone else's
+                self.db.set_reminder_state(r["id"], 1)
+                fired.setdefault(r["user_id"], []).append(self._reminder_public(self.db.get_reminder(r["id"])))
+            except Exception:  # noqa: BLE001
+                log.exception("Reminder %s failed", r["id"])
         for uid, items in fired.items():
             for item in items:
                 self.push_user(uid, {"op": "reminder", "reminder": item})

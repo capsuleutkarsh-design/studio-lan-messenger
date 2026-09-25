@@ -512,6 +512,13 @@ class Database:
             " FROM messages m LEFT JOIN files f ON f.id=m.file_id WHERE m.id>? ORDER BY m.id LIMIT ?",
             last_id, limit)
 
+    def changed_before_removal(self, before_ts, max_id):
+        """Old messages about to be removed whose log line may be out of date (edited, deleted, polls)."""
+        return self._all(
+            "SELECT m.*, f.name AS file_name, f.size AS file_size, f.purged AS file_purged"
+            " FROM messages m LEFT JOIN files f ON f.id=m.file_id WHERE m.created_at<? AND m.id<=?"
+            " AND (m.edited_at IS NOT NULL OR m.deleted=1 OR m.kind='poll') ORDER BY m.id", before_ts, max_id)
+
     def delete_old_messages(self, before_ts, max_id) -> int:
         """Remove messages older than before_ts (and only those up to max_id, i.e. already exported)."""
         where = "SELECT id FROM messages WHERE created_at<? AND id<=?"
@@ -727,7 +734,7 @@ class Database:
             "SELECT conv, MAX(id) AS last_id FROM messages WHERE recipient_id IS NOT NULL"
             " AND (sender_id=? OR recipient_id=?) GROUP BY conv", user_id, user_id)
         unread = dict(self._all(
-            "SELECT sender_id, COUNT(*) FROM messages WHERE recipient_id=? AND read_at IS NULL"
+            "SELECT sender_id, COUNT(*) FROM messages WHERE recipient_id=? AND read_at IS NULL AND deleted=0"
             " GROUP BY sender_id", user_id))
         for r in rows:
             _, a, b = r["conv"].split(":")
@@ -737,7 +744,7 @@ class Database:
             "SELECT m.room_id, m.last_read,"
             " (SELECT MAX(id) FROM messages WHERE room_id=m.room_id) AS last_id,"
             " (SELECT COUNT(*) FROM messages WHERE room_id=m.room_id AND id>m.last_read"
-            "  AND sender_id<>?) AS unread"
+            "  AND sender_id<>? AND deleted=0) AS unread"
             " FROM room_members m JOIN rooms r ON r.id=m.room_id"
             " WHERE m.user_id=? AND r.deleted=0", user_id, user_id)
         for r in rows:
@@ -823,6 +830,11 @@ class Database:
 
     def expired_files(self, older_than: float):
         return self._all("SELECT * FROM files WHERE purged=0 AND created_at<?", older_than)
+
+    def orphan_files(self, older_than: float):
+        """Stored files no message points to any more (message deleted, or moved out by retention)."""
+        return self._all("SELECT f.* FROM files f WHERE f.purged=0 AND f.complete=1 AND f.created_at<?"
+                         " AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.file_id=f.id)", older_than)
 
     def stale_uploads(self, older_than: float):
         return self._all("SELECT * FROM files WHERE complete=0 AND created_at<?", older_than)

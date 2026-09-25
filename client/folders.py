@@ -32,6 +32,22 @@ def temp_dir():
     return d
 
 
+def clean_temp(max_age=86400):
+    """Remove packed-folder zips left behind by a crash or a failed upload (called at start-up)."""
+    d = os.path.join(tempfile.gettempdir(), "LANMessenger")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            if os.path.isfile(p) and time.time() - os.path.getmtime(p) > max_age:
+                os.remove(p)
+        except OSError:
+            pass
+
+
 class PackJob(QObject):
     """Looks like an upload Transfer so the chat's upload strip can show its progress."""
     progress = Signal(object)

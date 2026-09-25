@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Signal
 from common import protocol as P
 
 ADMIN_ID = 0
+KEEP_CACHED = 200        # messages kept in memory for a chat that is not on screen (older ones reload on demand)
 
 
 class Conversation:
@@ -34,6 +35,13 @@ class Conversation:
         self.messages[msg["id"]] = msg
         if not self.last or msg["id"] >= self.last["id"]:
             self.last = msg
+
+    def trim(self, keep=KEEP_CACHED):
+        """Forget all but the newest `keep` messages; scrolling up fetches them again from the server."""
+        if len(self.messages) > keep:
+            for mid in sorted(self.messages)[:-keep]:
+                del self.messages[mid]
+            self.complete = False
 
 
 class Store(QObject):
@@ -163,8 +171,23 @@ class Store(QObject):
                                        u.get("section")) if x)
 
     # ----------------------------------------------------------- bootstrap
+    def reset(self):
+        """Forget everything about the previous account (sign-out, or someone else signs in on this PC)."""
+        self.me = {}
+        self.users, self.rooms, self.convs, self.names = {}, {}, {}, {}
+        self.announcements, self.reminders, self.scheduled = [], [], []
+        self.muted = set()
+
     def load(self, boot):
         """Apply a login_ok payload. Also used after reconnecting."""
+        if self.me and self.me.get("id") != boot["me"]["id"]:
+            self.reset()
+        # after a reconnect the cache may miss messages sent while we were away: start each chat's cache
+        # over (drafts, pins and unread counts stay) so the next look loads it cleanly from the server
+        for c in self.convs.values():
+            c.messages.clear()
+            c.history_requested = False
+            c.complete = False
         self.me = boot["me"]
         self.server_name = boot.get("server_name", "")
         self.max_file_size = boot.get("max_file_size", 0)
@@ -181,9 +204,6 @@ class Store(QObject):
             if item["last"]:
                 self.remember_name(item["last"])
                 c.add(item["last"])
-        # after a reconnect the cached history may have gaps: reload lazily
-        for c in self.convs.values():
-            c.history_requested = False
         self.announcements = boot.get("announcements", [])
         self.muted = set(boot.get("muted", []))
         self.review_notice = bool(boot.get("review_notice"))
@@ -298,6 +318,8 @@ class Store(QObject):
         c = self.conversation(msg["conv"])
         is_new = msg["id"] not in c.messages
         c.add(msg)
+        if len(c.messages) > KEEP_CACHED + 50 and not self.is_viewing(msg["conv"]):
+            c.trim()
         if live and is_new and msg["sender_id"] != self.my_id and msg["kind"] != "system":
             if self.is_viewing(msg["conv"]):
                 self.mark_read(msg["conv"])

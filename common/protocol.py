@@ -50,7 +50,7 @@ def room_conv(room_id: int) -> str:
 def parse_conv(conv: str):
     """Return ("u", id) or ("r", id); raise ValueError on bad input."""
     kind, _, num = str(conv).partition(":")
-    if kind not in ("u", "r") or not num.isdigit():
+    if kind not in ("u", "r") or not num.isdigit() or len(num) > 15:
         raise ValueError(f"bad conversation id: {conv!r}")
     return kind, int(num)
 
