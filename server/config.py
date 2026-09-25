@@ -35,6 +35,7 @@ DEFAULTS = {
     # readable chat backup + how long messages stay in the app (older ones live only in the chat logs)
     "chat_log_enabled": True,        # append each day's messages to text files every night
     "chat_log_dir": "",              # empty = <backup folder>/Chat logs
+    "log_dir": "",                   # server.log; empty = <data dir>
     "message_retention_days": 90,    # 0 = keep every message in the app forever
     # "buzz": shake the other person's window, even when they are busy
     "buzz_enabled": True,
@@ -55,12 +56,28 @@ def default_data_dir() -> str:
 
     * running from source, or a portable copy that already has server_data next to the exe:
       <folder of the program>\\server_data
-    * installed with the setup (Program Files is read-only): %ProgramData%\\LAN Messenger Server
+    * installed with the setup: the folder chosen during setup (saved in the registry),
+      else %ProgramData%\\LAN Messenger Server
     """
     portable = os.path.join(app_dir(), "server_data")
     if not getattr(sys, "frozen", False) or os.path.isdir(portable):
         return portable
-    return os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "LAN Messenger Server")
+    return installed_data_dir() or os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
+                                                "LAN Messenger Server")
+
+
+REG_KEY = r"Software\LAN Messenger Server"
+
+
+def installed_data_dir() -> str:
+    """The data folder picked in the server setup ('' if none / not Windows)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_KEY) as k:
+            value, _ = winreg.QueryValueEx(k, "DataDir")
+        return str(value).strip()
+    except (ImportError, OSError):
+        return ""
 
 
 class ServerConfig:
@@ -85,7 +102,10 @@ class ServerConfig:
                     pass
                 logging.getLogger("server").error("config.json was unreadable (%s); saved it as %s and "
                                                   "started with default settings", e, broken)
-        self.save()
+        try:
+            self.save()
+        except OSError as e:           # read-only / full disk: run with what was read, report it
+            logging.getLogger("server").error("Could not write %s: %s", self.path, e)
 
     def __getitem__(self, key):
         return self.values[key]
@@ -106,10 +126,16 @@ class ServerConfig:
             try:
                 if isinstance(default, bool):
                     if isinstance(v, str):
-                        v = v.strip().lower() in ("1", "true", "yes", "on")
+                        word = v.strip().lower()
+                        if word not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+                            raise ValueError(v)          # a typo must not switch e.g. TLS off
+                        v = word in ("1", "true", "yes", "on")
                     out[k] = bool(v)
                 elif isinstance(default, int):
                     out[k] = int(float(v))
+                    if k.endswith("_port") and not 1 <= out[k] <= 65535:
+                        del out[k]
+                        raise ValueError(v)
                 elif isinstance(default, float):
                     out[k] = float(v)
                 elif isinstance(default, str):
@@ -118,7 +144,7 @@ class ServerConfig:
                     out[k] = v
                 else:
                     raise TypeError
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logging.getLogger("server").error("Setting %s=%r is invalid; using the default %r", k, v, default)
         return out
 
@@ -142,4 +168,4 @@ class ServerConfig:
 
     @property
     def log_path(self) -> str:
-        return os.path.join(self.data_dir, "server.log")
+        return os.path.join(self.values.get("log_dir") or self.data_dir, "server.log")

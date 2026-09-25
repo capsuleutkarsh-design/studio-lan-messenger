@@ -391,6 +391,8 @@ class Database:
         if fields.get("announce", "none") not in ANNOUNCE_LEVELS:
             raise ValueError("Invalid announcement permission")
         if role_id is None:
+            if "name" not in fields:
+                raise ValueError("Designation name is required")
             cols = ", ".join(fields)
             cur = self._exec(f"INSERT INTO roles({cols}) VALUES({', '.join('?' * len(fields))})",
                              *fields.values())

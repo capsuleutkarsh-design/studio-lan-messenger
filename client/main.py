@@ -131,8 +131,10 @@ class App(QObject):
         if box.clickedButton() is trust:
             self.conn.trust(server_key, new_fp)
             self.login.set_busy(True)
-            self.conn.login(self.conn.host, self.conn.port, self.conn.username, self.conn.password,
-                            self.conn.status)
+            # we are still inside the socket's own "encrypted" signal: reconnect once it has returned,
+            # otherwise the new handshake on the same socket never finishes
+            QTimer.singleShot(0, lambda: self.conn.login(self.conn.host, self.conn.port, self.conn.username,
+                                                         self.conn.password, self.conn.status))
         else:
             self.login.set_error("Not connected: the server's identity could not be confirmed.")
 
@@ -159,10 +161,32 @@ class App(QObject):
         self.login.show()
 
 
+def setup_logging():
+    """Errors go to %LOCALAPPDATA%\\LANMessenger\\client.log (small, rotating). Returns its path, or ''."""
+    import logging
+    import logging.handlers
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "LANMessenger", "client.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    except OSError:
+        return ""
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    root.addHandler(fh)
+    return path
+
+
 def main():
     ap = argparse.ArgumentParser(description="LAN Messenger client")
     ap.add_argument("--minimized", action="store_true", help="start in the system tray")
     args, _ = ap.parse_known_args()
+
+    log_file = setup_logging()
+    from common import crash
+    crash.install("LAN Messenger", log_file)
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)

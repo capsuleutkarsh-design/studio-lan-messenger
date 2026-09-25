@@ -96,8 +96,11 @@ def _svg_bytes(name: str) -> bytes:
         return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
                 'stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
                 + _OUTLINE[name] + '</svg>').encode()
-    with open(asset("icons", f"icon_{name}.svg"), "rb") as f:
-        return f.read()
+    try:
+        with open(asset("icons", f"icon_{name}.svg"), "rb") as f:
+            return f.read()
+    except OSError:              # a missing icon file shows nothing instead of breaking the window
+        return b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
 
 
 def pixmap(name: str, color: str | None = None, size: int = 20, scale: float = 2.0) -> QPixmap:

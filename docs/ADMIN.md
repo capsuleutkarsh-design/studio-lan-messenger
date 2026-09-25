@@ -19,15 +19,29 @@ For what the app does, see the [README](../README.md).
 
 ## 1. Install the server
 
-Pick one always-on PC (a small workstation or a VM is plenty; tested with 1,000 people online at once using
-about 155 MB of RAM). Run **`LANMessenger-Server-Setup-x.y.z.exe`** as administrator and keep the tasks:
+Pick one always-on PC (a small workstation or a VM is plenty; load-tested with 500 people online at once: 500 signed in within 2 s, ~390,000 deliveries with none lost, typical delivery 3–40 ms, server ~460 MB of RAM).
+Run **`LANMessenger-Server-Setup-x.y.z.exe`** as administrator (needed once: only an administrator can open
+Windows Firewall and register the service) and keep the tasks:
 
 - **Allow the server through Windows Firewall**: needed for other PCs to connect
 - **Run as a background service**: starts with Windows, nobody needs to be logged in
   (alternative: *start in the tray when I log in*)
 
-The setup installs to `C:\Program Files\LAN Messenger Server` and keeps all data in
-**`C:\ProgramData\LAN Messenger Server`**, which upgrades never touch. On uninstall it asks whether to delete the data.
+The setup installs to `C:\Program Files\LAN Messenger Server`. The page **Where to keep the data** asks for:
+
+| Folder | Default | Where it may be |
+|---|---|---|
+| Server data (database, settings, certificate) | `C:\ProgramData\LAN Messenger Server` | a **local disk** only (a database on a network share can get damaged) |
+| Shared files | `<data>\files` | any disk, or a share `\\server\share\...` |
+| Database backups + readable chat backups | `<data>\backups` | any disk, or a share (another disk is recommended) |
+| Server log | `<data>` | any disk, or a share |
+
+Use `\\server\share\...` paths, not mapped letters like `Z:` (the background service can't see those). The service
+runs as SYSTEM and reaches a share as the **computer account** (`DOMAIN\PCNAME$`): give that account *Modify* on
+the share, or run the server in the tray instead. If a share is down, the server still starts and the dashboard
+says so. Upgrades never touch the data and skip this page; move folders later in console → *Settings*.
+In service mode the data folder is readable only by Administrators and SYSTEM. On uninstall setup asks whether
+to delete the data folder (files and backups kept elsewhere are never deleted).
 
 ## 2. First-time setup
 
@@ -66,14 +80,16 @@ membership follows each person's department and section.
 
 ## 4. Install the clients
 
-Run **`LANMessenger-Client-Setup-x.y.z.exe`** on every PC. Leave the *Server address* page empty and the client finds
-the server by itself; enter the server's IP only for PCs on a different subnet / VLAN.
+Run **`LANMessenger-Client-Setup-x.y.z.exe`** on every PC. It asks *Install for me only* (no administrator
+rights needed; goes to `%LOCALAPPDATA%\Programs`) or *for all users* (administrator). Leave the *Server address*
+page empty and the client finds the server by itself; enter the server's IP only for PCs on a different subnet /
+VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question.
 
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
@@ -102,7 +118,7 @@ Service control (administrator command prompt, in the program folder; also `star
 powershell -ExecutionPolicy Bypass -File service.ps1 status
 ```
 
-Data folder `C:\ProgramData\LAN Messenger Server`:
+Data folder (default `C:\ProgramData\LAN Messenger Server`; Start menu → *Server data folder* opens it):
 
 | Item | What |
 |---|---|
@@ -114,7 +130,11 @@ Data folder `C:\ProgramData\LAN Messenger Server`:
 | `tls\` | the server certificate. **Keep it**; a new one makes every PC show "server identity changed" |
 | `config.json`, `server.log` | settings and log |
 
-**Restore a backup:** stop the service, copy `backups\messenger_YYYY-MM-DD_HHMM.db` over `messenger.db`, start it again.
+**Restore a backup:** stop the service, copy `backups\messenger_YYYY-MM-DD_HHMM.db` over `messenger.db`, **delete
+`messenger.db-wal` and `messenger.db-shm`** next to it if they exist (otherwise the restore is undone), start it again.
+
+If the server hits an unexpected error in the console window, it logs it to `server.log`, shows a short message and
+keeps running. If it can't even read its settings, the note is in `%TEMP%\LANMessengerServer-startup.log`.
 
 The console also has **Reports** (activity per day, department, person and room, storage per user; CSV export),
 the **Audit log** of every administrative action, **Online now** and the **Server log**.
@@ -198,5 +218,6 @@ The server setup allows the server program through Windows Firewall, which cover
   upload it has no disk space for, and interrupted transfers resume.
 - Text messages: 100,000 characters (≈ 2,500 lines of Nuke script); longer text is offered as a file.
 - Profile photos: 256 × 256, up to 400 KB (resized automatically).
-- One server per studio; tested with 1,000 people online at once.
+- One server per studio; load-tested with 500 people online at once: 500 signed in within 2 s, ~390,000 deliveries with none lost, typical delivery 3–40 ms, server ~460 MB of RAM. The chat work runs on one CPU core, so around 500 *very* busy users
+  delivery slows to about a second in the busiest rooms; nothing is lost.
 - Screen sharing is view-only. Windows 10 / 11 only.

@@ -39,6 +39,15 @@ switch ($Action) {
             -Settings $settings -Description "LAN Messenger Server running in the background (no login needed)." `
             -Force | Out-Null
         Start-ScheduledTask -TaskName $TaskName
+        # wait until the server holds its mutex: the console opened right after setup must find it running
+        # (otherwise it would try to start a second server itself)
+        $m = $null
+        for ($i = 0; $i -lt 60; $i++) {
+            try {
+                if ([System.Threading.Mutex]::TryOpenExisting("Global\LANMessengerServerMutex", [ref]$m)) { $m.Dispose(); break }
+            } catch { break }      # exists but belongs to SYSTEM: it is running
+            Start-Sleep -Milliseconds 500
+        }
         Write-Output "Service installed and started."
     }
     "uninstall" {

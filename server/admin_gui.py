@@ -165,6 +165,9 @@ class DashboardPage(Page):
             + (f"<span style='color:{T.DANGER}'>&#9888; Automatic discovery is OFF: "
                f"{info['discovery_error']}. Clients must type this server's address, or change the discovery "
                f"port in Settings.</span><br>" if running and info.get("discovery_error") else "") +
+            (f"<span style='color:{T.DANGER}'>&#9888; {info['storage_error']}. Chat works; file uploads are "
+             f"refused until the folder is reachable (check the share, or change it in Settings).</span><br>"
+             if running and info.get("storage_error") else "") +
             f"<span style='color:{T.MUTED}'>Data folder:</span> {info['data_dir']}<br>"
             f"<span style='color:{T.MUTED}'>File storage:</span> {info['storage_dir']}<br>"
             f"<span style='color:{T.MUTED}'>Last backup:</span> {backup}<br>"
@@ -1171,6 +1174,14 @@ class SettingsPage(Page):
         self.unclaimed = spin(0, 3650, " days", "Never")
         form.addRow("Delete files nobody downloaded after", self.unclaimed)
 
+        log_row = QHBoxLayout()
+        self.log_dir = QLineEdit()
+        self.log_browse = btn("Browse", "folder")
+        self.log_browse.clicked.connect(lambda: self._browse(self.log_dir, "Log folder"))
+        log_row.addWidget(self.log_dir, 1)
+        log_row.addWidget(self.log_browse)
+        form.addRow("Log folder", log_row)
+
         section("Automatic rooms")
         self.auto_dept = QCheckBox("A room for every department (members follow each user's department)")
         self.auto_sect = QCheckBox("A room for every section inside a department")
@@ -1291,6 +1302,8 @@ class SettingsPage(Page):
         self.udp.setValue(int(cfg["discovery_port"]))
         self.storage.setText(cfg["storage_dir"])
         self.storage.setPlaceholderText(cfg["_storage_dir"])
+        self.log_dir.setText(cfg.get("log_dir", ""))
+        self.log_dir.setPlaceholderText(cfg.get("_log_dir", ""))
         self.max_mb.setValue(int(cfg["max_file_mb"]))
         self.retention.setValue(int(cfg["file_retention_days"]))
         self.unclaimed.setValue(int(cfg.get("unclaimed_file_days", 0)))
@@ -1320,6 +1333,7 @@ class SettingsPage(Page):
         self.cl_browse.setEnabled(not remote)
         self.cl_now.setEnabled(self.win.api.running)
         self.browse_btn.setEnabled(not remote)       # folders are on the server PC
+        self.log_browse.setEnabled(not remote)
         self.bk_browse.setEnabled(not remote)
         self.bk_now.setEnabled(self.win.api.running)
 
@@ -1378,6 +1392,7 @@ class SettingsPage(Page):
         values = dict(
             server_name=self.name.text().strip() or "Studio Messenger", tcp_port=self.tcp.value(),
             discovery_port=self.udp.value(), storage_dir=self.storage.text().strip(),
+            log_dir=self.log_dir.text().strip(),
             max_file_mb=self.max_mb.value(), file_retention_days=self.retention.value(),
             auto_department_rooms=self.auto_dept.isChecked(), auto_section_rooms=self.auto_sect.isChecked(),
             auto_all_room=self.auto_all.isChecked(), min_password_length=self.pw_len.value(),
@@ -1399,7 +1414,7 @@ class SettingsPage(Page):
         if values["api_enabled"] and not values["api_key"]:
             QMessageBox.warning(self, "Pipeline API", "Create an API key first (\"New key\").")
             return
-        restart = any(values[k] != cfg.get(k) for k in ("tcp_port", "discovery_port", "storage_dir",
+        restart = any(values[k] != cfg.get(k) for k in ("tcp_port", "discovery_port", "storage_dir", "log_dir",
                                                         "api_enabled", "api_port"))
         try:
             self.cfg = self.win.api.update_config(**values)

@@ -50,7 +50,12 @@ def app_dir() -> str:
 def config_dir() -> str:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     path = os.path.join(base, "LANMessenger")
-    os.makedirs(path, exist_ok=True)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:              # profile folder offline (redirected): work from the temp folder
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "LANMessenger")
+        os.makedirs(path, exist_ok=True)
     return path
 
 
@@ -99,10 +104,15 @@ class ClientConfig:
         return self.values.get(key, default)
 
     def save(self):
+        """Best effort: a read-only or full disk must not stop signing in."""
         tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.values, f, indent=2)
-        replace_file(tmp, self.path)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.values, f, indent=2)
+            replace_file(tmp, self.path)
+        except OSError as e:
+            import logging
+            logging.getLogger("client").warning("Could not save settings to %s: %s", self.path, e)
 
     # ---- remembered password (encrypted with Windows DPAPI, per Windows user)
     def set_password(self, password: str | None):

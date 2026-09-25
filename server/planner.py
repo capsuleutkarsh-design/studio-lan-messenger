@@ -8,6 +8,7 @@ Scheduled message: written now, sent by the server at a chosen time as if the us
 
 import asyncio
 import logging
+import math
 import time
 from types import SimpleNamespace
 
@@ -28,7 +29,9 @@ class PlannerMixin:
         from server.core import ClientError
         try:
             due = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            raise ClientError("Pick a date and time")
+        if not math.isfinite(due):
             raise ClientError("Pick a date and time")
         if due < time.time() - 60:
             raise ClientError("That time is in the past")
