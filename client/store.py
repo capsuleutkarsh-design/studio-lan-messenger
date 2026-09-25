@@ -164,6 +164,8 @@ class Store(QObject):
         self.me = boot["me"]
         self.server_name = boot.get("server_name", "")
         self.max_file_size = boot.get("max_file_size", 0)
+        self.file_retention_days = boot.get("file_retention_days", 0)
+        self.buzz_enabled = boot.get("buzz_enabled", False)
         self.users = {u["id"]: u for u in boot["users"] if u["id"] != self.my_id}
         self.rooms = {r["id"]: r for r in boot["rooms"]}
         for item in boot["recent"]:

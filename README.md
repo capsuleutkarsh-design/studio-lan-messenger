@@ -33,8 +33,8 @@
 
 ### 💬 Chat that fits a studio
 Direct chats and rooms, automatic **department and section rooms**, reply, edit, delete, forward, pin,
-**@mentions**, read receipts and "seen by", **emoji reactions** and **polls** for the everyday
-"which dailies slot?" questions.
+**@mentions**, read receipts and "seen by", **emoji reactions**, **polls** for the everyday
+"which dailies slot?" questions, and **Buzz** to reach someone who is busy.
 
 </td>
 <td width="33%" valign="top">
@@ -65,15 +65,16 @@ shows people as **cards**, as a zoomable **org chart**, or as a list.
 
 ### 🎨 Fun and personal
 **185 stickers** (desi chat, Uncle Ji, Haryanvi, Holi, Diwali and more), **profile photos**, custom
-**status with emoji** ("🍽️ Out for lunch · 1 hour"), and three themes (Midnight, Light, Classic) with six
-accent colours.
+**status with emoji** ("🍽️ Out for lunch · 1 hour"), light / dark / follow-Windows themes with six accent colours,
+and a **compact view** docked to the side of the screen.
 
 </td>
 <td valign="top">
 
 ### 🔒 Private by design
 Everything stays on your LAN, over **TLS**, with server-identity checks, password rules, lock-out, an
-**audit log**, nightly **backups** and a Windows **service** that runs without anyone logged in.
+**audit log**, nightly **backups** plus a readable **chat backup**, and a Windows **service** that runs without
+anyone logged in.
 
 </td>
 </tr>

@@ -47,6 +47,8 @@ class MainWindow(QMainWindow):
         self.transfers = transfers
         self.config = config
         self.quitting = False
+        self.compact = False
+        self._normal_geometry = None
         self.popups = {}
         self.auto_away = False
         self.last_notified_conv = None
@@ -114,6 +116,13 @@ class MainWindow(QMainWindow):
             self.rail[key] = b
             rl.addWidget(b, 0, Qt.AlignHCenter)
         rl.addStretch(1)
+        self.b_pin = RailButton("pin", "Keep on top of other windows")
+        self.b_pin.clicked.connect(lambda: self.set_on_top(self.b_pin.isChecked()))
+        self.b_pin.hide()
+        rl.addWidget(self.b_pin, 0, Qt.AlignHCenter)
+        self.b_compact = RailButton("compact", "Compact view — dock a narrow window to the right (Ctrl+Shift+M)")
+        self.b_compact.clicked.connect(lambda: self.set_compact(self.b_compact.isChecked()))
+        rl.addWidget(self.b_compact, 0, Qt.AlignHCenter)
         self.b_search = RailButton("search", "Search messages (Ctrl+F)")
         self.b_search.setCheckable(False)
         self.b_search.clicked.connect(self.show_search)
@@ -188,6 +197,8 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.show_search)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.focus_search)
+        QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=lambda: self.set_compact(not self.compact))
+        self.chat.back.connect(lambda: self._compact_show("list"))
         self.rail["chats"].setChecked(True)
         self.sidebar.show_page("chats")
 
@@ -197,6 +208,8 @@ class MainWindow(QMainWindow):
         self.tray.setToolTip("LAN Messenger")
         m = QMenu()
         m.addAction("Open LAN Messenger", self.show_normal)
+        self.tray_compact = m.addAction("Compact view", lambda: (self.show_normal(), self.set_compact(not self.compact)))
+        self.tray_compact.setCheckable(True)
         status_menu = m.addMenu("Status")
         for st in P.STATUSES:
             status_menu.addAction(icon("user", T.STATUS_COLORS[st], 16), T.STATUS_LABELS[st],
@@ -230,6 +243,74 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         T.dark_title_bar(self)
+        if self.config["compact_mode"] and not self.compact:
+            QTimer.singleShot(0, lambda: self.set_compact(True))
+
+    # ============================================================ compact view
+    COMPACT_WIDTH = 440
+
+    def set_compact(self, on):
+        """Narrow, full-height window docked to the right edge of the screen (like a phone)."""
+        on = bool(on)
+        self.b_compact.setChecked(on)
+        self.tray_compact.setChecked(on)
+        if on == self.compact:
+            return
+        self.compact = on
+        self.config["compact_mode"] = on
+        self.config.save()
+        self.chat.set_compact(on)
+        self.b_pin.setVisible(on)
+        if on:
+            self._normal_geometry = self.saveGeometry()
+            if self.isMaximized() or self.isFullScreen():
+                self.showNormal()
+            self.setMinimumSize(360, 480)
+            self.sidebar.setMinimumWidth(0)
+            self.sidebar.setMaximumWidth(16777215)
+            self._dock_right()
+            self._compact_show("content" if self.stack.currentWidget() is self.chat and self.chat.conv
+                               else "list")
+            self.set_on_top(self.config["compact_on_top"], save=False)
+        else:
+            self.set_on_top(False, save=False)
+            self.sidebar.setFixedWidth(330)
+            self.sidebar.show()
+            self.stack.show()
+            self.setMinimumSize(960, 600)
+            if self._normal_geometry:
+                self.restoreGeometry(self._normal_geometry)
+            else:
+                self.resize(1280, 800)
+
+    def _dock_right(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        frame = self.frameGeometry()
+        extra_w = frame.width() - self.width()          # window borders
+        extra_h = frame.height() - self.height()        # title bar + borders
+        self.resize(self.COMPACT_WIDTH, area.height() - extra_h)
+        self.move(area.right() - self.COMPACT_WIDTH - extra_w + 1, area.top())
+
+    def _compact_show(self, which):
+        """In compact view show either the list (sidebar) or the content (chat / page), never both."""
+        if not self.compact:
+            return
+        self.sidebar.setVisible(which == "list")
+        self.stack.setVisible(which != "list")
+
+    def set_on_top(self, on, save=True):
+        on = bool(on) and self.compact
+        self.b_pin.setChecked(on)
+        if save:
+            self.config["compact_on_top"] = on
+            self.config.save()
+        if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) != on:
+            geo = self.geometry()
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+            self.show()
+            self.setGeometry(geo)
+            T.dark_title_bar(self)
 
     def _tray_icon(self, unread):
         if not unread:
@@ -252,6 +333,7 @@ class MainWindow(QMainWindow):
     # ============================================================ state
     def is_viewing(self, conv):
         return (self.chat.conv == conv and self.stack.currentWidget() is self.chat and self.isVisible()
+                and self.stack.isVisible()
                 and self.isActiveWindow() and not self.isMinimized())
 
     def _on_logged_in(self, boot):
@@ -308,6 +390,9 @@ class MainWindow(QMainWindow):
             a.setChecked(me.get("status") == st)
         m.addAction(icon("smile", T.TEXT, 16), "Profile photo & status...", self.edit_status_message)
         m.addSeparator()
+        dark = T.DARK
+        m.addAction(icon("palette", T.TEXT, 16), "Switch to light mode" if dark else "Switch to dark mode",
+                    lambda: self.switch_mode("light" if dark else "midnight"))
         m.addAction(icon("settings", T.TEXT, 16), "Settings", self.show_settings)
         m.addAction(icon("logout", T.DANGER, 16), "Sign out", self.confirm_logout)
         m.exec(self.me_btn.mapToGlobal(self.me_btn.rect().topRight()))
@@ -344,6 +429,7 @@ class MainWindow(QMainWindow):
     # ======================================================== navigation
     def rail_clicked(self, key):
         self.rail[key].setChecked(True)
+        self._compact_show("list" if key in ("chats", "contacts", "rooms") else "content")
         if key in ("chats", "contacts", "rooms"):
             self.sidebar.show_page(key)
             if self.stack.currentWidget() in (self.announcements, self.transfers_page, self.directory):
@@ -368,6 +454,7 @@ class MainWindow(QMainWindow):
             self.sidebar.show_page("chats")
         self.sidebar.set_active(conv)
         self.stack.setCurrentWidget(self.chat)
+        self._compact_show("content")
         self.chat.open(conv)
         self.store.mark_read(conv)
 
@@ -381,6 +468,9 @@ class MainWindow(QMainWindow):
     def _on_message(self, msg, is_new):
         if not is_new or msg["sender_id"] == self.store.my_id or msg["kind"] == "system":
             return
+        if msg["kind"] == "buzz":
+            self.buzzed(msg)
+            return
         if self.is_viewing(msg["conv"]):
             return
         mention = self.store.mentions_me(msg)
@@ -391,6 +481,33 @@ class MainWindow(QMainWindow):
         where = "" if msg["conv"].startswith("u:") else f" in {self.store.title(msg['conv'])}"
         title = f"{sender} mentioned you{where}" if mention else f"{sender}{where}"
         self.notify(title, stickers.summary(msg), msg["conv"])
+
+    def buzzed(self, msg):
+        """Someone buzzed me: come to the front, open the chat, shake and ring - even on Do not disturb."""
+        sender = self.store.user_name(msg["sender_id"])
+        if not self.config["allow_buzz"]:
+            self.notify(f"⚡ {sender} buzzed you", "Buzz", msg["conv"])
+            return
+        self.show_normal()
+        self.open_conv(msg["conv"])
+        self.last_notified_conv = msg["conv"]
+        self.tray.showMessage(f"⚡ BUZZ from {sender}", f"{sender} needs your attention", self.base_icon, 6000)
+        play_sound("buzz")
+        QApplication.alert(self, 3000)
+        self.shake()
+
+    def shake(self):
+        from PySide6.QtCore import QPoint, QPropertyAnimation
+        if self.isMaximized() or self.isFullScreen():
+            return
+        start = self.pos()
+        anim = QPropertyAnimation(self, b"pos", self)
+        anim.setDuration(650)
+        steps = 12
+        for i in range(steps + 1):
+            dx = 0 if i in (0, steps) else (14 if i % 2 else -14) * (1 - i / steps)
+            anim.setKeyValueAt(i / steps, start + QPoint(int(dx), 0))
+        anim.start()
 
     def notify(self, title, text, target):
         self.last_notified_conv = target
@@ -746,6 +863,15 @@ class MainWindow(QMainWindow):
             if isinstance(w, (Avatar, ConvItem, MeButton)):
                 w.update()
 
+    def switch_mode(self, theme):
+        self.config["theme"] = theme
+        self.config.save()
+        if QMessageBox.question(self, "New look", "Restart LAN Messenger now to switch to "
+                                f"{'light' if theme == 'light' else 'dark'} mode?") == QMessageBox.Yes:
+            self.restart()
+        else:
+            self.toast("The new look is used from the next start.")
+
     def focus_search(self):
         """Ctrl+K: jump to the people / rooms search in the sidebar."""
         if self.sidebar.page != "chats":
@@ -794,42 +920,58 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
 
-_SOUND_PATH = None
 
 
-def play_sound():
-    """Short chime (generated once, played with winsound - no extra dependencies)."""
-    global _SOUND_PATH
+def play_sound(kind="notify"):
+    """Short sound (generated once, played with winsound - no extra dependencies).
+    kind: 'notify' (two-note chime) or 'buzz' (three rough pulses)."""
     if sys.platform != "win32":
         QApplication.beep()
         return
     import winsound
-    if _SOUND_PATH is None:
+    path = _SOUND_PATHS.get(kind)
+    if path is None:
         from client.config import config_dir
-        _SOUND_PATH = os.path.join(config_dir(), "notify.wav")
-        if not os.path.exists(_SOUND_PATH):
-            _make_chime(_SOUND_PATH)
+        path = _SOUND_PATHS[kind] = os.path.join(config_dir(), f"{kind}.wav")
+        if not os.path.exists(path):
+            _make_sound(path, kind)
     try:
-        winsound.PlaySound(_SOUND_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
     except RuntimeError:
         pass
 
 
-def _make_chime(path):
+_SOUND_PATHS = {}
+
+
+def _make_sound(path, kind):
     import math
     import struct
     import wave
     rate = 44100
     frames = bytearray()
-    total = int(rate * 0.45)
-    for i in range(total):
-        t = i / rate
-        v = 0.0
-        for freq, start, dur in ((880.0, 0.0, 0.2), (1318.5, 0.11, 0.34)):
-            if start <= t < start + dur:
-                env = math.exp(-(t - start) * 9)
-                v += math.sin(2 * math.pi * freq * (t - start)) * env
-        frames += struct.pack("<h", int(max(-1, min(1, v * 0.35)) * 32767))
+    if kind == "buzz":
+        total = int(rate * 0.75)
+        for i in range(total):
+            t = i / rate
+            pulse = int(t / 0.25)
+            local = t - pulse * 0.25
+            v = 0.0
+            if local < 0.17:
+                env = min(1.0, local * 60) * math.exp(-local * 6)
+                v = (math.sin(2 * math.pi * 196 * t) + 0.6 * math.sin(2 * math.pi * 392 * t)
+                     + 0.3 * (1 if math.sin(2 * math.pi * 98 * t) > 0 else -1)) * env
+            frames += struct.pack("<h", int(max(-1, min(1, v * 0.3)) * 32767))
+    else:
+        total = int(rate * 0.45)
+        for i in range(total):
+            t = i / rate
+            v = 0.0
+            for freq, start, dur in ((880.0, 0.0, 0.2), (1318.5, 0.11, 0.34)):
+                if start <= t < start + dur:
+                    env = math.exp(-(t - start) * 9)
+                    v += math.sin(2 * math.pi * freq * (t - start)) * env
+            frames += struct.pack("<h", int(max(-1, min(1, v * 0.35)) * 32767))
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)

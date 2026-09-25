@@ -1,7 +1,7 @@
 """Colours and the Qt stylesheet shared by the client and the server console.
 
-Three looks: "midnight" (default, deep blue-grey), "light" and "classic" (the original PyBlackBox
-black + lime), each with a choice of accent colour. `apply()` must run before any window is built:
+Looks: "midnight" (default, deep blue-grey), "light", "system" (light or midnight, following the Windows
+setting) and "classic" (the original PyBlackBox black + lime), each with a choice of accent colour. `apply()` must run before any window is built:
 widgets read the module-level colours (T.ACCENT, T.PANEL, ...) when they are created.
 """
 
@@ -9,7 +9,8 @@ import ctypes
 import hashlib
 import sys
 
-THEMES = {"midnight": "Midnight (dark)", "light": "Light", "classic": "Classic (black & lime)"}
+THEMES = {"midnight": "Midnight (dark)", "light": "Light", "system": "Follow Windows (light or dark)",
+          "classic": "Classic (black & lime)"}
 ACCENTS = {"violet": "#8b7bff", "blue": "#4c9aff", "teal": "#1fc7a8", "lime": "#bdff00",
            "orange": "#ff8a3d", "pink": "#ff5c9a"}
 
@@ -88,10 +89,25 @@ ACCENT_NAME = "violet"
 STYLESHEET = ""
 
 
+def windows_uses_light() -> bool:
+    """True when Windows is set to light mode for apps (Settings > Personalisation > Colours)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return bool(winreg.QueryValueEx(key, "AppsUseLightTheme")[0])
+    except OSError:
+        return False
+
+
 def apply(theme="midnight", accent=None):
     """Switch the module colours to a theme + accent and rebuild STYLESHEET."""
     global THEME, ACCENT_NAME, ACCENT, ACCENT_TEXT, ACCENT_HOVER, ACCENT_SOFT, ACCENT_FOCUS
     global BUBBLE_ME, STYLESHEET
+    if theme == "system":
+        theme = "light" if windows_uses_light() else "midnight"
     theme = theme if theme in _PALETTES else "midnight"
     if accent not in ACCENTS:
         accent = "lime" if theme == "classic" else "violet"

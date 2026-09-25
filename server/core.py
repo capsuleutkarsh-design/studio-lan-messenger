@@ -15,12 +15,14 @@ import re
 import secrets
 import shutil
 import socket
+import sys
 import threading
 import time
 import uuid
 
 from common import protocol as P
 from common.files import replace_file
+from server import archive
 from server.config import ServerConfig
 from server.db import ANNOUNCE_LEVELS, Database, clean_label, direct_key
 from server.org import SECTION_SEP, Org, section_key
@@ -153,6 +155,7 @@ class ServerCore:
             "vote": self.h_vote,
             "close_poll": self.h_close_poll,
             "react": self.h_react,
+            "buzz": self.h_buzz,
         }
 
     # ============================================================ lifecycle
@@ -212,7 +215,13 @@ class ServerCore:
                 lambda: _DiscoveryProtocol(self), local_addr=("0.0.0.0", int(self.config["discovery_port"])),
                 allow_broadcast=True)
         except OSError as e:
-            log.error("Discovery disabled (UDP port %s busy?): %s", self.config["discovery_port"], e)
+            owner = port_owner(int(self.config["discovery_port"]), udp=True)
+            self.discovery_error = (f"UDP port {self.config['discovery_port']} is used by "
+                                    f"{owner or 'another program'}")
+            log.error("Automatic discovery is OFF: %s (%s). Clients must type the server address.",
+                      self.discovery_error, e)
+        else:
+            self.discovery_error = ""
         self._org = None
         self.sync_auto_rooms()
         self.pipeline = None
@@ -283,6 +292,8 @@ class ServerCore:
                 self.expire_statuses()
                 if self._backup_due():
                     self.backup_now()
+                if archive.due(self.db, self.config):
+                    self.chat_backup_now()
                 self._check_updates()
                 if time.time() - last_purge >= 3600:
                     last_purge = time.time()
@@ -776,6 +787,8 @@ class ServerCore:
             "review_notice": bool(self.config["admin_review_enabled"]),
             "update": self.update_info(),
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
+            "file_retention_days": float(self.config["file_retention_days"] or 0),
+            "buzz_enabled": bool(self.config["buzz_enabled"]),
         }
 
     def _user_name(self, uid):
@@ -1078,6 +1091,26 @@ class ServerCore:
         self.db.close_poll(poll["id"], not req.get("reopen"))
         self._push_message_update(row)
 
+    # ----------------------------------------------------------------- buzz
+    BUZZ_GAP = 20            # seconds between two buzzes to the same person
+
+    def h_buzz(self, s, req):
+        """Shake the other person's window and ring - also when they are on 'Do not disturb'."""
+        if not self.config["buzz_enabled"]:
+            raise ClientError("Buzz is switched off on this server")
+        try:
+            kind, target = P.parse_conv(req.get("conv"))
+        except ValueError as e:
+            raise ClientError(str(e))
+        if kind != "u" or target == s.user_id:
+            raise ClientError("You can buzz one person at a time, in a direct chat")
+        times = self.__dict__.setdefault("_buzz_times", {})
+        wait = self.BUZZ_GAP - (time.time() - times.get((s.user_id, target), 0))
+        if wait > 0:
+            raise ClientError(f"You just buzzed them — wait {int(wait) + 1} s")
+        times[(s.user_id, target)] = time.time()
+        return self._post(s, kind, target, direct_key(s.user_id, target), "", "buzz")
+
     # ------------------------------------------------------------ reactions
     def h_react(self, s, req):
         row = self.db.get_message(int(req.get("message_id") or 0))
@@ -1275,7 +1308,7 @@ class ServerCore:
     # ------------------------------------------------ edit / delete / pin / mute
     def h_edit(self, s, req):
         row = self._own_message(s, req.get("id"))
-        if row["kind"] in ("sticker", "poll"):
+        if row["kind"] in ("sticker", "poll", "buzz"):
             raise ClientError(f"A {row['kind']} can't be edited")
         text = req.get("text")
         if not isinstance(text, str):
@@ -1639,7 +1672,8 @@ class ServerCore:
                  "admin_announce", "admin_audit", "admin_config", "admin_update_config", "admin_server_info",
                  "admin_log_tail", "backup_now", "purge_files", "sync_auto_rooms",
                  "admin_announcements", "admin_announcement_reads", "admin_review_conversations",
-                 "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar"}
+                 "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
+                 "chat_backup_now"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -1920,7 +1954,8 @@ class ServerCore:
     def admin_config(self):
         cfg = self.config
         return dict(cfg.values) | {"_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
-                                   "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path}
+                                   "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path,
+                                   "_chat_log_dir": archive.log_dir(cfg)}
 
     def admin_update_config(self, **values):
         old = dict(self.config.values)
@@ -1937,7 +1972,9 @@ class ServerCore:
                 "discovery_port": self.config["discovery_port"], "server_name": self.config["server_name"],
                 "started_at": self.started_at, "data_dir": self.config.data_dir,
                 "storage_dir": self.config.storage_dir, "last_backup": self.last_backup,
-                "tls": bool(self.tls_fingerprint), "fingerprint": self.tls_fingerprint}
+                "tls": bool(self.tls_fingerprint), "fingerprint": self.tls_fingerprint,
+                "discovery_error": getattr(self, "discovery_error", ""),
+                "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config)}
 
     def admin_log_tail(self, lines=400):
         try:
@@ -1972,6 +2009,21 @@ class ServerCore:
             log.error("BACKUP FAILED (%s): %s", path, e)
             self.audit("server", "backup failed", folder, str(e))
         return self.last_backup
+
+    # ---- readable chat backup + message retention (see server/archive.py)
+    last_chat_backup = None
+
+    def chat_backup_now(self):
+        """Append new messages to the chat log files, then drop messages older than the retention period."""
+        try:
+            result = archive.export_chat_logs(self.db, self.config)
+            result["removed"] = archive.apply_retention(self.db, self.config)
+            result.update(time=time.time(), ok=True)
+        except OSError as e:
+            log.error("Chat backup failed: %s", e)
+            result = {"time": time.time(), "ok": False, "error": str(e), "folder": archive.log_dir(self.config)}
+        self.last_chat_backup = result
+        return result
 
     def _backup_due(self) -> bool:
         if not self.config["backup_enabled"]:
@@ -2026,13 +2078,48 @@ class _DiscoveryProtocol(asyncio.DatagramProtocol):
                 "fingerprint": self.core.tls_fingerprint}), addr)
 
 
+def port_owner(port: int, udp=False) -> str:
+    """Name and PID of the program using a local port, e.g. 'nginx.exe (PID 4312)'; '' if unknown."""
+    if sys.platform != "win32":
+        return ""
+    import subprocess
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "UDP" if udp else "TCP"], capture_output=True, text=True,
+                             timeout=5, creationflags=flags).stdout
+        pid = None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1].endswith(f":{port}") and (udp or parts[3] == "LISTENING"):
+                pid = parts[-1]
+                break
+        if not pid or not pid.isdigit():
+            return ""
+        if pid == str(os.getpid()):
+            return "this program"
+        name = ""
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True,
+                             text=True, timeout=5, creationflags=flags).stdout.strip()
+        if out.startswith('"'):
+            name = out.split('","')[0].strip('"')
+        return f"{name or 'a program'} (PID {pid})"
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def startup_error_text(e: Exception, config) -> str:
     """Plain-language explanation for a failed server start."""
     import sqlite3
     if isinstance(e, OSError) and getattr(e, "winerror", None) == 10048 or "10048" in str(e) or "in use" in str(e):
-        return (f"Port {config['tcp_port']} is already in use.\n\nAnother LAN Messenger server is probably "
-                f"already running on this PC (check the system tray), or another program uses that port. "
-                f"You can change the port in Settings.")
+        port = config["tcp_port"]
+        owner = port_owner(int(port))
+        who = f"It is used by {owner}." if owner else "Another program is using it."
+        hint = (" That is probably another LAN Messenger server already running on this PC "
+                "(check the system tray, or the background service)."
+                if "LANMessenger" in owner or "python" in owner.lower() or not owner else "")
+        return (f"Port {port} is already in use, so the server cannot start.\n\n{who}{hint}\n\n"
+                f"Either close that program, or choose another chat port in Settings (clients that find the "
+                f"server automatically follow the new port; PCs with a typed address need 'IP:port').")
     if isinstance(e, sqlite3.DatabaseError):
         return (f"The message database could not be opened:\n{e}\n\nFile: {config.db_path}\n\n"
                 f"Restore messenger.db from your backup, or move it away to start with an empty database.")

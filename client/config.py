@@ -33,6 +33,9 @@ DEFAULTS = {
     "accent": "violet",
     "recent_stickers": [],
     "directory_view": "cards",   # cards | chart | list
+    "allow_buzz": True,
+    "compact_mode": False,       # narrow window docked to the right edge of the screen
+    "compact_on_top": False,     # ...and kept above other windows          # a buzz shakes this window and rings, even on "Do not disturb"
 }
 
 

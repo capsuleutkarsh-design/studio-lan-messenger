@@ -546,6 +546,8 @@ class SettingsDialog(Dialog):
         self.close_to_tray.setChecked(cfg["close_to_tray"])
         self.autostart = QCheckBox("Start LAN Messenger when Windows starts")
         self.autostart.setChecked(cfg["start_with_windows"])
+        self.allow_buzz = QCheckBox("Let people buzz me (shakes this window and rings, even on Do not disturb)")
+        self.allow_buzz.setChecked(cfg["allow_buzz"])
         self.away = QSpinBox()
         self.away.setRange(0, 240)
         self.away.setSuffix(" minutes")
@@ -555,6 +557,7 @@ class SettingsDialog(Dialog):
         form.addRow("", self.sounds)
         form.addRow("", self.close_to_tray)
         form.addRow("", self.autostart)
+        form.addRow("", self.allow_buzz)
         form.addRow("Set me Away after idle", self.away)
         self.lay.addLayout(form)
 
@@ -595,6 +598,7 @@ class SettingsDialog(Dialog):
         cfg["sounds"] = self.sounds.isChecked()
         cfg["close_to_tray"] = self.close_to_tray.isChecked()
         cfg["auto_away_minutes"] = self.away.value()
+        cfg["allow_buzz"] = self.allow_buzz.isChecked()
         if cfg["start_with_windows"] != self.autostart.isChecked():
             cfg["start_with_windows"] = self.autostart.isChecked()
             from client.config import set_autostart
