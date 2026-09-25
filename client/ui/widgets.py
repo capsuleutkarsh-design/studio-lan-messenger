@@ -412,22 +412,6 @@ class ConvItem(QWidget):
                    QFontMetrics(sf).elidedText(sub, Qt.ElideRight, avail))
 
 
-def brand(symbol_size=90, text_pt=20):
-    """Logo symbol + 'LAN Messenger' wordmark."""
-    from PySide6.QtWidgets import QVBoxLayout
-    from common.icons import logo_widget
-    w = QWidget()
-    lay = QVBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(10)
-    lay.addWidget(logo_widget(symbol_size), 0, Qt.AlignHCenter)
-    text = QLabel(f"<span style='color:{T.ACCENT}'>LAN</span> Messenger")
-    text.setAlignment(Qt.AlignCenter)
-    text.setStyleSheet(f"font-size: {text_pt}pt; font-weight: 800;")
-    lay.addWidget(text)
-    return w
-
-
 class SectionLabel(QLabel):
     """Group header in the sidebar lists (sub=True: a section inside a department)."""
 
