@@ -3,9 +3,10 @@
 import csv
 import datetime
 import logging
+import socket
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QDir, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
@@ -1329,7 +1330,9 @@ class SettingsPage(Page):
         self.cl_dir.setText(cfg.get("chat_log_dir", ""))
         self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
         self.msg_days.setValue(int(cfg.get("message_retention_days", 0)))
-        remote = self.win.api.remote
+        # Browse shows THIS PC's folders: fine unless the console manages a server on another PC
+        remote = self.win.api.remote and getattr(self.win.api, "host", "").lower() not in (
+            "127.0.0.1", "localhost", "::1", socket.gethostname().lower())
         self.cl_browse.setEnabled(not remote)
         self.cl_now.setEnabled(self.win.api.running)
         self.browse_btn.setEnabled(not remote)       # folders are on the server PC
@@ -1362,7 +1365,7 @@ class SettingsPage(Page):
     def _browse(self, edit, title):
         d = QFileDialog.getExistingDirectory(self, title, edit.text() or edit.placeholderText())
         if d:
-            edit.setText(d)
+            edit.setText(QDir.toNativeSeparators(d))        # //nas/share -> \\nas\share
 
     def backup_now(self):
         try:
