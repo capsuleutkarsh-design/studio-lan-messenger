@@ -796,6 +796,9 @@ class MessageRow(QWidget):
         chat = ctx.chat
         m.addAction(icon("smile", T.TEXT, 16), "React...", lambda: chat.react_menu(msg, QCursor.pos()))
         m.addAction(icon("reply", T.TEXT, 16), "Reply", lambda: chat.start_reply(msg))
+        from client.ui.planner_ui import when_menu
+        m.addMenu(when_menu(m, "Remind me about this",
+                            lambda ts: ctx.add_reminder(ts, "", msg["conv"], msg["id"])))
         if self.mine and msg["kind"] in ("text", "file"):
             m.addAction(icon("edit", T.TEXT, 16), "Edit", lambda: chat.start_edit(msg))
         if msg["kind"] != "poll":
@@ -1121,7 +1124,14 @@ class StickerPicker(QFrame):
             bar = tabs_area.horizontalScrollBar()
             bar.setValue(bar.value() - e.angleDelta().y())
         tabs_area.wheelEvent = horizontal_wheel
-        self.show_pack("recent" if self.config["recent_stickers"] else (self.packs[0]["id"] if self.packs else "recent"))
+        self.show_pack(self.first_pack())
+
+    def first_pack(self):
+        """The festival's own pack on its day, else recently used, else the first pack."""
+        fest = (T.FESTIVAL or {}).get("stickers")
+        if fest and any(p["id"] == fest for p in self.packs):
+            return fest
+        return "recent" if self.config["recent_stickers"] else (self.packs[0]["id"] if self.packs else "recent")
 
     def show_pack(self, key):
         from client import stickers
@@ -1366,6 +1376,8 @@ class ChatView(QWidget):
         self.b_emoji.clicked.connect(lambda: self.emoji_menu.exec(self._popup_pos(self.b_emoji, self.emoji_menu)))
         self.b_sticker = IconButton("sticker", "Stickers", 36, 19)
         self.b_sticker.clicked.connect(self.open_stickers)
+        self.b_later = IconButton("clock", "Send later, or remind me", 36, 19)
+        self.b_later.clicked.connect(self.later_menu)
         self.sticker_picker = None
         self.input = MessageInput()
         self.input.send.connect(self.send_text)
@@ -1391,6 +1403,7 @@ class ChatView(QWidget):
         cl.addWidget(self.input, 1)
         cl.addWidget(self.b_emoji, 0, Qt.AlignBottom)
         cl.addWidget(self.b_sticker, 0, Qt.AlignBottom)
+        cl.addWidget(self.b_later, 0, Qt.AlignBottom)
         cl.addSpacing(4)
         cl.addWidget(self.b_send, 0, Qt.AlignBottom)
 
@@ -1417,6 +1430,15 @@ class ChatView(QWidget):
         x.clicked.connect(self.cancel_action)
         ab.addWidget(x)
         self.action_bar.hide()
+        self.sched_bar = QPushButton()
+        self.sched_bar.setCursor(Qt.PointingHandCursor)
+        self.sched_bar.setIcon(icon("clock", T.ACCENT, 15))
+        self.sched_bar.setStyleSheet(f"QPushButton {{ text-align: left; background: transparent; border: none;"
+                                     f" color: {T.ACCENT}; font-size: 9pt; font-weight: 600; padding: 2px 6px 6px 6px; }}"
+                                     f"QPushButton:hover {{ color: {T.TEXT}; }}")
+        self.sched_bar.clicked.connect(self.scheduled_menu)
+        self.sched_bar.hide()
+        cw.addWidget(self.sched_bar, 0, Qt.AlignLeft)
         cw.addWidget(self.action_bar)
         cw.addWidget(self.composer)
         self.offline_note = plain(QLabel())
@@ -1446,6 +1468,7 @@ class ChatView(QWidget):
         s.rooms_changed.connect(self.update_header)
         s.message_updated.connect(self._on_message_updated)
         s.pins_changed.connect(self._on_pins_changed)
+        s.planner_changed.connect(self._update_scheduled_bar)
         self.seen_timer = QTimer(self, interval=15000, timeout=self._update_seen)
 
     # ------------------------------------------------------------ open
@@ -1464,6 +1487,7 @@ class ChatView(QWidget):
         self.input.blockSignals(False)
         self.input.moveCursor(QTextCursor.End)
         self.update_header()
+        self._update_scheduled_bar()
         self.uploads.set_conv(conv)
         self._stick_bottom = True
         self.render_all()
@@ -1806,6 +1830,84 @@ class ChatView(QWidget):
         self.ctx.conn.request("buzz", done, conv=self.conv)
         self._stick_bottom = True
 
+    # ------------------------------------------ send later / reminders
+    def later_menu(self):
+        from client.ui.planner_ui import when_menu
+        m = QMenu(self)
+        text = self.input.toPlainText().strip()
+        if text:
+            sub = when_menu(m, "Send this message later", self.schedule_text, "Pick a date & time...")
+            sub.setIcon(icon("send", T.TEXT, 16))
+            m.addMenu(sub)
+        else:
+            a = m.addAction(icon("send", T.FAINT, 16), "Send later — type a message first")
+            a.setEnabled(False)
+        m.addMenu(when_menu(m, "Remind me about this chat",
+                            lambda ts: self.ctx.add_reminder(ts, "", self.conv)))
+        m.addAction(icon("edit", T.TEXT, 16), "New reminder with a note...", lambda: self.ctx.new_reminder(self.conv))
+        g = self.b_later.mapToGlobal(self.b_later.rect().topLeft())
+        m.exec(QPoint(g.x(), g.y() - m.sizeHint().height() - 8))
+
+    def schedule_text(self, due_at):
+        from client.ui.planner_ui import fmt_due
+        text = self.input.toPlainText().strip()
+        if not text or not self.conv:
+            return
+
+        def done(reply):
+            if reply.get("ok"):
+                self.ctx.toast(f"🕒 Will be sent {fmt_due(due_at)}")
+            else:
+                self.ctx.toast(f"Not scheduled: {reply.get('error')}")
+                if not self.input.toPlainText():
+                    self.input.setPlainText(text)
+        self.input.clear()
+        self.ctx.conn.request("schedule_add", done, conv=self.conv, text=text, due_at=due_at)
+
+    def _update_scheduled_bar(self):
+        from client.ui.planner_ui import fmt_due
+        mine = [x for x in self.store.scheduled if x["conv"] == self.conv]
+        waiting = [x for x in mine if x["state"] == "pending"]
+        failed = [x for x in mine if x["state"] == "failed"]
+        if not mine:
+            self.sched_bar.hide()
+            return
+        if failed:
+            text = f"{len(failed)} scheduled message{'s' if len(failed) > 1 else ''} could not be sent — view"
+        elif len(waiting) == 1:
+            text = f"1 message scheduled for {fmt_due(waiting[0]['due_at'])} — view"
+        else:
+            text = f"{len(waiting)} messages scheduled, next {fmt_due(waiting[0]['due_at'])} — view"
+        self.sched_bar.setText(" " + text)
+        self.sched_bar.show()
+
+    def scheduled_menu(self):
+        from client.ui.planner_ui import TimeDialog, fmt_due
+        m = QMenu(self)
+        for x in [x for x in self.store.scheduled if x["conv"] == self.conv]:
+            label = "Sticker" if x["sticker"] else x["text"].replace("\n", " ")[:50]
+            if x["state"] == "failed":
+                sub = m.addMenu(icon("close", T.DANGER, 16), f"Not sent: {label}")
+                sub.addAction(x["error"] or "Could not be sent").setEnabled(False)
+                continue
+            sub = m.addMenu(icon("clock", T.TEXT, 16), f"{fmt_due(x['due_at'])}  ·  {label}")
+            sub.addAction(icon("send", T.TEXT, 16), "Send now",
+                          lambda sid=x["id"]: self.ctx.conn.request("schedule_send_now", None, id=sid))
+
+            def edit(x=x):
+                dlg = TimeDialog(self, "Edit scheduled message", x["due_at"], text=x["text"],
+                                 text_label="Message", ok_text="Save")
+                if x["sticker"]:
+                    dlg.text.setEnabled(False)
+                if dlg.exec():
+                    self.ctx.conn.request("schedule_update", lambda r: None if r.get("ok") else self.ctx.toast(
+                        r.get("error")), id=x["id"], text=dlg.message() if not x["sticker"] else "",
+                        due_at=dlg.timestamp())
+            sub.addAction(icon("edit", T.TEXT, 16), "Edit text or time...", edit)
+            sub.addAction(icon("trash", T.DANGER, 16), "Delete",
+                          lambda sid=x["id"]: self.ctx.conn.request("schedule_delete", None, id=sid))
+        m.exec(self.sched_bar.mapToGlobal(self.sched_bar.rect().topLeft()) - QPoint(0, m.sizeHint().height() + 4))
+
     # --------------------------------------------------------- reactions
     def react_menu(self, msg, pos):
         m = ReactionPicker(self)
@@ -1844,8 +1946,7 @@ class ChatView(QWidget):
             self.sticker_picker = StickerPicker(self.ctx.config, self)
             self.sticker_picker.picked.connect(self.send_sticker)
         else:
-            self.sticker_picker.show_pack("recent" if self.ctx.config["recent_stickers"]
-                                          else self.sticker_picker.packs[0]["id"])
+            self.sticker_picker.show_pack(self.sticker_picker.first_pack())
         pk = self.sticker_picker
         g = self.b_sticker.mapToGlobal(self.b_sticker.rect().topRight())
         pk.move(g.x() - pk.width() + 20, g.y() - pk.height() - 10)

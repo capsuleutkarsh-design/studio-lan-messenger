@@ -140,6 +140,30 @@ CREATE TABLE IF NOT EXISTS poll_votes(
     option INTEGER NOT NULL,
     PRIMARY KEY(poll_id, user_id, option)
 );
+CREATE TABLE IF NOT EXISTS reminders(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    conv TEXT NOT NULL DEFAULT '',
+    message_id INTEGER,
+    text TEXT NOT NULL DEFAULT '',
+    due_at REAL NOT NULL,
+    state INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(state, due_at);
+CREATE TABLE IF NOT EXISTS scheduled(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    conv TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    sticker TEXT NOT NULL DEFAULT '',
+    due_at REAL NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    error TEXT NOT NULL DEFAULT '',
+    message_id INTEGER,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled(state, due_at);
 CREATE TABLE IF NOT EXISTS meta(
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -417,6 +441,59 @@ class Database:
 
     def close_poll(self, poll_id, closed=True):
         self._exec("UPDATE polls SET closed=? WHERE id=?", int(closed), poll_id)
+
+    # ------------------------------------------------------------- reminders
+    def add_reminder(self, user_id, conv, message_id, text, due_at) -> int:
+        return self._exec("INSERT INTO reminders(user_id, conv, message_id, text, due_at, created_at)"
+                          " VALUES(?,?,?,?,?,?)", user_id, conv, message_id, text, due_at, time.time()).lastrowid
+
+    def get_reminder(self, rid):
+        return self._one("SELECT * FROM reminders WHERE id=?", rid)
+
+    def reminders_for(self, user_id):
+        """Waiting and fired-but-not-done reminders, soonest first."""
+        return self._all("SELECT * FROM reminders WHERE user_id=? AND state<2 ORDER BY due_at", user_id)
+
+    def count_pending_reminders(self, user_id) -> int:
+        return self._one("SELECT COUNT(*) FROM reminders WHERE user_id=? AND state<2", user_id)[0]
+
+    def due_reminders(self, now):
+        return self._all("SELECT * FROM reminders WHERE state=0 AND due_at<=? ORDER BY due_at", now)
+
+    def set_reminder_state(self, rid, state):
+        self._exec("UPDATE reminders SET state=? WHERE id=?", state, rid)
+
+    def reschedule_reminder(self, rid, due_at):
+        self._exec("UPDATE reminders SET due_at=?, state=0 WHERE id=?", due_at, rid)
+
+    def delete_reminder(self, rid):
+        self._exec("DELETE FROM reminders WHERE id=?", rid)
+
+    # ---------------------------------------------------- scheduled messages
+    def add_scheduled(self, user_id, conv, text, sticker, due_at) -> int:
+        return self._exec("INSERT INTO scheduled(user_id, conv, text, sticker, due_at, created_at)"
+                          " VALUES(?,?,?,?,?,?)", user_id, conv, text, sticker, due_at, time.time()).lastrowid
+
+    def get_scheduled(self, sid):
+        return self._one("SELECT * FROM scheduled WHERE id=?", sid)
+
+    def scheduled_for(self, user_id):
+        """Waiting messages, plus ones that failed in the last week (so the user sees why)."""
+        return self._all("SELECT * FROM scheduled WHERE user_id=? AND (state='pending' OR"
+                         " (state='failed' AND due_at>?)) ORDER BY due_at", user_id, time.time() - 7 * 86400)
+
+    def count_pending_scheduled(self, user_id) -> int:
+        return self._one("SELECT COUNT(*) FROM scheduled WHERE user_id=? AND state='pending'", user_id)[0]
+
+    def due_scheduled(self, now):
+        return self._all("SELECT * FROM scheduled WHERE state='pending' AND due_at<=? ORDER BY due_at", now)
+
+    def update_scheduled(self, sid, text, due_at):
+        self._exec("UPDATE scheduled SET text=?, due_at=? WHERE id=?", text, due_at, sid)
+
+    def set_scheduled_state(self, sid, state, message_id=None, error=""):
+        self._exec("UPDATE scheduled SET state=?, message_id=COALESCE(?, message_id), error=? WHERE id=?",
+                   state, message_id, error, sid)
 
     # ------------------------------------------------------------------- meta
     def get_meta(self, key, default=None):

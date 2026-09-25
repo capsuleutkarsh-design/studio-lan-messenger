@@ -169,7 +169,7 @@ def main():
     app.setWindowIcon(QIcon(asset("app.ico")))
     app.setQuitOnLastWindowClosed(False)
     cfg = ClientConfig()
-    theme.apply(cfg["theme"], cfg["accent"])
+    theme.apply(cfg["theme"], cfg["accent"], festivals=cfg["festival_themes"])
     app.setStyleSheet(theme.STYLESHEET)
 
     # single instance per Windows user: a second launch just brings the first one forward

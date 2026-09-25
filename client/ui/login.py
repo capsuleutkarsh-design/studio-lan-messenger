@@ -33,8 +33,15 @@ class LoginWindow(QWidget):
         hero.setObjectName("hero")
         hero.setFixedWidth(360)
         deep = T.mix(T.ACCENT, T.RAIL, 0.30)
-        hero.setStyleSheet(f"#hero {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-                           f" stop:0 {T.ACCENT}, stop:1 {deep}); }}")
+        if T.FESTIVAL and T.FESTIVAL["art"] == "republic":    # navy parade sky
+            stops = "stop:0 #1b3fa0, stop:1 #0a1540"
+        elif T.FESTIVAL and T.FESTIVAL["art"] == "chakra":    # tricolour
+            stops = "stop:0 #e8801f, stop:0.45 #c9a26a, stop:0.55 #3c7f4a, stop:1 #0c5a0a"
+        elif T.FESTIVAL:
+            stops = "stop:0 #b3262b, stop:1 #14512f"
+        else:
+            stops = f"stop:0 {T.ACCENT}, stop:1 {deep}"
+        hero.setStyleSheet(f"#hero {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, {stops}); }}")
         ink = T.ACCENT_TEXT
         hl = QVBoxLayout(hero)
         hl.setContentsMargins(40, 44, 36, 36)
@@ -44,6 +51,10 @@ class LoginWindow(QWidget):
         name = QLabel("LAN Messenger")
         name.setStyleSheet(f"color: {ink}; font-size: 22pt; font-weight: 800;")
         hl.addWidget(name)
+        if T.FESTIVAL:
+            fest = QLabel(f"{T.FESTIVAL['greeting']} {T.FESTIVAL['emoji']}".strip())
+            fest.setStyleSheet("color: #ffffff; font-size: 13pt; font-weight: 800;")
+            hl.addWidget(fest)
         tag = QLabel("Chat, files and screen sharing for the whole studio.")
         tag.setWordWrap(True)
         tag.setStyleSheet(f"color: {ink}; font-size: 11pt;")

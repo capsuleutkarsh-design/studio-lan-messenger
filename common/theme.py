@@ -10,7 +10,26 @@ import hashlib
 import sys
 
 THEMES = {"midnight": "Midnight (dark)", "light": "Light", "system": "Follow Windows (light or dark)",
-          "classic": "Classic (black & lime)"}
+          "classic": "Classic (black & lime)", "independence": "Independence Day (15 August)",
+          "republic": "Republic Day (26 January)", "christmas": "Christmas"}
+
+# Festival looks: a palette + fixed accent + decorations (stripe, home banner, login). They switch on by
+# themselves on the day when "festival themes" is on; FESTIVAL holds the active one (or None).
+FESTIVALS = {
+    "independence": dict(name="Independence Day", days=[(8, 15)], accent="#ff9933",
+                         greeting="Happy Independence Day", sub="Jai Hind!  ·  15 August", emoji="",
+                         stripe=["#ff9933", "#ffffff", "#138808"], art="chakra", stickers="independence",
+                         glow=["#ff9933", "#138808"]),
+    "republic": dict(name="Republic Day", days=[(1, 26)], accent="#5b8cff",
+                     greeting="Happy Republic Day", sub="Jai Hind!  ·  26 January", emoji="",
+                     stripe=["#ff9933", "#ffffff", "#138808"], art="republic", stickers="republic",
+                     glow=["#ff9933", "#138808"]),
+    "christmas": dict(name="Christmas", days=[(12, 24), (12, 25), (12, 26)], accent="#e5484d",
+                      greeting="Merry Christmas", sub="Wishing you joy, peace and a great year ahead", emoji="🎄",
+                      stripe=["#e5484d", "#ffffff", "#e5484d", "#ffffff", "#1f8a4c"], art="snow", stickers="",
+                      glow=["#e5484d", "#1f8a4c"], gold="#f2c14e"),
+}
+FESTIVAL = None
 ACCENTS = {"violet": "#8b7bff", "blue": "#4c9aff", "teal": "#1fc7a8", "lime": "#bdff00",
            "orange": "#ff8a3d", "pink": "#ff5c9a"}
 
@@ -25,6 +44,21 @@ _PALETTES = {
         BORDER="#e0e3eb", TEXT="#1b1f2a", MUTED="#5c6477", FAINT="#8b93a5", BUBBLE_OTHER="#ffffff",
         INPUT_FOCUS_BG="#ffffff", TINT="rgba(20,30,60,0.06)", TOOLTIP="#1b1f2a", SCROLL="#c9ceda",
         SCROLL_HOVER="#aab1c2", DANGER="#e5364f", WARN_BG="#ffe9cf", WARN_TEXT="#6b3b00"),
+    "independence": dict(
+        DARK=True, RAIL="#070b17", BG="#0b1022", PANEL="#10172d", SURFACE="#18213b", SURFACE_HOVER="#222c4a",
+        BORDER="#1f2944", TEXT="#eef0f7", MUTED="#a3abc2", FAINT="#6b7592", BUBBLE_OTHER="#18213b",
+        INPUT_FOCUS_BG="#0e1428", TINT="rgba(0,0,0,0.22)", TOOLTIP="#05070f", SCROLL="#2a3452",
+        SCROLL_HOVER="#3b4870", DANGER="#ff5470", WARN_BG="#4a2a06", WARN_TEXT="#ffd6a8"),
+    "republic": dict(
+        DARK=True, RAIL="#060b19", BG="#0a1126", PANEL="#0f1831", SURFACE="#162343", SURFACE_HOVER="#1f2f56",
+        BORDER="#1c2a4b", TEXT="#eef1fa", MUTED="#a1acc8", FAINT="#687497", BUBBLE_OTHER="#162343",
+        INPUT_FOCUS_BG="#0c142c", TINT="rgba(0,0,0,0.22)", TOOLTIP="#040810", SCROLL="#27365c",
+        SCROLL_HOVER="#38497a", DANGER="#ff5470", WARN_BG="#4a2a06", WARN_TEXT="#ffd6a8"),
+    "christmas": dict(
+        DARK=True, RAIL="#08110c", BG="#0d1812", PANEL="#122219", SURFACE="#1a2e22", SURFACE_HOVER="#233c2d",
+        BORDER="#1e3326", TEXT="#f1f4ef", MUTED="#a9b8ab", FAINT="#6f8574", BUBBLE_OTHER="#1a2e22",
+        INPUT_FOCUS_BG="#0f1d15", TINT="rgba(0,0,0,0.22)", TOOLTIP="#050a07", SCROLL="#2a4332",
+        SCROLL_HOVER="#3a5a44", DANGER="#ff6b6b", WARN_BG="#4a2a06", WARN_TEXT="#ffd6a8"),
     "classic": dict(
         DARK=True, RAIL="#000000", BG="#151617", PANEL="#1e2021", SURFACE="#26282a", SURFACE_HOVER="#2f3133",
         BORDER="#2f3032", TEXT="#e6e6e6", MUTED="#a6a6a6", FAINT="#6b7074", BUBBLE_OTHER="#28282b",
@@ -102,19 +136,34 @@ def windows_uses_light() -> bool:
         return False
 
 
-def apply(theme="midnight", accent=None):
-    """Switch the module colours to a theme + accent and rebuild STYLESHEET."""
+def festival_today(day=None):
+    """Key of the festival on this date ('independence', 'republic', 'christmas') or None."""
+    import datetime
+    day = day or datetime.date.today()
+    for key, f in FESTIVALS.items():
+        if (day.month, day.day) in f["days"]:
+            return key
+    return None
+
+
+def apply(theme="midnight", accent=None, festivals=False):
+    """Switch the module colours to a theme + accent and rebuild STYLESHEET.
+
+    festivals=True: on 15 Aug, 26 Jan and 24-26 Dec the festival look replaces the chosen theme."""
     global THEME, ACCENT_NAME, ACCENT, ACCENT_TEXT, ACCENT_HOVER, ACCENT_SOFT, ACCENT_FOCUS
-    global BUBBLE_ME, STYLESHEET
+    global BUBBLE_ME, STYLESHEET, FESTIVAL
+    if festivals and festival_today():
+        theme = festival_today()
     if theme == "system":
         theme = "light" if windows_uses_light() else "midnight"
     theme = theme if theme in _PALETTES else "midnight"
+    FESTIVAL = FESTIVALS.get(theme)
     if accent not in ACCENTS:
         accent = "lime" if theme == "classic" else "violet"
     THEME, ACCENT_NAME = theme, accent
     pal = _PALETTES[theme]
     globals().update(pal)
-    acc = ACCENTS[accent]
+    acc = FESTIVAL["accent"] if FESTIVAL else ACCENTS[accent]
     if not pal["DARK"] and luminance(acc) > 0.55:
         acc = mix(acc, "#000000", 0.62)           # bright accents are unreadable on white
     ACCENT = acc

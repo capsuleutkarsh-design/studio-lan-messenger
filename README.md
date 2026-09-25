@@ -34,7 +34,8 @@
 ### 💬 Chat that fits a studio
 Direct chats and rooms, automatic **department and section rooms**, reply, edit, delete, forward, pin,
 **@mentions**, read receipts and "seen by", **emoji reactions**, **polls** for the everyday
-"which dailies slot?" questions, and **Buzz** to reach someone who is busy.
+"which dailies slot?" questions, **reminders**, **scheduled messages**, and **Buzz** to reach someone who is
+busy (it even pops a minimised app up on screen).
 
 </td>
 <td width="33%" valign="top">
@@ -66,7 +67,8 @@ shows people as **cards**, as a zoomable **org chart**, or as a list.
 ### 🎨 Fun and personal
 **185 stickers** (desi chat, Uncle Ji, Haryanvi, Holi, Diwali and more), **profile photos**, custom
 **status with emoji** ("🍽️ Out for lunch · 1 hour"), light / dark / follow-Windows themes with six accent colours,
-and a **compact view** docked to the side of the screen.
+a **compact view** docked to the side of the screen, and **festival themes** for Independence Day, Republic Day
+and Christmas.
 
 </td>
 <td valign="top">
@@ -147,7 +149,7 @@ common/        shared: protocol, theme, icons, org views (cards / chart), versio
 assets/        app icon, logo, icons, sticker packs
 build/         build script, Inno Setup scripts, service installer
 tools/         icon, banner and sticker generators
-tests/         integration tests against a real server (41 tests)
+tests/         integration tests against a real server (43 tests)
 docs/          admin guide, release notes, images
 ```
 
