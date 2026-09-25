@@ -35,6 +35,7 @@ class LocalApi:
         from server import archive
         return dict(cfg.values) | {"_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
                                    "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path,
+                                   "_log_dir": os.path.dirname(cfg.log_path),
                                    "_chat_log_dir": archive.log_dir(cfg)}
 
     def update_config(self, **values):
@@ -118,6 +119,7 @@ class RemoteApi:
                 raw.close()
                 return (f"Could not open an encrypted connection to {self.host}:{self.port} ({e}). "
                         "The console only connects to servers with encryption (TLS) switched on.")
+            self.sock.settimeout(900)      # 'Back up now' on a big database takes a while
             known = load_pins().get(key)
             if known and known != self.fingerprint and trust != self.fingerprint:
                 self.pin_mismatch = (known, self.fingerprint)

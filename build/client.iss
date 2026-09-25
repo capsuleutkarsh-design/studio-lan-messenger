@@ -19,6 +19,7 @@
 #define ExeName  "LANMessenger.exe"
 #define FwRule   "LAN Messenger Client"
 #define RegKey   "Software\LAN Messenger"
+; HKA = HKLM when installed for all users, HKCU when installed for me only
 
 [Setup]
 AppId={{2C7E9B44-1D3A-4F6B-8E25-9A0C6D3B7F22}
@@ -39,6 +40,9 @@ WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 PrivilegesRequired=admin
+; "Install for me only" needs no administrator (goes to %LOCALAPPDATA%\Programs);
+; "for all users" asks for admin. /CURRENTUSER or /ALLUSERS on the command line picks one.
+PrivilegesRequiredOverridesAllowed=dialog commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -52,8 +56,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "autostart";   Description: "Start LAN Messenger when Windows starts (for every user of this PC)"; GroupDescription: "Startup:"
-Name: "firewall";    Description: "Allow LAN Messenger through Windows Firewall (automatic server discovery)"; GroupDescription: "Network:"
+Name: "autostart";   Description: "Start LAN Messenger when Windows starts"; GroupDescription: "Startup:"
+Name: "firewall";    Description: "Allow LAN Messenger through Windows Firewall (automatic server discovery)"; GroupDescription: "Network:"; Check: IsAdminInstallMode
 
 [Files]
 Source: "{#DistDir}\LANMessenger\*"; DestDir: "{app}"; Excludes: "client_config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -64,8 +68,8 @@ Name: "{group}\Uninstall LAN Messenger"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\LAN Messenger";     Filename: "{app}\{#ExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKLM; Subkey: "{#RegKey}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LANMessenger"; \
+Root: HKA; Subkey: "{#RegKey}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LANMessenger"; \
   ValueData: """{app}\{#ExeName}"" --minimized"; Tasks: autostart; Flags: uninsdeletevalue
 
 [Run]
@@ -89,7 +93,7 @@ function InitialServer: String;
 begin
   Result := Trim(ExpandConstant('{param:SERVER|}'));
   if Result = '' then
-    if not RegQueryStringValue(HKLM, '{#RegKey}', 'ServerAddress', Result) then
+    if not RegQueryStringValue(HKA, '{#RegKey}', 'ServerAddress', Result) then
       Result := '';
 end;
 
@@ -130,7 +134,8 @@ begin
   if Trim(S) = '' then Exit;
   SplitServer(S, Host, Port);
   N := StrToIntDef(Port, -1);
-  Result := (Host <> '') and (Pos(' ', Host) = 0) and (Pos('"', Host) = 0) and (N > 0) and (N < 65536);
+  Result := (Host <> '') and (Pos(' ', Host) = 0) and (Pos('"', Host) = 0) and (Pos('\', Host) = 0) and
+            (N > 0) and (N < 65536) and (IntToStr(N) = Port);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -160,11 +165,11 @@ begin
       '  "server_host": "' + Host + '",' + #13#10 +
       '  "server_port": ' + Port + #13#10 +
       '}' + #13#10, False);
-    RegWriteStringValue(HKLM, '{#RegKey}', 'ServerAddress', S);
+    RegWriteStringValue(HKA, '{#RegKey}', 'ServerAddress', S);
   end else
   begin
     { empty = automatic discovery: remove a preset left by an earlier install }
     DeleteFile(ExpandConstant('{app}\client_config.json'));
-    RegDeleteValue(HKLM, '{#RegKey}', 'ServerAddress');
+    RegDeleteValue(HKA, '{#RegKey}', 'ServerAddress');
   end;
 end;

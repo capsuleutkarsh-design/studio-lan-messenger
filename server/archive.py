@@ -19,6 +19,7 @@ log = logging.getLogger("server")
 
 META_LAST_ID = "chat_log_last_id"
 META_LAST_RUN = "chat_log_last_run"
+META_PREVIOUS_RUN = "chat_log_previous_run"
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -157,6 +158,7 @@ def export_chat_logs(db, config, batches=None) -> dict:
 
 def mark_run(db):
     """Today's run is over (also after a failure: it is tried again tomorrow, or with 'Back up now')."""
+    db.set_meta(META_PREVIOUS_RUN, db.get_meta(META_LAST_RUN, 0) or 0)
     db.set_meta(META_LAST_RUN, time.time())
 
 
@@ -167,6 +169,13 @@ def apply_retention(db, config) -> int:
         return 0
     exported = int(db.get_meta(META_LAST_ID, 0))
     if not exported:
+        return 0
+    # the clock jumped forward (or the server was off for weeks): skip one night rather than remove
+    # messages that only look old. (The previous run's time is saved before this is called.)
+    previous = float(db.get_meta(META_PREVIOUS_RUN, 0) or 0)
+    if previous and time.time() - previous > 30 * 86400:
+        log.warning("Message retention skipped tonight: the last run was %s days ago (clock changed?)",
+                    int((time.time() - previous) / 86400))
         return 0
     cutoff = time.time() - days * 86400
     # messages that changed after they went into the log (edited, deleted, poll votes since then):

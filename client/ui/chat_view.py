@@ -313,6 +313,7 @@ _NUKE_RE = re.compile(r"^(set cut_paste_input|version \d+|Root \{|push \$|[A-Z][
 SNIPPET_LINES = 25          # longer messages are shown as a collapsed code card
 SNIPPET_CHARS = 2500
 PREVIEW_LINES = 12
+NUKE_PREVIEW_LINES = 5
 
 
 def is_nuke(text):
@@ -331,6 +332,7 @@ class SnippetCard(QFrame):
         super().__init__()
         self.ctx, self.text = ctx, text
         self.nuke = is_nuke(text)
+        self.preview = NUKE_PREVIEW_LINES if self.nuke else PREVIEW_LINES
         self.setObjectName("snippet")
         self.setStyleSheet(f"#snippet {{ background: {T.TINT}; border-radius: 12px; }}")
         self.setMinimumWidth(360)
@@ -367,13 +369,13 @@ class SnippetCard(QFrame):
 
     def _show(self):
         all_lines = self.text.split("\n")
-        shown = all_lines if self.expanded else all_lines[:PREVIEW_LINES]
+        shown = all_lines if self.expanded else all_lines[:self.preview]
         self.view.setPlainText("\n".join(shown))
         fm = QFontMetrics(self.view.font())
-        rows = min(len(shown), 28 if self.expanded else PREVIEW_LINES)
+        rows = min(len(shown), 28 if self.expanded else self.preview)
         self.view.setFixedHeight(rows * fm.lineSpacing() + 16 + (14 if self.expanded else 0))
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if self.expanded else Qt.ScrollBarAlwaysOff)
-        hidden = len(all_lines) - PREVIEW_LINES
+        hidden = len(all_lines) - self.preview
         self.more.setVisible(hidden > 0)
         self.more.setText("Show less" if self.expanded else f"Show all ({hidden:,} more lines)")
 
@@ -1409,6 +1411,7 @@ class ChatView(QWidget):
         self.input.textChanged.connect(self._on_typing)
         self.input.textChanged.connect(self._update_mention_popup)
         self.input.textChanged.connect(self._update_send_button)
+        self.input.textChanged.connect(self._update_long_bar)
         self.input.edit_last.connect(self._edit_last)
         self.input.cancel.connect(self.cancel_action)
         self.input.focused.connect(self._style_composer)
@@ -1463,6 +1466,23 @@ class ChatView(QWidget):
         self.sched_bar.clicked.connect(self.scheduled_menu)
         self.sched_bar.hide()
         cw.addWidget(self.sched_bar, 0, Qt.AlignLeft)
+        self.long_bar = QWidget()
+        lb = QHBoxLayout(self.long_bar)
+        lb.setContentsMargins(6, 0, 6, 6)
+        lb.setSpacing(8)
+        self.long_label = plain(QLabel())
+        self.long_label.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
+        lb.addWidget(self.long_label)
+        self.long_file = QPushButton()
+        self.long_file.setCursor(Qt.PointingHandCursor)
+        self.long_file.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {T.ACCENT};"
+                                     f" font-size: 9pt; font-weight: 700; padding: 0; }}"
+                                     f"QPushButton:hover {{ color: {T.TEXT}; }}")
+        self.long_file.clicked.connect(lambda: self.send_text_as_file(self.input.toPlainText().strip()))
+        lb.addWidget(self.long_file)
+        lb.addStretch(1)
+        self.long_bar.hide()
+        cw.addWidget(self.long_bar)
         cw.addWidget(self.action_bar)
         cw.addWidget(self.composer)
         self.offline_note = plain(QLabel())
@@ -1769,13 +1789,7 @@ class ChatView(QWidget):
                     f"This is {len(text):,} characters — too long for one chat message "
                     f"(max {P.MAX_TEXT:,}).\n\nSend it as a {'.nk' if nuke else '.txt'} file instead?") != QMessageBox.Yes:
                 return
-            path = os.path.join(tempfile.gettempdir(),
-                                f"{'script' if nuke else 'message'}_{time.strftime('%Y%m%d_%H%M%S')}"
-                                f"{'.nk' if nuke else '.txt'}")
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text)
-            self.input.clear()
-            self.send_files([path])
+            self.send_text_as_file(text)
             return
         reply_to = self.reply_to["id"] if self.reply_to else None
         self.cancel_action()
@@ -1791,6 +1805,37 @@ class ChatView(QWidget):
                     self.input.setPlainText(text)
         self.ctx.conn.request("send", done, conv=conv, text=text, reply_to=reply_to)
         self._stick_bottom = True
+
+    def send_text_as_file(self, text):
+        """Send the composer text as a .nk (Nuke script) or .txt attachment instead of a message."""
+        if not text or not self.conv:
+            return
+        nuke = is_nuke(text)
+        path = os.path.join(tempfile.gettempdir(),
+                            f"{'script' if nuke else 'message'}_{time.strftime('%Y%m%d_%H%M%S')}"
+                            f"{'.nk' if nuke else '.txt'}")
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+        except OSError as e:
+            self.ctx.toast(f"Could not create the file: {e}")
+            return
+        self.cancel_action()
+        self.input.clear()
+        self.send_files([path])
+
+    def _update_long_bar(self):
+        """Long text in the composer: say it goes as a compact card, offer a file instead."""
+        text = self.input.toPlainText().strip()
+        if not text or self.editing or not is_snippet(text) or len(text) > P.MAX_TEXT:
+            self.long_bar.hide()
+            return
+        nuke = is_nuke(text)
+        lines = text.count("\n") + 1
+        self.long_label.setText(f"📄 {'Nuke script' if nuke else 'Long text'} · {lines:,} lines — "
+                                f"sends as a compact card  ·")
+        self.long_file.setText(f"Send as {'.nk' if nuke else '.txt'} file instead")
+        self.long_bar.show()
 
     def pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Send a folder (it is zipped automatically)")

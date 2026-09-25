@@ -208,5 +208,92 @@ class AuditTest(unittest.TestCase):
                 os.environ["APPDATA"] = old
 
 
+    def test_odd_requests_get_clean_answers(self):
+        """Requests found by fuzzing that used to end in a server error or a dropped connection."""
+        a = Client("ann")
+        a.sock.sendall(P.encode({"op": ["x"], "rid": 900}))
+        reply = a.wait_for("reply")
+        self.assertFalse(reply["ok"])
+        self.assertTrue(a.request("ping")["ok"])                        # the session survived
+        self.assertFalse(a.request("reminder_add", text="x", due_at=float("nan"))["ok"])
+        self.assertTrue(a.request("search", query="A" * 1_000_000)["ok"])
+        self.assertIsNotNone(self.core.call(lambda: self.core.db.get_user(self.a)))
+
+
+class RobustnessTest(unittest.TestCase):
+    """Things in the environment that used to stop the server (found by fault injection)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def make(self, port, **cfg):
+        core = ServerCore(os.path.join(self.tmp, str(port)))
+        core.config.update(tcp_port=port, discovery_port=port + 1, **cfg)
+        return core
+
+    def test_missing_storage_folder_does_not_stop_the_server(self):
+        core = self.make(PORT + 20, storage_dir=r"Q:\no\such\drive")
+        core.start()
+        try:
+            self.assertTrue(core.running)
+            self.assertIn("not available", core.call(core.admin_server_info)["storage_error"])
+        finally:
+            core.stop()
+
+    def test_empty_database_file_is_not_replaced(self):
+        core = self.make(PORT + 22)
+        open(core.config.db_path, "wb").close()
+        with self.assertRaises(Exception):
+            core.start()
+        self.assertEqual(os.path.getsize(core.config.db_path), 0)
+
+    def test_failed_start_releases_the_port(self):
+        import socket as sk
+        blocker = sk.socket()
+        blocker.bind(("0.0.0.0", PORT + 25))          # the discovery port is taken: fine, TCP is free
+        core = self.make(PORT + 24)
+        busy = sk.socket()
+        busy.bind(("0.0.0.0", PORT + 24))
+        busy.listen()
+        with self.assertRaises(OSError):
+            core.start()
+        busy.close()
+        core.start()                                  # works now: nothing was left open by the failed try
+        try:
+            self.assertTrue(core.running)
+        finally:
+            core.stop()
+            blocker.close()
+
+    def test_settings_typos_keep_safe_values(self):
+        d = os.path.join(self.tmp, "cfg")
+        os.makedirs(d)
+        with open(os.path.join(d, "config.json"), "w") as f:
+            f.write('{"tls_enabled": "maybe", "tcp_port": 99999, "max_file_mb": Infinity}')
+        cfg = ServerConfig(d)
+        self.assertIs(cfg["tls_enabled"], True)
+        self.assertEqual(cfg["tcp_port"], 5150)
+        self.assertEqual(cfg["max_file_mb"], 20480)
+
+    def test_backup_with_clock_in_the_past_keeps_the_new_copy(self):
+        core = self.make(PORT + 26, backup_keep=2)
+        core.start()
+        try:
+            folder = core.config.backup_dir
+            os.makedirs(folder, exist_ok=True)
+            for name in ("messenger_2030-01-01_0200.db", "messenger_2030-01-02_0200.db"):
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(b"old")
+            result = core.call(core.backup_now)
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(os.path.exists(result["path"]))
+            self.assertEqual(len([f for f in os.listdir(folder) if f.startswith("messenger_")]), 2)
+        finally:
+            core.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

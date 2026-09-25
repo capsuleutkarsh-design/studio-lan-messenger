@@ -22,11 +22,16 @@ NEXT STEPS
 
 WHERE THINGS ARE
    Program:  C:\Program Files\LAN Messenger Server
-   Data:     C:\ProgramData\LAN Messenger Server
+   Data:     the folders you chose during setup
+             (default C:\ProgramData\LAN Messenger Server)
              messenger.db  accounts and messages
              files\        shared files
-             backups\      automatic daily database backups
+             backups\      daily database backups + readable chat logs
              config.json   settings,  server.log  log
+   Start menu > LAN Messenger Server > "Server data folder" opens it.
+   To move files, backups or the log later: console > Settings.
+   In service mode only Administrators can open the data folder
+   (it holds every chat).
 
    Upgrading or uninstalling never deletes the data unless you choose to.
 

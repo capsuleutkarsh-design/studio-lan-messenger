@@ -26,6 +26,10 @@ def ensure_certificate(folder: str, common_name: str):
     key_path = os.path.join(folder, "server.key")
     if os.path.exists(cert_path) and os.path.exists(key_path):
         return cert_path, key_path
+    if os.path.exists(cert_path) or os.path.exists(key_path):
+        log.warning("Only one of server.crt / server.key exists in %s - creating a NEW certificate. Every client "
+                    "will ask once to trust the server's new identity. (Restore both files from a backup to keep "
+                    "the old identity.)", folder)
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec

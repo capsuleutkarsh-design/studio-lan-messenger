@@ -16,6 +16,7 @@ import secrets
 import shutil
 import socket
 import sqlite3
+import ssl
 import sys
 import threading
 import time
@@ -175,7 +176,9 @@ class ServerCore(PlannerMixin):
     def start(self):
         """Start the server thread and wait until it is listening."""
         if self.thread and self.thread.is_alive():
-            return
+            if self.running:
+                return
+            self.thread.join(10)             # a failed start is still cleaning up: let it finish first
         self._ready.clear()
         self._start_error = None
         self.thread = threading.Thread(target=self._run, name="server-loop", daemon=True)
@@ -192,6 +195,10 @@ class ServerCore(PlannerMixin):
         except Exception as e:  # noqa: BLE001 - reported to the caller of start()
             log.exception("Server failed to start")
             self._start_error = e
+            try:
+                self.loop.run_until_complete(self._abort_startup())
+            except Exception:  # noqa: BLE001
+                pass
             self._ready.set()
             self.loop.close()
             return
@@ -204,8 +211,17 @@ class ServerCore(PlannerMixin):
             log.info("Server stopped")
 
     async def _startup(self):
-        os.makedirs(self.config.storage_dir, exist_ok=True)
-        self.db = Database(self.config.db_path)
+        self.storage_error = ""
+        try:
+            os.makedirs(self.config.storage_dir, exist_ok=True)
+        except OSError as e:          # e.g. a network share that is down: chat still works, uploads don't
+            self.storage_error = f"File storage folder not available: {self.config.storage_dir} ({e.strerror or e})"
+            log.error("%s - uploads are refused until it is back", self.storage_error)
+        db_path = self.config.db_path
+        if os.path.exists(db_path) and os.path.getsize(db_path) == 0:
+            # an empty file would silently become a brand-new database (and admin/admin)
+            raise sqlite3.DatabaseError("messenger.db is empty (0 bytes) - the file is damaged")
+        self.db = Database(db_path)
         if self.db.user_count() == 0:
             uid = self.db.create_user("admin", "admin", "Administrator", is_admin=True, can_broadcast=True)
             self.db.set_must_change(uid, True)
@@ -251,6 +267,20 @@ class ServerCore(PlannerMixin):
         self.started_at = time.time()
         log.info("Server '%s' listening on port %s (IPs: %s)",
                  self.config["server_name"], port, ", ".join(local_ips()))
+
+    async def _abort_startup(self):
+        """Undo a half-finished start (so 'Start' can be tried again)."""
+        if getattr(self, "pipeline", None):
+            await self.pipeline.stop()
+        if getattr(self, "udp_transport", None):
+            self.udp_transport.close()
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+            self.server = None
+        if self.db:
+            self.db.close()
+            self.db = None
 
     async def _shutdown(self):
         for sessions in list(self.sessions.values()):
@@ -525,8 +555,9 @@ class ServerCore(PlannerMixin):
 
     def _dispatch(self, session, req):
         rid = req.get("rid")
-        handler = self.handlers.get(req.get("op"))
         try:
+            op = req.get("op")
+            handler = self.handlers.get(op) if isinstance(op, str) else None
             if not handler:
                 raise ClientError(f"Unknown request: {req.get('op')}")
             if session.must_change and req.get("op") not in ("change_password", "ping"):
@@ -537,7 +568,7 @@ class ServerCore(PlannerMixin):
         except ClientError as e:
             if rid is not None:
                 session.send({"op": "reply", "rid": rid, "ok": False, "error": str(e)})
-        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as e:
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError, sqlite3.Error) as e:
             # bad input from the client (wrong types) or a validation message from the database layer
             text = str(e)
             if isinstance(e, ValueError) and "invalid literal" not in text and text:
@@ -1769,7 +1800,7 @@ class ServerCore(PlannerMixin):
         self.db.mark_announcement_read(int(req.get("id") or 0), s.user_id)
 
     def h_search(self, s, req):
-        query = str(req.get("query", "")).strip()
+        query = str(req.get("query", "")).strip()[:200]
         if len(query) < 2:
             raise ClientError("Type at least 2 characters")
         return {"messages": [self.msg_for(r, s.user_id) for r in self.db.search(s.user_id, query)]}
@@ -2044,6 +2075,7 @@ class ServerCore(PlannerMixin):
         cfg = self.config
         return dict(cfg.values) | {"_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
                                    "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path,
+                                   "_log_dir": os.path.dirname(cfg.log_path),
                                    "_chat_log_dir": archive.log_dir(cfg)}
 
     def admin_update_config(self, **values):
@@ -2064,6 +2096,7 @@ class ServerCore(PlannerMixin):
                 "storage_dir": self.config.storage_dir, "last_backup": self.last_backup,
                 "tls": bool(self.tls_fingerprint), "fingerprint": self.tls_fingerprint,
                 "discovery_error": getattr(self, "discovery_error", ""),
+                "storage_error": getattr(self, "storage_error", ""),
                 "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config)}
 
     def admin_log_tail(self, lines=400):
@@ -2087,9 +2120,12 @@ class ServerCore(PlannerMixin):
             replace_file(path + ".tmp", path)
             shutil.copy2(self.config.path, os.path.join(folder, f"config_{stamp}.json"))
             keep = max(1, int(self.config["backup_keep"]))
+            just_written = {os.path.basename(path), f"config_{stamp}.json"}
             for prefix in ("messenger_", "config_"):
-                old = sorted(f for f in os.listdir(folder) if f.startswith(prefix) and not f.endswith(".tmp"))
-                for f in old[:-keep]:
+                old = sorted((f for f in os.listdir(folder) if f.startswith(prefix) and not f.endswith(".tmp")
+                              and f not in just_written),
+                             key=lambda f: os.path.getmtime(os.path.join(folder, f)))
+                for f in old[:max(0, len(old) - (keep - 1))]:
                     os.remove(os.path.join(folder, f))
             self.last_backup = {"time": time.time(), "path": path, "ok": True,
                                 "size": os.path.getsize(path)}
@@ -2229,11 +2265,25 @@ def startup_error_text(e: Exception, config) -> str:
         return (f"Port {port} is already in use, so the server cannot start.\n\n{who}{hint}\n\n"
                 f"Either close that program, or choose another chat port in Settings (clients that find the "
                 f"server automatically follow the new port; PCs with a typed address need 'IP:port').")
+    if isinstance(e, sqlite3.OperationalError) and "locked" in str(e).lower():
+        return (f"The message database is in use by another program:\n{config.db_path}\n\n"
+                f"Close any database viewer or backup tool that has it open, then start the server again. "
+                f"The database itself is fine - don't delete or replace it.")
     if isinstance(e, sqlite3.DatabaseError):
         return (f"The message database could not be opened:\n{e}\n\nFile: {config.db_path}\n\n"
-                f"Restore messenger.db from your backup, or move it away to start with an empty database.")
+                f"To restore a backup: stop the server, copy the newest file from the backups folder over "
+                f"messenger.db, and DELETE messenger.db-wal and messenger.db-shm next to it (if they exist) - "
+                f"otherwise the restore is undone. Or move messenger.db away to start with an empty database.")
     if isinstance(e, PermissionError):
-        return f"Windows denied access to a file or folder:\n{e}\n\nRun the server from a folder you can write to."
+        return (f"Windows denied access to a file or folder:\n{e}\n\nThe server data folder can only be changed by "
+                f"administrators. If the server runs as the background service, open the console from the Start "
+                f"menu (it connects to the service); otherwise start the console as administrator.")
+    if isinstance(e, ssl.SSLError) or "PEM" in str(e):
+        return (f"The server's encryption certificate is damaged:\n{e}\n\nDelete the 'tls' folder in "
+                f"{config.data_dir} and start again. A new certificate is created; every client then asks once "
+                f"to trust the server's new identity.")
+    if isinstance(e, OverflowError) or "port must be" in str(e):
+        return f"A port number in the settings is not valid:\n{e}\n\nPorts must be between 1 and 65535."
     return f"{e}"
 
 
