@@ -218,6 +218,25 @@ class FeatureTest(unittest.TestCase):
         a.close()
         b.close()
 
+    def test_buzz(self):
+        a, b = Client("ann"), Client("ben")
+        r = a.request("buzz", conv=f"u:{self.b}")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["message"]["kind"], "buzz")
+        got = b.wait_for("message")["message"]
+        self.assertEqual((got["kind"], got["sender_id"]), ("buzz", self.a))
+        again = a.request("buzz", conv=f"u:{self.b}")
+        self.assertFalse(again["ok"])                               # one buzz per 20 s per person
+        self.assertIn("wait", again["error"])
+        room = a.request("create_room", name="Buzz room", members=[self.b])["room_id"]
+        self.assertFalse(a.request("buzz", conv=f"r:{room}")["ok"])  # never a whole room
+        self.assertFalse(a.request("edit", id=got["id"], text="x")["ok"])
+        self.core.config.update(buzz_enabled=False)
+        self.assertFalse(b.request("buzz", conv=f"u:{self.a}")["ok"])
+        self.core.config.update(buzz_enabled=True)
+        a.close()
+        b.close()
+
     def test_admin_can_moderate(self):
         a, boss = Client("ann"), Client("boss")
         room = boss.request("create_room", name="Mod", members=[self.a])["room_id"]
@@ -296,13 +315,20 @@ class FeatureTest(unittest.TestCase):
         s.makefile("rb").readline()
         s.close()
         core.call(core.db._exec, "UPDATE files SET created_at=created_at-10*86400")
-        core.config.update(unclaimed_file_days=7)
+        core.config.update(unclaimed_file_days=7, file_retention_days=0)
         try:
             core.call(core.purge_files)
         finally:
-            core.config.update(unclaimed_file_days=0)
+            core.config.update(unclaimed_file_days=0, file_retention_days=3)
         self.assertFalse(core.call(core.db.get_file, claimed)["purged"])
         self.assertTrue(core.call(core.db.get_file, unclaimed)["purged"])
+        # the default: every shared file is removed from the server after 3 days
+        fresh, old = up("today.bin"), up("last_week.bin")
+        core.call(core.db._exec, "UPDATE files SET created_at=created_at-4*86400 WHERE id=?", old)
+        core.call(core.purge_files)
+        self.assertFalse(core.call(core.db.get_file, fresh)["purged"])
+        self.assertTrue(core.call(core.db.get_file, old)["purged"])
+        self.assertEqual(a.login["file_retention_days"], 3)          # clients show "available until ..."
         a.close()
         b.close()
 

@@ -9,6 +9,7 @@ For what the app does, see the [README](../README.md).
 - [4. Install the clients](#4-install-the-clients)
 - [5. Updating](#5-updating)
 - [6. Running the server: service, data, backups](#6-running-the-server-service-data-backups)
+- [6a. Chat backup, message history and shared files](#6a-chat-backup-message-history-and-shared-files)
 - [7. Pipeline API (render farm, scripts)](#7-pipeline-api-render-farm-scripts)
 - [8. Network ports](#8-network-ports)
 - [9. Security and privacy](#9-security-and-privacy)
@@ -118,6 +119,21 @@ Data folder `C:\ProgramData\LAN Messenger Server`:
 The console also has **Reports** (activity per day, department, person and room, storage per user; CSV export),
 the **Audit log** of every administrative action, **Online now** and the **Server log**.
 
+## 6a. Chat backup, message history and shared files
+
+Console → **Settings**:
+
+| Setting | Default | What it does |
+|---|---|---|
+| *Write a readable chat backup every night* | on | At the backup time, new messages are appended to text files, one per chat per month: `Chat logs6-09\Room - Falcon Comp (r12).txt`. Grep-able, open in Notepad. |
+| *Keep messages in the app for* | 90 days | Older messages leave the live database (the app stays fast) — **only after** they are in the chat backup. *Forever* keeps everything. |
+| *Delete shared files after* | 3 days (new installs) | Files are removed from the server's file storage; the file card tells people "available until …". Point *File storage folder* at a separate (temp) drive if you like. Upgraded servers keep their old value — change it here. |
+| *Delete files nobody downloaded after* | never | Extra clean-up for forgotten uploads. |
+| *Allow Buzz* | on | Lets people buzz one person (shake + ring, even on Do not disturb). One buzz per 20 s per person; users can opt out in their Settings. |
+
+*Back up chats now* writes the text backup immediately. Deleted messages written before they were deleted stay in the
+text backup (it is an archive).
+
 ## 7. Pipeline API (render farm, scripts)
 
 Console → Settings → *Pipeline API*: tick *Allow*, click *New key*, save, restart the server. Then from any machine
@@ -151,6 +167,14 @@ protected by the key.
 
 The server setup allows the server program through Windows Firewall, which covers all three.
 
+**A port is already in use?**
+- **TCP (chat) port busy** → the server does not start and says which program holds the port
+  (e.g. *"used by nginx.exe (PID 4312)"*). Close that program or pick another port in Settings. Clients that find the
+  server automatically follow the new port; PCs with a typed address need `IP:port`.
+- **UDP (discovery) port busy** → the server runs, but the Dashboard shows *"Automatic discovery is OFF"* with the
+  program holding the port. Clients can still connect by typing the server address.
+- **Pipeline API port busy** → the server runs without the API; the reason is in the Server log.
+
 ## 9. Security and privacy
 
 - **Encrypted connections (TLS).** The server makes its own certificate; each PC remembers the server's fingerprint
@@ -166,7 +190,8 @@ The server setup allows the server program through Windows Firewall, which cover
 
 ## 10. Limits
 
-- Files: 20 GB each by default (Settings → *Max file size*); interrupted transfers resume.
+- Files: 20 GB each by default; the admin can set up to 1 TB (Settings → *Max file size*). The server refuses an
+  upload it has no disk space for, and interrupted transfers resume.
 - Text messages: 100,000 characters (≈ 2,500 lines of Nuke script); longer text is offered as a file.
 - Profile photos: 256 × 256, up to 400 KB (resized automatically).
 - One server per studio; tested with 1,000 people online at once.

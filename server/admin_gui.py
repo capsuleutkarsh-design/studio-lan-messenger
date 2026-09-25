@@ -162,9 +162,16 @@ class DashboardPage(Page):
             f"<span style='color:{T.MUTED}'>Server address(es):</span> <b>{', '.join(info['ips'])}</b><br>"
             f"<span style='color:{T.MUTED}'>Chat &amp; file port (TCP):</span> <b>{info['tcp_port']}</b>"
             f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>Discovery port (UDP):</span> <b>{info['discovery_port']}</b><br>"
+            + (f"<span style='color:{T.DANGER}'>&#9888; Automatic discovery is OFF: "
+               f"{info['discovery_error']}. Clients must type this server's address, or change the discovery "
+               f"port in Settings.</span><br>" if running and info.get("discovery_error") else "") +
             f"<span style='color:{T.MUTED}'>Data folder:</span> {info['data_dir']}<br>"
             f"<span style='color:{T.MUTED}'>File storage:</span> {info['storage_dir']}<br>"
             f"<span style='color:{T.MUTED}'>Last backup:</span> {backup}<br>"
+            + (f"<span style='color:{T.MUTED}'>Last chat backup:</span> "
+               + (f"<span style='color:{T.ACCENT}'>OK</span> {fmt_time(cb['time'])} ({cb['messages']} new)"
+                  if cb.get("ok") else f"<span style='color:{T.DANGER}'>FAILED: {cb.get('error', '')}</span>")
+               + "<br>" if (cb := info.get("last_chat_backup")) else "") +
             + (f"<span style='color:{T.MUTED}'>Encryption:</span> <span style='color:{T.ACCENT}'>TLS on</span>"
                f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>fingerprint</span> "
                f"<span style='font-family:Consolas; font-size:8pt'>{info.get('fingerprint', '')}</span>"
@@ -1208,6 +1215,34 @@ class SettingsPage(Page):
         T.polish(hint, muted=True)
         form.addRow("", hint)
 
+        section("Chat backup & history")
+        self.cl_enabled = QCheckBox("Write a readable chat backup every night (text files, one per chat per month)")
+        cl_row = QHBoxLayout()
+        self.cl_dir = QLineEdit()
+        self.cl_browse = btn("Browse", "folder")
+        self.cl_browse.clicked.connect(lambda: self._browse(self.cl_dir, "Chat backup folder"))
+        cl_row.addWidget(self.cl_dir, 1)
+        cl_row.addWidget(self.cl_browse)
+        self.msg_days = spin(0, 3650, " days", "Forever")
+        cl_now = QHBoxLayout()
+        self.cl_now = btn("Back up chats now", "download")
+        self.cl_now.clicked.connect(self.chat_backup_now)
+        self.cl_status = QLabel()
+        self.cl_status.setWordWrap(True)
+        T.polish(self.cl_status, muted=True)
+        cl_now.addWidget(self.cl_now)
+        cl_now.addWidget(self.cl_status, 1)
+        form.addRow("", self.cl_enabled)
+        form.addRow("Chat backup folder", cl_row)
+        form.addRow("Keep messages in the app for", self.msg_days)
+        form.addRow("", cl_now)
+        cl_hint = QLabel("Older messages disappear from the app but stay in the chat backup files; a message is "
+                         "only removed after it has been written there. The backup runs at the database backup "
+                         "time above.")
+        cl_hint.setWordWrap(True)
+        T.polish(cl_hint, muted=True)
+        form.addRow("", cl_hint)
+
         section("Pipeline API (render farm, scripts)")
         self.api_enabled = QCheckBox("Allow scripts to send messages (needs a server restart)")
         self.api_port = spin(1024, 65535)
@@ -1235,6 +1270,8 @@ class SettingsPage(Page):
         self.review = QCheckBox("Administrators may review any conversation from this console "
                                 "(users are told at sign-in)")
         form.addRow("", self.review)
+        self.buzz = QCheckBox("Allow Buzz (shakes the other person's window and rings, even when they are busy)")
+        form.addRow("", self.buzz)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1274,7 +1311,14 @@ class SettingsPage(Page):
         self.bk_hour.setValue(int(cfg["backup_hour"]))
         self.bk_keep.setValue(int(cfg["backup_keep"]))
         self.review.setChecked(bool(cfg["admin_review_enabled"]))
+        self.buzz.setChecked(bool(cfg.get("buzz_enabled", True)))
+        self.cl_enabled.setChecked(bool(cfg.get("chat_log_enabled", True)))
+        self.cl_dir.setText(cfg.get("chat_log_dir", ""))
+        self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
+        self.msg_days.setValue(int(cfg.get("message_retention_days", 0)))
         remote = self.win.api.remote
+        self.cl_browse.setEnabled(not remote)
+        self.cl_now.setEnabled(self.win.api.running)
         self.browse_btn.setEnabled(not remote)       # folders are on the server PC
         self.bk_browse.setEnabled(not remote)
         self.bk_now.setEnabled(self.win.api.running)
@@ -1317,6 +1361,18 @@ class SettingsPage(Page):
         else:
             QMessageBox.warning(self, "Backup failed", (r or {}).get("error", "Unknown error"))
 
+    def chat_backup_now(self):
+        try:
+            r = self.win.api.call("chat_backup_now")
+        except (ValueError, ConnectionError) as e:
+            QMessageBox.warning(self, "Chat backup", str(e))
+            return
+        if r and r.get("ok"):
+            removed = f"; {r['removed']} old message(s) moved out of the app" if r.get("removed") else ""
+            self.cl_status.setText(f"{r['messages']} new message(s) written to {r['folder']}{removed}")
+        else:
+            QMessageBox.warning(self, "Chat backup failed", (r or {}).get("error", "Unknown error"))
+
     def save(self):
         cfg = self.cfg
         values = dict(
@@ -1330,7 +1386,16 @@ class SettingsPage(Page):
             backup_hour=self.bk_hour.value(), backup_keep=self.bk_keep.value(),
             admin_review_enabled=self.review.isChecked(), unclaimed_file_days=self.unclaimed.value(),
             api_enabled=self.api_enabled.isChecked(), api_port=self.api_port.value(),
-            api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot")
+            api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot",
+            chat_log_enabled=self.cl_enabled.isChecked(), chat_log_dir=self.cl_dir.text().strip(),
+            message_retention_days=self.msg_days.value(), buzz_enabled=self.buzz.isChecked())
+        if (values["message_retention_days"] and not values["chat_log_enabled"]
+                and QMessageBox.question(self, "Chat history",
+                                         "The nightly chat backup is off, so messages older than "
+                                         f"{values['message_retention_days']} days will stay in the app until it "
+                                         "is switched on (nothing is ever deleted without being backed up "
+                                         "first).\n\nSave anyway?") != QMessageBox.Yes):
+            return
         if values["api_enabled"] and not values["api_key"]:
             QMessageBox.warning(self, "Pipeline API", "Create an API key first (\"New key\").")
             return

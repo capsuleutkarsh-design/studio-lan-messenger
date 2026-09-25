@@ -31,8 +31,10 @@ class LocalApi:
         if self.running:
             return self.call("admin_config")
         cfg = self.core.config
+        from server import archive
         return dict(cfg.values) | {"_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
-                                   "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path}
+                                   "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path,
+                                   "_chat_log_dir": archive.log_dir(cfg)}
 
     def update_config(self, **values):
         if self.running:

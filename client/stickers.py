@@ -71,6 +71,8 @@ def summary(msg):
         return "Message deleted"
     if msg.get("kind") == "sticker":
         return "Sticker"
+    if msg.get("kind") == "buzz":
+        return "⚡ Buzz!"
     if msg.get("kind") == "poll":
         return f"📊 Poll: {msg.get('body', '')}"
     if msg.get("body"):

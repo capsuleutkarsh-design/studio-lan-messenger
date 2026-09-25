@@ -140,6 +140,10 @@ CREATE TABLE IF NOT EXISTS poll_votes(
     option INTEGER NOT NULL,
     PRIMARY KEY(poll_id, user_id, option)
 );
+CREATE TABLE IF NOT EXISTS meta(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reactions(
     message_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -413,6 +417,35 @@ class Database:
 
     def close_poll(self, poll_id, closed=True):
         self._exec("UPDATE polls SET closed=? WHERE id=?", int(closed), poll_id)
+
+    # ------------------------------------------------------------------- meta
+    def get_meta(self, key, default=None):
+        row = self._one("SELECT value FROM meta WHERE key=?", key)
+        return row[0] if row else default
+
+    def set_meta(self, key, value):
+        self._exec("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   key, str(value))
+
+    # --------------------------------------------------------- chat archive
+    def messages_after(self, last_id, limit=5000):
+        """Messages with id > last_id (oldest first), with file details, for the chat log export."""
+        return self._all(
+            "SELECT m.*, f.name AS file_name, f.size AS file_size, f.purged AS file_purged"
+            " FROM messages m LEFT JOIN files f ON f.id=m.file_id WHERE m.id>? ORDER BY m.id LIMIT ?",
+            last_id, limit)
+
+    def delete_old_messages(self, before_ts, max_id) -> int:
+        """Remove messages older than before_ts (and only those up to max_id, i.e. already exported)."""
+        where = "SELECT id FROM messages WHERE created_at<? AND id<=?"
+        with self.con:
+            for table, col in (("reactions", "message_id"), ("pins", "message_id")):
+                self.con.execute(f"DELETE FROM {table} WHERE {col} IN ({where})", (before_ts, max_id))
+            self.con.execute(f"DELETE FROM poll_votes WHERE poll_id IN (SELECT id FROM polls WHERE message_id IN "
+                             f"({where}))", (before_ts, max_id))
+            self.con.execute(f"DELETE FROM polls WHERE message_id IN ({where})", (before_ts, max_id))
+            cur = self.con.execute("DELETE FROM messages WHERE created_at<? AND id<=?", (before_ts, max_id))
+        return cur.rowcount
 
     # -------------------------------------------------------------- reactions
     def set_reaction(self, message_id, user_id, emoji, on=True):

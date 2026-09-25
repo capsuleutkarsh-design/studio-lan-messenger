@@ -530,23 +530,30 @@ class OrgBrowser(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
+        from PySide6.QtWidgets import QGridLayout
+        self.bar = bar = QGridLayout()
+        bar.setHorizontalSpacing(8)
+        bar.setVerticalSpacing(8)
+        tools = QWidget()
+        self.tools = QHBoxLayout(tools)
+        self.tools.setContentsMargins(0, 0, 0, 0)
+        self.tools.setSpacing(8)
+        self.tools_widget = tools
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search name, department, section or designation...")
         self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda _: self.refresh())
-        bar.addWidget(self.search, 1)
+        bar.addWidget(self.search, 0, 0)
         self.dept = QComboBox()
-        self.dept.setMinimumWidth(170)
+        self.dept.setMinimumWidth(150)
         self.dept.currentIndexChanged.connect(lambda _: self.refresh())
-        bar.addWidget(self.dept)
+        self.tools.addWidget(self.dept, 1)
         self.list_mode = QComboBox()
         self.list_mode.addItem("By department & section", "department")
         self.list_mode.addItem("By reporting line", "reporting")
         self.list_mode.currentIndexChanged.connect(lambda _: self.refresh())
-        bar.addWidget(self.list_mode)
+        self.tools.addWidget(self.list_mode)
         self.view_buttons = {}
         for key, label in self.VIEWS:
             b = QPushButton(label)
@@ -554,8 +561,11 @@ class OrgBrowser(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             T.polish(b, chip=True)
             b.clicked.connect(lambda _=False, k=key: self.set_view(k))
-            bar.addWidget(b)
+            self.tools.addWidget(b)
             self.view_buttons[key] = b
+        bar.addWidget(tools, 0, 1)
+        bar.setColumnStretch(0, 1)
+        self._narrow = False
         lay.addLayout(bar)
 
         self.stack = QStackedWidget()
@@ -614,6 +624,18 @@ class OrgBrowser(QWidget):
             w.person_menu.connect(self.person_menu.emit)
         self.view = None
         self.set_view(view if view in dict(self.VIEWS) else "cards", announce=False)
+
+    def resizeEvent(self, e):
+        """Narrow window (e.g. compact view): filters and view switch go on a second row."""
+        narrow = e.size().width() < 640
+        if narrow != self._narrow:
+            self._narrow = narrow
+            self.bar.removeWidget(self.tools_widget)
+            if narrow:
+                self.bar.addWidget(self.tools_widget, 1, 0)
+            else:
+                self.bar.addWidget(self.tools_widget, 0, 1)
+        super().resizeEvent(e)
 
     def _tree_menu(self, pos):
         it = self.tree.itemAt(pos)

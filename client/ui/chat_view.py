@@ -73,14 +73,35 @@ class SystemLine(QWidget):
         pass
 
 
+class BuzzLine(QWidget):
+    """'⚡ Bob buzzed you' in the middle of the chat."""
+
+    def __init__(self, msg, text):
+        super().__init__()
+        self.msg = msg
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 8)
+        t = datetime.datetime.fromtimestamp(msg["ts"]).strftime("%H:%M")
+        pill = QLabel(f"⚡  {text}  ·  {t}")
+        pill.setStyleSheet(f"color: {T.ACCENT}; font-weight: 700; font-size: 9pt; background: {T.ACCENT_SOFT};"
+                           f" border: 1px solid {T.ACCENT_FOCUS}; border-radius: 12px; padding: 4px 14px;")
+        lay.addStretch(1)
+        lay.addWidget(pill)
+        lay.addStretch(1)
+
+    def set_max_width(self, w):
+        pass
+
+
 class FileCard(QFrame):
     """Attachment inside a bubble: name, size, and download/open actions."""
 
-    def __init__(self, ctx, file_info, conv):
+    def __init__(self, ctx, file_info, conv, sent_ts=None):
         super().__init__()
         self.ctx = ctx
         self.info = file_info
         self.conv = conv
+        self.sent_ts = sent_ts
         self.setObjectName("filecard")
         self.setStyleSheet(f"#filecard {{ background: {T.TINT}; border-radius: 12px; }}")
         self.setMinimumWidth(270)
@@ -148,10 +169,24 @@ class FileCard(QFrame):
             self.b_folder.show()
             self.b_extract.setVisible(path.lower().endswith(".zip"))
         elif self.info.get("purged"):
-            self.meta.setText(f"{size}  ·  Removed from server")
+            self.meta.setText(f"{size}  ·  No longer on the server")
         else:
-            self.meta.setText(size)
+            self.meta.setText(size + self._expiry())
             self.b_download.show()
+
+    def _expiry(self):
+        """'  ·  available until Sat 28 Sep' when the server deletes shared files after a while."""
+        days = getattr(self.ctx.store, "file_retention_days", 0)
+        if not days or not self.sent_ts:
+            return ""
+        until = self.sent_ts + days * 86400
+        left = until - time.time()
+        if left <= 0:
+            return "  ·  about to be removed from the server"
+        when = datetime.datetime.fromtimestamp(until)
+        if left < 86400:
+            return f"  ·  download before {when:%H:%M} today" if when.date() == datetime.date.today()                 else f"  ·  download before {when:%a %H:%M}"
+        return f"  ·  available until {when:%a %d %b}"
 
     def _on_transfer(self, t):
         if t.kind == "download" and t.file_id == self.info["id"]:
@@ -633,7 +668,7 @@ class MessageRow(QWidget):
             if f:
                 if is_previewable(f):
                     b.addWidget(ImagePreview(ctx, f))
-                b.addWidget(FileCard(ctx, f, msg["conv"]))
+                b.addWidget(FileCard(ctx, f, msg["conv"], msg["ts"]))
             if msg.get("kind") == "poll" and msg.get("poll"):
                 b.addWidget(PollCard(ctx, msg))
             elif msg.get("body") and is_snippet(msg["body"]):
@@ -1216,13 +1251,17 @@ class ChatView(QWidget):
         lay.setSpacing(0)
 
         # header
-        head = QFrame()
+        head = self.head = QFrame()
         head.setObjectName("chathead")
         head.setFixedHeight(68)
         head.setStyleSheet(f"#chathead {{ background: {T.BG}; border-bottom: 1px solid {T.BORDER}; }}")
         hl = QHBoxLayout(head)
         hl.setContentsMargins(22, 10, 16, 10)
         hl.setSpacing(12)
+        self.b_back = IconButton("back", "Back to the list", 34, 18, round_=False)
+        self.b_back.clicked.connect(self._go_back)
+        self.b_back.hide()
+        hl.addWidget(self.b_back)
         self.avatar = Avatar(42)
         self.avatar.ring = T.BG
         hl.addWidget(self.avatar)
@@ -1237,6 +1276,8 @@ class ChatView(QWidget):
         col.addWidget(self.subtitle)
         col.addStretch(1)
         hl.addLayout(col, 1)
+        self.b_buzz = IconButton("zap", "Buzz — shake their window and ring, even if they are busy", 38, 19)
+        self.b_buzz.clicked.connect(self.buzz)
         self.b_screen = IconButton("screen", "Share screen", 38, 19)
         self.b_screen.clicked.connect(self.screen_menu)
         self.b_search = IconButton("search", "Search messages", 38, 18)
@@ -1245,7 +1286,7 @@ class ChatView(QWidget):
         self.b_members.clicked.connect(lambda: self.ctx.show_room_info(self.conv))
         self.b_more = IconButton("more_options", "More", 38, 18)
         self.b_more.clicked.connect(self.more_menu)
-        for b in (self.b_screen, self.b_search, self.b_members, self.b_more):
+        for b in (self.b_buzz, self.b_screen, self.b_search, self.b_members, self.b_more):
             hl.addWidget(b)
         lay.addWidget(head)
 
@@ -1439,7 +1480,9 @@ class ChatView(QWidget):
         self.title.setText(title)
         is_room = kind == "r"
         self.b_members.setVisible(is_room)
-        self.b_screen.setVisible(not is_room and target != self.store.my_id)
+        self.b_screen.setVisible(not is_room and target != self.store.my_id and not self.compact)
+        self.b_search.setVisible(not self.compact)
+        self.b_buzz.setVisible(not is_room and target != self.store.my_id and getattr(self.store, "buzz_enabled", False))
         if is_room:
             room = self.store.rooms.get(target)
             self.avatar.set(title, self.conv, room=True)
@@ -1519,8 +1562,13 @@ class ChatView(QWidget):
             self.rows.append(sep)
         if m["kind"] == "system":
             w = SystemLine(m)
+        elif m["kind"] == "buzz":
+            mine = m["sender_id"] == self.store.my_id
+            w = BuzzLine(m, f"You buzzed {self.store.title(self.conv)}" if mine
+                         else f"{self.store.user_name(m['sender_id'])} buzzed you")
         else:
-            grouped = (prev and not new_day and prev["sender_id"] == m["sender_id"] and prev["kind"] != "system"
+            grouped = (prev and not new_day and prev["sender_id"] == m["sender_id"]
+                       and prev["kind"] not in ("system", "buzz")
                        and m["ts"] - prev["ts"] < GROUP_SECONDS)
             w = MessageRow(self.ctx, m, m["sender_id"] == self.store.my_id, not grouped, not grouped, is_room)
         self.mlay.insertWidget(self.mlay.count(), w)
@@ -1730,6 +1778,33 @@ class ChatView(QWidget):
         m.addAction(icon("search", T.TEXT, 16), "Ask to see their screen...",
                     lambda: self.ctx.screens.invite(target, "request"))
         m.exec(self.b_screen.mapToGlobal(self.b_screen.rect().bottomLeft()))
+
+    # ----------------------------------------------------------- compact
+    compact = False
+
+    def set_compact(self, on):
+        self.compact = on
+        self.b_back.setVisible(on)
+        self.head.layout().setContentsMargins(8 if on else 22, 10, 10 if on else 16, 10)
+        self.update_header()
+
+    def _go_back(self):
+        if self.store.conv_exists(self.conv or ""):
+            self.store.mark_read(self.conv)
+        self.back.emit()
+
+    # -------------------------------------------------------------- buzz
+    def buzz(self):
+        if not self.conv or not self.ctx.conn.online:
+            return
+
+        def done(reply):
+            if reply.get("ok"):
+                self.store.add_message(reply["message"])
+            else:
+                self.ctx.toast(reply.get("error", "Not sent"))
+        self.ctx.conn.request("buzz", done, conv=self.conv)
+        self._stick_bottom = True
 
     # --------------------------------------------------------- reactions
     def react_menu(self, msg, pos):

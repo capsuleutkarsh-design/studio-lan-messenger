@@ -13,7 +13,7 @@ DEFAULTS = {
     "discovery_port": DISCOVERY_PORT,
     "storage_dir": "",            # empty = <data dir>/files
     "max_file_mb": 20480,         # 20 GB per file
-    "file_retention_days": 0,     # 0 = keep shared files forever
+    "file_retention_days": 3,     # shared files are deleted from the server after N days (0 = keep forever)
     "unclaimed_file_days": 0,     # delete files nobody downloaded after N days (0 = never)
     # pipeline / render-farm hook (HTTP)
     "api_enabled": False,
@@ -32,6 +32,12 @@ DEFAULTS = {
     "backup_dir": "",                # empty = <data dir>/backups
     "backup_hour": 2,                # daily, at this hour (0-23)
     "backup_keep": 14,               # number of daily backups kept
+    # readable chat backup + how long messages stay in the app (older ones live only in the chat logs)
+    "chat_log_enabled": True,        # append each day's messages to text files every night
+    "chat_log_dir": "",              # empty = <backup folder>/Chat logs
+    "message_retention_days": 90,    # 0 = keep every message in the app forever
+    # "buzz": shake the other person's window, even when they are busy
+    "buzz_enabled": True,
     # admins may open any conversation from the console (users are told at sign-in)
     "admin_review_enabled": True,
 }
