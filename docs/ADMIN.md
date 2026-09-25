@@ -88,8 +88,8 @@ VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
