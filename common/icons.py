@@ -78,25 +78,10 @@ def asset(*parts) -> str:
     return os.path.join(assets_dir(), *parts)
 
 
-def logo_widget(size: int, on_accent=False):
-    """The speech-bubble logo, coloured with the current accent (lime keeps the original artwork).
-
-    on_accent: for placing it on an accent-coloured background (white bubble, accent symbol)."""
+def logo_widget(size: int):
+    """The app logo (the 'Prism' tile - a fixed brand mark that works on any background)."""
     from PySide6.QtSvgWidgets import QSvgWidget
-    with open(asset("logo.svg"), encoding="utf-8") as f:
-        svg = f.read()
-    if on_accent:
-        deep = theme.mix(theme.ACCENT, "#000000", 0.55)
-        svg = (svg.replace("#dcff5c", "#ffffff").replace("#9ad600", "#eef0f5")
-                  .replace("#101112", deep))
-        svg = svg.replace('<g fill="#ffffff">', f'<g fill="{theme.ACCENT}">')
-    elif theme.ACCENT_NAME != "lime":
-        ink = "#101112" if theme.luminance(theme.ACCENT) > 0.55 else "#ffffff"
-        svg = (svg.replace("#dcff5c", theme.mix(theme.ACCENT, "#ffffff", 0.55))
-                  .replace("#9ad600", theme.mix(theme.ACCENT, "#000000", 0.85))
-                  .replace("#101112", ink))
-    w = QSvgWidget()
-    w.load(QByteArray(svg.encode("utf-8")))
+    w = QSvgWidget(asset("logo.svg"))
     w.setFixedSize(w.renderer().defaultSize().scaled(size, size, Qt.KeepAspectRatio))
     return w
 
