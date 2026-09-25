@@ -76,16 +76,16 @@ Name: "{autodesktop}\LAN Messenger Server console"; Filename: "{app}\{#ExeName}"
 [Registry]
 ; where the data lives (the server reads DataDir; the others pre-fill this page next time)
 Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "DataDir";    ValueData: "{code:GetDataDir}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "StorageDir"; ValueData: "{code:GetStorageDir}"; Check: not IsUpgrade
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "BackupDir";  ValueData: "{code:GetBackupDir}"; Check: not IsUpgrade
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "LogDir";     ValueData: "{code:GetLogDir}"; Check: not IsUpgrade
+Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "StorageDir"; ValueData: "{code:GetStorageDir}"
+Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "BackupDir";  ValueData: "{code:GetBackupDir}"
+Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "LogDir";     ValueData: "{code:GetLogDir}"
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LANMessengerServer"; \
   ValueData: """{app}\{#ExeName}"" --minimized"; Tasks: autostart; Flags: uninsdeletevalue
 
 [Run]
 ; save the folders chosen on the "Where to keep the data" page into the server's settings (first install)
 Filename: "{app}\{#ExeName}"; Parameters: "--data=""{code:GetDataDir}"" --configure --storage=""{code:GetStorageDir}"" --backups=""{code:GetBackupDir}"" --logs=""{code:GetLogDir}"""; \
-  Flags: runhidden waituntilterminated; Check: not IsUpgrade; StatusMsg: "Saving the data folders..."
+  Flags: runhidden waituntilterminated; StatusMsg: "Saving the data folders..."
 ; lock the data down: the database holds every chat (service: Administrators + SYSTEM only)
 Filename: "{sys}\icacls.exe"; Parameters: """{code:GetDataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T /C /Q"; \
   Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Protecting the data folder..."
@@ -196,58 +196,168 @@ end;
 
 { Browse with the Windows folder picker, which also lists Network (shares on other PCs / a NAS);
   the built-in one only shows this PC's drives }
-procedure BrowseClick(Sender: TObject);
-var
-  I: Integer;
-  Dir: String;
-begin
-  for I := 0 to 3 do
-    if Sender = PathsPage.Buttons[I] then
-    begin
-      Dir := PathsPage.Values[I];
-      if BrowseForFolder('Choose the folder. Network locations are under "Network" - or type a ' +
-                         '\\server\share path in the box instead.', Dir, True) then
-        PathsPage.Values[I] := Dir;
-    end;
-end;
-
-procedure InitializeWizard;
-var
-  I: Integer;
-begin
-  PathsPage := CreateInputDirPage(wpSelectTasks, 'Where to keep the data',
-    'Choose where the server stores its database, shared files, backups and log.',
-    'SERVER DATA holds the database (all accounts and messages) and the settings. It must be on a disk of ' +
-    'THIS PC (not a network drive).' + #13#10 +
-    'The other folders may be on another disk or a network share - use a \\server\share path for those, ' +
-    'not a mapped drive letter (Z:), which the background service can''t see.',
-    False, '');
-  PathsPage.Add('Server data (database and settings) - local disk:');
-  PathsPage.Add('Shared files:');
-  PathsPage.Add('Database backups and readable chat backups:');
-  PathsPage.Add('Server log:');
-  PathsPage.Values[0] := DataDirValue;
-  PathsPage.Values[1] := RegValue('StorageDir', AddBackslash(DataDirValue) + 'files');
-  PathsPage.Values[2] := RegValue('BackupDir', AddBackslash(DataDirValue) + 'backups');
-  PathsPage.Values[3] := RegValue('LogDir', DataDirValue);
-  for I := 0 to 3 do
-    PathsPage.Buttons[I].OnClick := @BrowseClick;
-  OldDefaults[0] := AddBackslash(DataDirValue) + 'files';
-  OldDefaults[1] := AddBackslash(DataDirValue) + 'backups';
-  OldDefaults[2] := DataDirValue;
-end;
-
-function ShouldSkipPage(PageID: Integer): Boolean;
-begin
-  Result := (PathsPage <> nil) and (PageID = PathsPage.ID) and Upgrading;
-end;
-
 { Where a mapped drive letter (Z:) points, e.g. '\\NAS01\Messenger' ('' if unknown). Setup runs as
   administrator and Windows hides the user's mapped drives from it, but remembered mappings are in HKCU. }
 function MappedRemote(Letter: String): String;
 begin
   if not RegQueryStringValue(HKCU, 'Network\' + Uppercase(Letter), 'RemotePath', Result) then
     Result := '';
+end;
+
+{ The user's mapped network drives: 'Z:' in Letters[i], '\\server\share' in Paths[i] }
+procedure MappedDrives(var Letters, Paths: TArrayOfString);
+var
+  Names: TArrayOfString;
+  I, N: Integer;
+  Remote: String;
+begin
+  SetArrayLength(Letters, 0);
+  SetArrayLength(Paths, 0);
+  if not RegGetSubkeyNames(HKCU, 'Network', Names) then Exit;
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Remote := MappedRemote(Names[I]);
+    if (Length(Names[I]) = 1) and (Remote <> '') then
+    begin
+      N := GetArrayLength(Letters);
+      SetArrayLength(Letters, N + 1);
+      SetArrayLength(Paths, N + 1);
+      Letters[N] := Uppercase(Names[I]) + ':';
+      Paths[N] := RemoveBackslashUnlessRoot(Remote);
+    end;
+  end;
+end;
+
+{ Browse: first offer the user's network drives (the folder picker can't show them to setup), then the
+  Windows folder picker, which also lists "Network" }
+procedure BrowseClick(Sender: TObject);
+var
+  I, Answer: Integer;
+  Dir: String;
+  Letters, Paths, Labels: TArrayOfString;
+begin
+  for I := 0 to 3 do
+    if Sender = PathsPage.Buttons[I] then
+    begin
+      Dir := PathsPage.Values[I];
+      MappedDrives(Letters, Paths);
+      if (I > 0) and (GetArrayLength(Letters) > 0) then
+      begin
+        if GetArrayLength(Letters) = 1 then
+        begin
+          SetArrayLength(Labels, 2);
+          Labels[0] := Letters[0] + '  (' + Paths[0] + ')';
+          Labels[1] := 'Other folders on this PC or the network';
+          Answer := TaskDialogMsgBox('Where should this folder be?',
+            'Your network drive is listed here because setup (running as administrator) can''t see drive ' +
+            'letters. It will be saved as its network path, which the server can use.',
+            mbConfirmation, MB_YESNO, Labels, 0);
+          if Answer = IDYES then Dir := Paths[0];
+        end
+        else
+        begin
+          SetArrayLength(Labels, 3);
+          Labels[0] := Letters[0] + '  (' + Paths[0] + ')';
+          Labels[1] := Letters[1] + '  (' + Paths[1] + ')';
+          Labels[2] := 'Other folders on this PC or the network';
+          Answer := TaskDialogMsgBox('Where should this folder be?',
+            'Your network drives are listed here because setup (running as administrator) can''t see drive ' +
+            'letters. They are saved as their network paths, which the server can use.',
+            mbConfirmation, MB_YESNOCANCEL, Labels, 0);
+          if Answer = IDYES then Dir := Paths[0]
+          else if Answer = IDNO then Dir := Paths[1];
+        end;
+      end;
+      if BrowseForFolder('Choose the folder (you can make a new one here). Network locations are under ' +
+                         '"Network" - or type a \\server\share path in the box instead.', Dir, True) then
+        PathsPage.Values[I] := Dir;
+    end;
+end;
+
+{ A folder setting from the existing server's config.json (written by Python's json: "key": "C:\\x") }
+function ConfigPath(Key, Default: String): String;
+var
+  S: AnsiString;
+  Text: String;
+  P: Integer;
+begin
+  Result := Default;
+  if not LoadStringFromFile(AddBackslash(DataDirValue) + 'config.json', S) then Exit;
+  Text := String(S);
+  P := Pos('"' + Key + '": "', Text);
+  if P = 0 then Exit;
+  Text := Copy(Text, P + Length(Key) + 5, 1000);
+  P := Pos('"', Text);
+  if P <= 1 then Exit;                      { "" = the default folder }
+  Text := Copy(Text, 1, P - 1);
+  StringChangeEx(Text, '\\', '\', True);
+  Result := Text;
+end;
+
+procedure InitializeWizard;
+var
+  I: Integer;
+  Intro, DrivesText: String;
+  Letters, Paths: TArrayOfString;
+  DrivesLabel: TNewStaticText;
+begin
+  if Upgrading then
+    Intro := 'These are the folders the server uses now. Change the shared files, backups or log folder here ' +
+      '(a disk of this PC, or a network share: \\server\share\...). Files and backups made so far stay where ' +
+      'they are and keep working; new ones go to the new folder.' + #13#10 +
+      'The server data folder (the database) is not moved by setup: to move it, stop the server, copy the whole ' +
+      'folder, and set it on a fresh install.'
+  else
+    Intro := 'SERVER DATA holds the database (all accounts and messages) and the settings. It must be on a disk ' +
+      'of THIS PC (not a network drive).' + #13#10 +
+      'The other folders may be on another disk or a network share - use a \\server\share path for those, ' +
+      'not a mapped drive letter (Z:), which the background service can''t see.';
+  PathsPage := CreateInputDirPage(wpSelectTasks, 'Where to keep the data',
+    'Choose where the server stores its database, shared files, backups and log.', Intro, False, '');
+  PathsPage.Add('Server data (database and settings) - local disk:');
+  PathsPage.Add('Shared files:');
+  PathsPage.Add('Database backups and readable chat backups:');
+  PathsPage.Add('Server log:');
+  PathsPage.Values[0] := DataDirValue;
+  if Upgrading then
+  begin
+    { what the server really uses now (the console may have changed it since the last setup) }
+    PathsPage.Values[1] := ConfigPath('storage_dir', AddBackslash(DataDirValue) + 'files');
+    PathsPage.Values[2] := ConfigPath('backup_dir', AddBackslash(DataDirValue) + 'backups');
+    PathsPage.Values[3] := ConfigPath('log_dir', DataDirValue);
+    PathsPage.Edits[0].Enabled := False;
+    PathsPage.Buttons[0].Enabled := False;
+  end
+  else
+  begin
+    PathsPage.Values[1] := RegValue('StorageDir', AddBackslash(DataDirValue) + 'files');
+    PathsPage.Values[2] := RegValue('BackupDir', AddBackslash(DataDirValue) + 'backups');
+    PathsPage.Values[3] := RegValue('LogDir', DataDirValue);
+  end;
+  for I := 0 to 3 do
+    PathsPage.Buttons[I].OnClick := @BrowseClick;
+  MappedDrives(Letters, Paths);
+  if GetArrayLength(Letters) > 0 then
+  begin
+    DrivesText := 'Your network drives (setup shows them by their network path): ';
+    for I := 0 to GetArrayLength(Letters) - 1 do
+    begin
+      if I > 0 then DrivesText := DrivesText + ',  ';
+      DrivesText := DrivesText + Letters[I] + ' = ' + Paths[I];
+    end;
+    DrivesLabel := TNewStaticText.Create(PathsPage);
+    DrivesLabel.Parent := PathsPage.Surface;
+    DrivesLabel.AutoSize := False;
+    DrivesLabel.WordWrap := True;
+    DrivesLabel.Left := 0;
+    DrivesLabel.Width := PathsPage.SurfaceWidth;
+    DrivesLabel.Top := PathsPage.Edits[3].Top + PathsPage.Edits[3].Height + ScaleY(10);
+    DrivesLabel.Height := ScaleY(30);
+    DrivesLabel.Caption := DrivesText;
+  end;
+  OldDefaults[0] := AddBackslash(DataDirValue) + 'files';
+  OldDefaults[1] := AddBackslash(DataDirValue) + 'backups';
+  OldDefaults[2] := DataDirValue;
 end;
 
 function CheckFolder(Title: String; Index: Integer; LocalOnly: Boolean): Boolean;
