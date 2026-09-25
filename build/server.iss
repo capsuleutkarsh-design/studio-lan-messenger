@@ -14,7 +14,6 @@
 
 #define AppName   "LAN Messenger Server"
 #define ExeName   "LANMessengerServer.exe"
-#define DefData   "{commonappdata}\LAN Messenger Server"
 #define RegKey    "Software\LAN Messenger Server"
 #define FwRule    "LAN Messenger Server"
 #define PS        "{sys}\WindowsPowerShell\v1.0\powershell.exe"
@@ -37,7 +36,11 @@ UninstallDisplayName={#AppName}
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
-PrivilegesRequired=admin
+; Default "Install just for me": no administrator needed; the server runs in the tray under the signed-in
+; user, so that user's network drives and NAS logins work as they are. "Install for all users" (administrator)
+; adds the background service and the firewall rule. /CURRENTUSER or /ALLUSERS picks one on the command line.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -52,9 +55,10 @@ InfoAfterFile=server_after_install.txt
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "firewall";    Description: "Allow the server through Windows Firewall (needed for other PCs to connect)"; GroupDescription: "Network:"
-Name: "service";     Description: "Run as a background service: starts with Windows, even when nobody is logged in (recommended)"; GroupDescription: "How to run the server:"; Flags: exclusive
-Name: "autostart";   Description: "Run in the system tray of the logged-in user (starts at sign-in)"; GroupDescription: "How to run the server:"; Flags: exclusive unchecked
+Name: "firewall";    Description: "Allow the server through Windows Firewall (needed for other PCs to connect)"; GroupDescription: "Network:"; Check: IsAdminInstallMode
+Name: "service";     Description: "Run as a background service: starts with Windows, even when nobody is logged in (recommended)"; GroupDescription: "How to run the server:"; Flags: exclusive; Check: IsAdminInstallMode
+Name: "autostart";   Description: "Run in the system tray of the logged-in user (starts at sign-in)"; GroupDescription: "How to run the server:"; Flags: exclusive unchecked; Check: IsAdminInstallMode
+Name: "autostartme"; Description: "Start the server when I sign in (it runs in the system tray while I'm signed in)"; GroupDescription: "How to run the server:"; Check: not IsAdminInstallMode
 Name: "desktopicon"; Description: "Create a desktop shortcut for the console"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Dirs]
@@ -75,12 +79,13 @@ Name: "{autodesktop}\LAN Messenger Server console"; Filename: "{app}\{#ExeName}"
 
 [Registry]
 ; where the data lives (the server reads DataDir; the others pre-fill this page next time)
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "DataDir";    ValueData: "{code:GetDataDir}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "StorageDir"; ValueData: "{code:GetStorageDir}"
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "BackupDir";  ValueData: "{code:GetBackupDir}"
-Root: HKLM; Subkey: "{#RegKey}"; ValueType: string; ValueName: "LogDir";     ValueData: "{code:GetLogDir}"
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LANMessengerServer"; \
-  ValueData: """{app}\{#ExeName}"" --minimized"; Tasks: autostart; Flags: uninsdeletevalue
+; HKA = HKLM when installed for all users, HKCU when installed just for me
+Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "DataDir";    ValueData: "{code:GetDataDir}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "StorageDir"; ValueData: "{code:GetStorageDir}"
+Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "BackupDir";  ValueData: "{code:GetBackupDir}"
+Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "LogDir";     ValueData: "{code:GetLogDir}"
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LANMessengerServer"; \
+  ValueData: """{app}\{#ExeName}"" --minimized"; Tasks: autostart or autostartme; Flags: uninsdeletevalue
 
 [Run]
 ; save the folders chosen on the "Where to keep the data" page into the server's settings (first install)
@@ -88,9 +93,9 @@ Filename: "{app}\{#ExeName}"; Parameters: "--data=""{code:GetDataDir}"" --config
   Flags: runhidden waituntilterminated; StatusMsg: "Saving the data folders..."
 ; lock the data down: the database holds every chat (service: Administrators + SYSTEM only)
 Filename: "{sys}\icacls.exe"; Parameters: """{code:GetDataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T /C /Q"; \
-  Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Protecting the data folder..."
+  Flags: runhidden waituntilterminated; Tasks: service; Check: IsAdminInstallMode; StatusMsg: "Protecting the data folder..."
 Filename: "{sys}\icacls.exe"; Parameters: """{code:GetDataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)M /T /C /Q"; \
-  Flags: runhidden waituntilterminated; Tasks: autostart; StatusMsg: "Protecting the data folder..."
+  Flags: runhidden waituntilterminated; Tasks: autostart; Check: IsAdminInstallMode; StatusMsg: "Protecting the data folder..."
 Filename: "{sys}\icacls.exe"; Parameters: """{code:GetBackupDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T /C /Q"; \
   Flags: runhidden waituntilterminated; Tasks: service; Check: BackupIsLocalOutside
 Filename: "{sys}\icacls.exe"; Parameters: """{code:GetStorageDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T /C /Q"; \
@@ -100,7 +105,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FwRule}"" dir=in action=allow program=""{app}\{#ExeName}"" enable=yes profile=any"; \
   Flags: runhidden; Tasks: firewall; StatusMsg: "Configuring Windows Firewall..."
 Filename: "{#PS}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service.ps1"" install";   Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Installing and starting the background service..."
-Filename: "{#PS}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service.ps1"" uninstall"; Flags: runhidden waituntilterminated; Tasks: not service
+Filename: "{#PS}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service.ps1"" uninstall"; Flags: runhidden waituntilterminated; Tasks: not service; Check: IsAdminInstallMode
 Filename: "{app}\{#ExeName}"; Description: "Open the server console"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [UninstallRun]
@@ -119,8 +124,17 @@ function GetDriveTypeW(lpRootPathName: String): Cardinal;
 
 function RegValue(Name, Default: String): String;
 begin
-  if not RegQueryStringValue(HKLM, '{#RegKey}', Name, Result) or (Trim(Result) = '') then
+  if not RegQueryStringValue(HKA, '{#RegKey}', Name, Result) or (Trim(Result) = '') then
     Result := Default;
+end;
+
+{ all users: ProgramData (shared, locked to administrators); just for me: the user's own AppData }
+function DefaultDataDir: String;
+begin
+  if IsAdminInstallMode then
+    Result := ExpandConstant('{commonappdata}\LAN Messenger Server')
+  else
+    Result := ExpandConstant('{localappdata}\LAN Messenger Server');
 end;
 
 function IsUNC(P: String): Boolean;
@@ -188,7 +202,7 @@ end;
 
 function InitializeSetup: Boolean;
 begin
-  DataDirValue := RegValue('DataDir', ExpandConstant('{#DefData}'));
+  DataDirValue := RegValue('DataDir', DefaultDataDir);
   { an earlier install already has settings: its folders are changed in the console, not here }
   Upgrading := FileExists(AddBackslash(DataDirValue) + 'config.json');
   Result := True;
@@ -241,7 +255,7 @@ begin
     begin
       Dir := PathsPage.Values[I];
       MappedDrives(Letters, Paths);
-      if (I > 0) and (GetArrayLength(Letters) > 0) then
+      if (I > 0) and (GetArrayLength(Letters) > 0) and IsAdminInstallMode then
       begin
         if GetArrayLength(Letters) = 1 then
         begin
@@ -337,7 +351,7 @@ begin
   for I := 0 to 3 do
     PathsPage.Buttons[I].OnClick := @BrowseClick;
   MappedDrives(Letters, Paths);
-  if GetArrayLength(Letters) > 0 then
+  if (GetArrayLength(Letters) > 0) and IsAdminInstallMode then
   begin
     DrivesText := 'Your network drives (setup shows them by their network path): ';
     for I := 0 to GetArrayLength(Letters) - 1 do
@@ -387,8 +401,9 @@ begin
                mbError, MB_OK);
         Exit;
       end;
-      if MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a mapped network drive. The background service can''t use ' +
-                'drive letters, only the network path.' + #13#10 + #13#10 + 'Use this instead?' + #13#10 +
+      if MsgBox(Title + ': ' + Copy(P, 1, 2) + ' is a mapped network drive. The server should use its network ' +
+                'path: drive letters can be missing when it starts (and a background service never sees them).' +
+                ''#13#10#13#10'Use this instead?' + #13#10 +
                 Remote, mbConfirmation, MB_YESNO) <> IDYES then
         Exit;
       PathsPage.Values[Index] := Remote;
@@ -460,6 +475,13 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) and not Upgrading then
     DataDirValue := GetDataDir('');
+  if (CurStep = ssPostInstall) and (not IsAdminInstallMode) and (not WizardSilent) then
+    MsgBox('One more step, done by Windows:' + #13#10 + #13#10 +
+           'The first time the server starts, Windows Firewall may ask whether LAN Messenger Server may use the ' +
+           'network. Click "Allow access" (if your account is not an administrator, Windows asks for an ' +
+           'administrator''s approval once).' + #13#10 + #13#10 +
+           'If IT manages the firewall, ask them to allow TCP port 5150 and UDP port 5151 for this PC.' + #13#10 +
+           'Other PCs can''t reach the server until this is allowed.', mbInformation, MB_OK);
 end;
 
 { upgrade: stop a running background service before files are replaced (it is started again by
@@ -478,7 +500,7 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then           { read before the registry key is removed }
-    UninstallData := RegValue('DataDir', ExpandConstant('{#DefData}'));
+    UninstallData := RegValue('DataDir', DefaultDataDir);
   if CurUninstallStep = usPostUninstall then
   begin
     if DirExists(UninstallData) and (not UninstallSilent) then

@@ -70,14 +70,27 @@ REG_KEY = r"Software\LAN Messenger Server"
 
 
 def installed_data_dir() -> str:
-    """The data folder picked in the server setup ('' if none / not Windows)."""
+    """The data folder picked in the server setup ('' if none / not Windows).
+
+    "Install just for me" saves it for the user (HKCU), "for all users" for the PC (HKLM). A copy installed in
+    the user's own folder looks in HKCU first."""
     try:
         import winreg
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_KEY) as k:
-            value, _ = winreg.QueryValueEx(k, "DataDir")
-        return str(value).strip()
-    except (ImportError, OSError):
+    except ImportError:
         return ""
+    local = os.environ.get("LOCALAPPDATA", "")
+    per_user = bool(local) and os.path.normcase(app_dir()).startswith(os.path.normcase(local))
+    hives = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE) if per_user else \
+        (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER)
+    for hive in hives:
+        try:
+            with winreg.OpenKey(hive, REG_KEY) as k:
+                value, _ = winreg.QueryValueEx(k, "DataDir")
+            if str(value).strip():
+                return str(value).strip()
+        except OSError:
+            pass
+    return ""
 
 
 class ServerConfig:

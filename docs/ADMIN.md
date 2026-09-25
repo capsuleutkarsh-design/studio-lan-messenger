@@ -20,18 +20,23 @@ For what the app does, see the [README](../README.md).
 ## 1. Install the server
 
 Pick one always-on PC (a small workstation or a VM is plenty; load-tested with 500 people online at once: 500 signed in within 2 s, ~390,000 deliveries with none lost, typical delivery 3–40 ms, server ~460 MB of RAM).
-Run **`LANMessenger-Server-Setup-x.y.z.exe`** as administrator (needed once: only an administrator can open
-Windows Firewall and register the service) and keep the tasks:
+Run **`LANMessenger-Server-Setup-x.y.z.exe`**. It first asks how to install:
 
-- **Allow the server through Windows Firewall**: needed for other PCs to connect
-- **Run as a background service**: starts with Windows, nobody needs to be logged in
-  (alternative: *start in the tray when I log in*)
+- **Install for me only** (recommended, **no administrator needed**): installs into your user folder and runs the
+  server in the system tray under your Windows account, starting when you sign in. Your mapped drives and NAS
+  logins work as they are. The server runs while that account is signed in (a locked screen is fine). The first
+  time it starts, Windows Firewall may ask to *Allow access* (an administrator approves this once; or IT allows
+  TCP 5150 and UDP 5151).
+- **Install for all users** (administrator): keep the tasks
+  - **Allow the server through Windows Firewall**: needed for other PCs to connect
+  - **Run as a background service**: starts with Windows, nobody needs to be logged in
+    (alternative: *start in the tray when I log in*)
 
-The setup installs to `C:\Program Files\LAN Messenger Server`. The page **Where to keep the data** asks for:
+The setup installs to `C:\Program Files\LAN Messenger Server` (all users) or `%LOCALAPPDATA%\Programs\LAN Messenger Server` (just for me). The page **Where to keep the data** asks for:
 
 | Folder | Default | Where it may be |
 |---|---|---|
-| Server data (database, settings, certificate) | `C:\ProgramData\LAN Messenger Server` | a **local disk** only (a database on a network share can get damaged) |
+| Server data (database, settings, certificate) | `C:\ProgramData\LAN Messenger Server` (all users) or `%LOCALAPPDATA%\LAN Messenger Server` (just for me) | a **local disk** only (a database on a network share can get damaged) |
 | Shared files | `<data>\files` | any disk, or a share `\\server\share\...` |
 | Database backups + readable chat backups | `<data>\backups` | any disk, or a share (another disk is recommended) |
 | Server log | `<data>` | any disk, or a share |
@@ -90,8 +95,8 @@ VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.5.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.5.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.5.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.5.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
