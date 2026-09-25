@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- simplified variant used for the 16-24 px icon sizes (tray, taskbar) -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#17181a"/>
+  <g transform="translate(128 124) scale(1.2) translate(-128 -124)">
+    <path d="M128 48c-47.5 0-86 31.3-86 70 0 21.6 12 40.9 30.9 53.7L64 206l37.2-19.5c8.5 2 17.5 3.1 26.8 3.1 47.5 0 86-31.3 86-70.8S175.5 48 128 48z" fill="#c6f51f"/>
+    <g stroke="#151617" stroke-width="15" stroke-linecap="round">
+      <line x1="92" y1="140" x2="128" y2="90"/>
+      <line x1="128" y1="90" x2="164" y2="140"/>
+      <line x1="92" y1="140" x2="164" y2="140"/>
+    </g>
+    <g fill="#151617">
+      <circle cx="128" cy="90" r="20"/>
+      <circle cx="92" cy="140" r="20"/>
+      <circle cx="164" cy="140" r="20"/>
+    </g>
+  </g>
+</svg>

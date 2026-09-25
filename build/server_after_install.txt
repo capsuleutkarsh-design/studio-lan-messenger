@@ -1,0 +1,38 @@
+LAN Messenger Server is installed.
+
+NEXT STEPS
+1. Open "LAN Messenger Server console" from the Start menu.
+   - Background-service mode (recommended): the server is already running.
+     The console asks you to sign in with an administrator account.
+   - Tray mode: the console starts the server and keeps it running in the
+     system tray (right-click the tray icon to quit).
+
+2. First sign-in:   username  admin
+                    password  admin
+   You will be asked to choose a new password straight away.
+
+3. In the console:
+   - Designations: rename/add titles to match your studio.
+   - Users: add everyone (department, section, designation, reports to),
+     or use "Import CSV". New users choose their own password at first sign-in.
+   - Settings: check the backup folder (ideally on another disk) and the
+     password rules.
+   - Dashboard: shows this PC's IP address. Clients find the server by
+     themselves; if a PC is on another subnet, give it that IP.
+
+WHERE THINGS ARE
+   Program:  C:\Program Files\LAN Messenger Server
+   Data:     C:\ProgramData\LAN Messenger Server
+             messenger.db  accounts and messages
+             files\        shared files
+             backups\      automatic daily database backups
+             config.json   settings,  server.log  log
+
+   Upgrading or uninstalling never deletes the data unless you choose to.
+
+SERVICE CONTROL (as administrator, in the program folder)
+   powershell -ExecutionPolicy Bypass -File service.ps1 status|start|stop|restart
+
+NETWORK
+   TCP port 5150 (chat and files) and UDP port 5151 (automatic discovery).
+   The installer added a Windows Firewall rule for the server program.

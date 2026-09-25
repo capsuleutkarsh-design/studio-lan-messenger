@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# build output (installers go to GitHub Releases, not into the repo)
+build/_work/
+build/dist/
+build/output/
+*.spec
+
+# local data - accounts, messages, certificates, logs
+server_data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+client_config.json
+crash.log
