@@ -39,7 +39,7 @@ class LoginWindow(QWidget):
         hl = QVBoxLayout(hero)
         hl.setContentsMargins(40, 44, 36, 36)
         hl.setSpacing(10)
-        hl.addWidget(logo_widget(56, on_accent=True))
+        hl.addWidget(logo_widget(64))
         hl.addSpacing(10)
         name = QLabel("LAN Messenger")
         name.setStyleSheet(f"color: {ink}; font-size: 22pt; font-weight: 800;")
