@@ -171,7 +171,7 @@ class DashboardPage(Page):
             + (f"<span style='color:{T.MUTED}'>Last chat backup:</span> "
                + (f"<span style='color:{T.ACCENT}'>OK</span> {fmt_time(cb['time'])} ({cb['messages']} new)"
                   if cb.get("ok") else f"<span style='color:{T.DANGER}'>FAILED: {cb.get('error', '')}</span>")
-               + "<br>" if (cb := info.get("last_chat_backup")) else "") +
+               + "<br>" if (cb := info.get("last_chat_backup")) else "")
             + (f"<span style='color:{T.MUTED}'>Encryption:</span> <span style='color:{T.ACCENT}'>TLS on</span>"
                f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>fingerprint</span> "
                f"<span style='font-family:Consolas; font-size:8pt'>{info.get('fingerprint', '')}</span>"

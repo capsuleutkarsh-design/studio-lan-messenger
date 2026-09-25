@@ -149,7 +149,7 @@ common/        shared: protocol, theme, icons, org views (cards / chart), versio
 assets/        app icon, logo, icons, sticker packs
 build/         build script, Inno Setup scripts, service installer
 tools/         icon, banner and sticker generators
-tests/         integration tests against a real server (56 tests)
+tests/         integration tests against a real server (58 tests)
 docs/          admin guide, release notes, images
 ```
 
