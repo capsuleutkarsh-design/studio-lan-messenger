@@ -4,13 +4,13 @@ import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
-from client.ui.widgets import IconButton, brand, esc, linkify, open_link, open_path, plain, show_in_folder
+from client.ui.widgets import IconButton, esc, linkify, open_link, open_path, plain, show_in_folder
 
 
 class PageHeader(QFrame):
@@ -48,77 +48,389 @@ def scroll_column():
     return area, lay
 
 
-class HomePage(QWidget):
-    def __init__(self):
+TIPS = [
+    ("sticker", "Stickers", "Click the sticker button next to the emoji button — 185 desi, festival and mood stickers."),
+    ("chart", "Quick polls", "Where for lunch? Which dailies slot? Attach button → Create a poll."),
+    ("file", "Nuke scripts", "Paste a Nuke script straight into a chat. Others click Copy and paste it into Nuke."),
+    ("pin", "Pin what matters", "Right-click a message → Pin to the top, so nobody misses the dailies time."),
+    ("smile", "React instead of replying", "Hover a message and click 🙂 — a 👍 is quicker than 'ok noted'."),
+    ("folder", "Send whole folders", "Attach → Send a folder: image sequences are zipped and extracted with one click."),
+    ("search", "Find anything", "Ctrl+K jumps to a person or room, Ctrl+F searches every message you have."),
+    ("screen", "Show your screen", "In a direct chat, click the screen button to share your screen (view only)."),
+    ("bell", "Mute noisy rooms", "Mute a busy room from its ••• menu — you'll still hear when someone @mentions you."),
+]
+
+
+def _panel(title, action_text=None, action=None):
+    """Rounded card with a heading row; returns (frame, body layout)."""
+    frame = QFrame()
+    frame.setObjectName("panel")
+    frame.setStyleSheet(f"#panel {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 16px; }}")
+    lay = QVBoxLayout(frame)
+    lay.setContentsMargins(18, 14, 18, 16)
+    lay.setSpacing(8)
+    head = QHBoxLayout()
+    t = QLabel(title.upper())
+    t.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;")
+    head.addWidget(t, 1)
+    if action_text:
+        b = QPushButton(action_text)
+        T.polish(b, flat=True)
+        b.setStyleSheet(f"color: {T.ACCENT}; font-size: 9pt; padding: 2px 4px;")
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(action)
+        head.addWidget(b)
+    lay.addLayout(head)
+    body = QVBoxLayout()
+    body.setSpacing(2)
+    lay.addLayout(body)
+    lay.addStretch(1)
+    return frame, body
+
+
+class _Clickable(QFrame):
+    """A row / tile that calls `fn` when clicked."""
+
+    def __init__(self, fn, radius=12):
         super().__init__()
+        self.fn = fn
+        self.setObjectName("click")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(f"#click {{ background: transparent; border-radius: {radius}px; }}"
+                           f"#click:hover {{ background: {T.SURFACE}; }}")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.fn()
+
+
+class HomePage(QWidget):
+    """Dashboard: greeting, quick actions, unread chats, announcements, my team online, a tip."""
+
+    def __init__(self, ctx):
+        super().__init__()
+        from PySide6.QtCore import QTimer
+        self.ctx = ctx
+        self.store = ctx.store
         T.bg_pane(self)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 40, 40, 40)
-        lay.addStretch(2)
-        lay.addWidget(brand(84, 22), 0, Qt.AlignHCenter)
-        lay.addSpacing(20)
-        self.title = plain(QLabel("Welcome"))
-        self.title.setAlignment(Qt.AlignCenter)
-        self.title.setStyleSheet("font-size: 20pt; font-weight: 800;")
-        lay.addWidget(self.title)
-        self.sub = plain(QLabel("Pick a person or a room on the left to start chatting."))
-        self.sub.setAlignment(Qt.AlignCenter)
-        self.sub.setStyleSheet(f"color: {T.MUTED}; font-size: 10.5pt;")
-        lay.addWidget(self.sub)
-        lay.addSpacing(28)
-        cards = QHBoxLayout()
-        cards.setSpacing(14)
-        cards.addStretch(1)
-        for ic, title, text in (
-                ("users", "Talk to anyone", "Everyone in the studio is under People, grouped by department."),
-                ("attachment", "Share files & folders", "Drag & drop into a chat — even to people who are offline."),
-                ("sticker", "Stickers", "Hundreds of desi, festival and mood stickers next to the emoji button.")):
-            cards.addWidget(self._card(ic, title, text))
-        cards.addStretch(1)
-        lay.addLayout(cards)
-        lay.addSpacing(22)
-        keys = QLabel(f"<span style='color:{T.FAINT}'>Shortcuts:</span>&nbsp; "
-                      f"{self._key('Ctrl')} {self._key('K')} <span style='color:{T.MUTED}'>find a person or room</span>"
-                      f"&nbsp;&nbsp;&nbsp;{self._key('Ctrl')} {self._key('F')} "
-                      f"<span style='color:{T.MUTED}'>search messages</span>"
-                      f"&nbsp;&nbsp;&nbsp;{self._key('↑')} <span style='color:{T.MUTED}'>edit your last message</span>")
-        keys.setAlignment(Qt.AlignCenter)
-        keys.setStyleSheet("font-size: 9pt;")
-        lay.addWidget(keys)
-        lay.addStretch(3)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        page = QWidget()
+        T.bg_pane(page)
+        row = QHBoxLayout(page)
+        row.setContentsMargins(32, 28, 32, 28)
+        self.col = QWidget()
+        self.col.setMaximumWidth(1080)
+        row.addWidget(self.col, 1)
+        area.setWidget(page)
+        outer.addWidget(area)
+        self.lay = QVBoxLayout(self.col)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(18)
+        self.tip_index = int(datetime.date.today().toordinal()) % len(TIPS)
+        self._timer = QTimer(self, singleShot=True, interval=250,
+                             timeout=lambda: self.rebuild() if self.isVisible() else None)
+        s = self.store
+        for sig in (s.unread_changed, s.announcements_changed, s.users_changed, s.me_changed, s.rooms_changed):
+            sig.connect(self.schedule)
+        s.conv_changed.connect(self.schedule)
+        s.user_updated.connect(self.schedule)
+        self._clock = QTimer(self, interval=60_000, timeout=self.schedule)
+        self._clock.start()
 
-    @staticmethod
-    def _key(k):
-        return (f"<span style='background:{T.SURFACE}; color:{T.TEXT}; font-weight:600;'>&nbsp;{k}&nbsp;</span>")
+    def schedule(self, *_):
+        if not self._timer.isActive():
+            self._timer.start()
 
-    @staticmethod
-    def _card(ic, title, text):
-        card = QFrame()
-        card.setObjectName("homecard")
-        card.setFixedWidth(230)
-        card.setStyleSheet(f"#homecard {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 16px; }}")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(18, 18, 18, 18)
-        cl.setSpacing(8)
-        tile = QLabel()
-        tile.setFixedSize(40, 40)
-        tile.setAlignment(Qt.AlignCenter)
-        tile.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 11px;")
-        tile.setPixmap(pixmap(ic, T.ACCENT, 20))
-        cl.addWidget(tile)
+    def set_name(self, name, server):          # called after sign-in
+        self.schedule()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.rebuild()
+
+    # ------------------------------------------------------------ build
+    def rebuild(self):
+        while self.lay.count():
+            it = self.lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+            elif it.layout():
+                self._drop_layout(it.layout())
+        if not self.store.me:
+            return
+        self.lay.addWidget(self._hero())
+        self.lay.addLayout(self._actions())
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(18)
+        grid.addWidget(self._catch_up(), 0, 0)
+        grid.addWidget(self._announcements(), 0, 1)
+        grid.addWidget(self._team(), 1, 0)
+        grid.addWidget(self._tip(), 1, 1)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2)
+        self.lay.addLayout(grid)
+        self.lay.addStretch(1)
+
+    def _drop_layout(self, lay):
+        while lay.count():
+            it = lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+            elif it.layout():
+                self._drop_layout(it.layout())
+
+    def _hero(self):
+        from client.ui.widgets import Avatar
+        s, me = self.store, self.store.me
+        hero = QFrame()
+        hero.setObjectName("hero")
+        deep = T.mix(T.ACCENT, T.BG, 0.28)
+        hero.setStyleSheet(f"#hero {{ border-radius: 20px; border: 1px solid {T.BORDER};"
+                           f" background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {deep}, stop:1 {T.PANEL}); }}")
+        h = QHBoxLayout(hero)
+        h.setContentsMargins(28, 24, 24, 24)
+        h.setSpacing(18)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        hour = datetime.datetime.now().hour
+        part = "Good morning" if hour < 12 else "Good afternoon" if hour < 17 else "Good evening"
+        first = (me.get("name") or "").split()[0] if me.get("name") else ""
+        hi = plain(QLabel(f"{part}, {first}"))
+        hi.setStyleSheet("font-size: 21pt; font-weight: 800;")
+        col.addWidget(hi)
+        today = QLabel(datetime.date.today().strftime("%A, %d %B")
+                       + f"  ·  {s.server_name}")
+        today.setStyleSheet(f"color: {T.MUTED}; font-size: 10pt;")
+        col.addWidget(today)
+        col.addSpacing(8)
+        chats = sum(1 for c in s.convs.values() if c.unread and s.conv_exists(c.conv) and not s.is_muted(c.conv))
+        anns = s.unread_announcements()
+        bits = []
+        if chats:
+            bits.append(f"<b>{chats}</b> unread chat{'s' if chats != 1 else ''}")
+        if anns:
+            bits.append(f"<b>{anns}</b> new announcement{'s' if anns != 1 else ''}")
+        online = sum(1 for u in s.users.values() if u.get("status", "offline") != "offline")
+        bits.append(f"<b>{online}</b> {'person' if online == 1 else 'people'} online")
+        summary = QLabel("  ·  ".join(bits) if (chats or anns) else "You're all caught up  ·  " + bits[-1])
+        summary.setStyleSheet(f"color: {T.TEXT}; font-size: 10.5pt;")
+        col.addWidget(summary)
+        h.addLayout(col, 1)
+
+        me_box = _Clickable(self.ctx.edit_status_message, 16)
+        mb = QHBoxLayout(me_box)
+        mb.setContentsMargins(12, 10, 14, 10)
+        mb.setSpacing(12)
+        av = Avatar(56)
+        status = me.get("status", "online")
+        av.set(me.get("name", ""), me.get("name", ""), status=status, uid=s.my_id, ring=T.PANEL)
+        mb.addWidget(av)
+        mc = QVBoxLayout()
+        mc.setSpacing(1)
+        n = plain(QLabel(me.get("name", "")))
+        n.setStyleSheet("font-weight: 700; font-size: 10.5pt;")
+        mc.addWidget(n)
+        st = plain(QLabel(s.status_text(me) or T.STATUS_LABELS.get(status, status)))
+        st.setStyleSheet(f"color: {T.STATUS_COLORS.get(status, T.MUTED) if not s.status_text(me) else T.MUTED};"
+                         " font-size: 9pt;")
+        mc.addWidget(st)
+        edit = QLabel("Set status & photo")
+        edit.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; font-weight: 600;")
+        mc.addWidget(edit)
+        mb.addLayout(mc)
+        h.addWidget(me_box, 0, Qt.AlignVCenter)
+        return hero
+
+    def _actions(self):
+        from client.ui.dialogs import ComposeAnnouncementDialog, announce_targets
+        ctx, s = self.ctx, self.store
+        items = [("chat", "New chat", "Ctrl+K", ctx.focus_search)]
+        if s.perm("create_rooms"):
+            items.append(("hash", "New room", "Group chat", lambda: ctx.new_room()))
+        if announce_targets(s):
+            items.append(("megaphone", "Announce", "To your team or studio", lambda: ComposeAnnouncementDialog(ctx).exec()))
+        items += [("smile", "Set status", "Lunch, meeting, rendering…", ctx.edit_status_message),
+                  ("org", "Org chart", "Who's who", lambda: ctx.rail_clicked("directory"))]
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        for ic, title, sub, fn in items:
+            tile = _Clickable(fn, 14)
+            tile.setStyleSheet(f"#click {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 14px; }}"
+                               f"#click:hover {{ border: 1px solid {T.ACCENT_FOCUS}; background: {T.SURFACE}; }}")
+            tl = QHBoxLayout(tile)
+            tl.setContentsMargins(14, 12, 14, 12)
+            tl.setSpacing(12)
+            box = QLabel()
+            box.setFixedSize(38, 38)
+            box.setAlignment(Qt.AlignCenter)
+            box.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 11px;")
+            box.setPixmap(pixmap(ic, T.ACCENT, 19))
+            tl.addWidget(box)
+            c = QVBoxLayout()
+            c.setSpacing(0)
+            a = QLabel(title)
+            a.setStyleSheet("font-weight: 700; font-size: 10pt; background: transparent;")
+            b = QLabel(sub)
+            b.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; background: transparent;")
+            c.addWidget(a)
+            c.addWidget(b)
+            tl.addLayout(c, 1)
+            row.addWidget(tile, 1)
+        return row
+
+    def _catch_up(self):
+        from client import stickers
+        from client.ui.widgets import ConvItem, fmt_list_time
+        s = self.store
+        frame, body = _panel("Catch up", "All chats", lambda: self.ctx.rail_clicked("chats"))
+        convs = [c for c in s.convs.values() if c.unread and c.last and s.conv_exists(c.conv)]
+        convs.sort(key=lambda c: (s.is_muted(c.conv), -c.last_ts))
+        if not convs:
+            recent = sorted((c for c in s.convs.values() if c.last and s.conv_exists(c.conv)),
+                            key=lambda c: -c.last_ts)[:4]
+            done = QLabel("🎉  You're all caught up." + ("  Recent chats:" if recent else ""))
+            done.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px 6px 2px;")
+            body.addWidget(done)
+            convs = recent
+        for c in convs[:6]:
+            kind, target = P.parse_conv(c.conv)
+            item = ConvItem(c.conv)
+            m = c.last
+            text = stickers.summary(m)[:120].replace("\n", " ")
+            if m["sender_id"] == s.my_id:
+                text = "You: " + text
+            elif kind == "r":
+                text = s.user_name(m["sender_id"]).split()[0] + ": " + text
+            if kind == "u":
+                u = s.users.get(target, {})
+                item.set_data(u.get("name", s.title(c.conv)), text, fmt_list_time(c.last_ts), c.unread,
+                              u.get("status", "offline"), muted=s.is_muted(c.conv))
+            else:
+                item.set_data(s.title(c.conv), text, fmt_list_time(c.last_ts), c.unread, room=True,
+                              muted=s.is_muted(c.conv))
+            item.clicked.connect(self.ctx.open_conv)
+            body.addWidget(item)
+        if len(convs) > 6:
+            more = QLabel(f"+ {len(convs) - 6} more with unread messages")
+            more.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; padding: 4px 8px;")
+            body.addWidget(more)
+        return frame
+
+    def _announcements(self):
+        s = self.store
+        frame, body = _panel("Announcements", "See all", lambda: self.ctx.rail_clicked("announcements"))
+        anns = s.announcements[:3]
+        if not anns:
+            empty = QLabel("No announcements yet.")
+            empty.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px;")
+            body.addWidget(empty)
+        for a in anns:
+            row = _Clickable(lambda: self.ctx.rail_clicked("announcements"), 10)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(8, 8, 8, 8)
+            rl.setSpacing(10)
+            dot = QLabel()
+            dot.setFixedSize(8, 8)
+            dot.setStyleSheet(f"background: {T.ACCENT if not a.get('read') else T.BORDER}; border-radius: 4px;")
+            rl.addWidget(dot, 0, Qt.AlignTop | Qt.AlignLeft)
+            c = QVBoxLayout()
+            c.setSpacing(1)
+            t = plain(QLabel(a["title"]))
+            t.setStyleSheet(f"font-weight: {'800' if not a.get('read') else '600'}; background: transparent;")
+            c.addWidget(t)
+            when = datetime.datetime.fromtimestamp(a["ts"]).strftime("%d %b, %H:%M")
+            who = plain(QLabel(f"{s.user_name(a['sender_id'])}  ·  {when}"))
+            who.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; background: transparent;")
+            c.addWidget(who)
+            preview = plain(QLabel(a["body"].replace("\n", " ")[:110]))
+            preview.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; background: transparent;")
+            c.addWidget(preview)
+            rl.addLayout(c, 1)
+            body.addWidget(row)
+        return frame
+
+    def _team(self):
+        from client.ui.widgets import Avatar
+        s, me = self.store, self.store.me
+        people = s.direct_reports()
+        label = "My team"
+        if not people and me.get("manager_id"):
+            people = [u for u in s.users.values() if u.get("manager_id") == me["manager_id"]]
+            boss = s.users.get(me["manager_id"])
+            people = ([boss] if boss else []) + people
+            label = "My team"
+        if not people and me.get("section"):
+            people = [u for u in s.users.values() if u.get("section") == me["section"]
+                      and u.get("department") == me.get("department")]
+            label = f"{me.get('department')} · {me['section']}"
+        if not people and me.get("department"):
+            people = [u for u in s.users.values() if u.get("department") == me["department"]]
+            label = me["department"]
+        order = {"online": 0, "busy": 1, "away": 2, "invisible": 3, "offline": 4}
+        people.sort(key=lambda u: (order.get(u.get("status", "offline"), 4), u["name"].lower()))
+        online = sum(1 for u in people if u.get("status", "offline") != "offline")
+        frame, body = _panel(f"{label}  ·  {online}/{len(people)} online" if people else "My team",
+                             "Organisation", lambda: self.ctx.rail_clicked("directory"))
+        if not people:
+            empty = QLabel("Your team shows up here once the admin sets your department and 'Reports to'.")
+            empty.setWordWrap(True)
+            empty.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px;")
+            body.addWidget(empty)
+            return frame
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        cols = 5
+        for i, u in enumerate(people[:15]):
+            cell = _Clickable(lambda uid=u["id"]: self.ctx.open_conv(P.direct_conv(uid)), 12)
+            cell.setToolTip(f"{u['name']}\n{s.status_text(u) or T.STATUS_LABELS.get(u.get('status', 'offline'))}"
+                            "\nClick to chat")
+            cl = QVBoxLayout(cell)
+            cl.setContentsMargins(4, 8, 4, 6)
+            cl.setSpacing(4)
+            av = Avatar(44)
+            av.set(u["name"], u["name"], status=u.get("status", "offline"), uid=u["id"], ring=T.PANEL)
+            cl.addWidget(av, 0, Qt.AlignHCenter)
+            nm = QLabel(u["name"].split()[0])
+            nm.setAlignment(Qt.AlignCenter)
+            nm.setStyleSheet(f"font-size: 8.5pt; background: transparent;"
+                             f" color: {T.TEXT if u.get('status', 'offline') != 'offline' else T.FAINT};")
+            cl.addWidget(nm)
+            grid.addWidget(cell, i // cols, i % cols)
+        body.addLayout(grid)
+        return frame
+
+    def _tip(self):
+        ic, title, text = TIPS[self.tip_index]
+        frame, body = _panel("Tip", "Next tip", self._next_tip)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        box = QLabel()
+        box.setFixedSize(46, 46)
+        box.setAlignment(Qt.AlignCenter)
+        box.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 13px;")
+        box.setPixmap(pixmap(ic, T.ACCENT, 22))
+        row.addWidget(box, 0, Qt.AlignTop)
+        c = QVBoxLayout()
+        c.setSpacing(4)
         t = QLabel(title)
-        t.setStyleSheet("font-weight: 700; font-size: 10.5pt;")
-        cl.addWidget(t)
+        t.setStyleSheet("font-weight: 800; font-size: 11pt;")
         d = QLabel(text)
         d.setWordWrap(True)
-        d.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
-        cl.addWidget(d)
-        cl.addStretch(1)
-        return card
+        d.setStyleSheet(f"color: {T.MUTED};")
+        c.addWidget(t)
+        c.addWidget(d)
+        row.addLayout(c, 1)
+        body.addLayout(row)
+        return frame
 
-    def set_name(self, name, server):
-        self.title.setText(f"Welcome back, {name.split()[0] if name else ''}")
-        self.sub.setText(f"Connected to {server}. Pick a person or a room on the left to start chatting.")
+    def _next_tip(self):
+        self.tip_index = (self.tip_index + 1) % len(TIPS)
+        self.rebuild()
 
 
 class AnnouncementCard(QFrame):

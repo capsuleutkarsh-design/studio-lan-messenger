@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
         self.extractor = Extractor(self)
         self.extractor.done.connect(self._extracted)
         self.extractor.failed.connect(lambda _z, err: self.toast(f"Could not extract: {err}"))
-        self.home = HomePage()
+        self.home = HomePage(self)
         self.chat = ChatView(self)
         self.announcements = AnnouncementsPage(store)
         self.announcements.show_reads.connect(self.show_announcement_reads)
