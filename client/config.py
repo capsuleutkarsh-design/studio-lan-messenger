@@ -9,6 +9,7 @@ import ctypes
 import ctypes.wintypes
 import json
 import os
+import shutil
 import sys
 
 from common.protocol import TCP_PORT
@@ -36,7 +37,7 @@ DEFAULTS = {
     "directory_view": "cards",   # cards | chart | list
     "allow_buzz": True,
     "compact_mode": False,       # narrow window docked to the right edge of the screen
-    "compact_on_top": False,     # ...and kept above other windows          # a buzz shakes this window and rings, even on "Do not disturb"
+    "compact_on_top": False,     # ...and kept above other windows
 }
 
 
@@ -64,9 +65,29 @@ class ClientConfig:
             if os.path.exists(path):
                 try:
                     with open(path, encoding="utf-8") as f:
-                        self.values.update(json.load(f))
+                        loaded = json.load(f)
                 except (OSError, ValueError):
-                    pass
+                    loaded = None
+                if not isinstance(loaded, dict):          # damaged: keep a copy (it holds the server pins)
+                    try:
+                        shutil.copyfile(path, path + ".bad")
+                    except OSError:
+                        pass
+                    continue
+                for key, value in loaded.items():
+                    if self._fits(key, value):
+                        self.values[key] = value
+
+    def _fits(self, key, value):
+        """A saved value is used only if it has the type the app expects (a bad file must not crash us)."""
+        default = self.values.get(key)
+        if default is None or key not in self.values:
+            return True
+        if isinstance(default, bool):
+            return isinstance(value, bool)
+        if isinstance(default, (int, float)):
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return isinstance(value, type(default))
 
     def __getitem__(self, key):
         return self.values[key]

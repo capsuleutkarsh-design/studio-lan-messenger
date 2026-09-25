@@ -157,15 +157,22 @@ class HomePage(QWidget):
     def rebuild(self):
         while self.lay.count():
             it = self.lay.takeAt(0)
+            if it.widget() is getattr(self, "_banner", None):
+                continue                      # keep the banner (and its animation) across rebuilds
             if it.widget():
                 it.widget().deleteLater()
             elif it.layout():
                 self._drop_layout(it.layout())
+        if getattr(self, "_banner", None) is not None:
+            self._banner.hide()
         if not self.store.me:
             return
         if T.FESTIVAL:
-            from client.ui.festive import FestiveBanner
-            self.lay.addWidget(FestiveBanner())
+            if getattr(self, "_banner", None) is None:
+                from client.ui.festive import FestiveBanner
+                self._banner = FestiveBanner()
+            self.lay.addWidget(self._banner)
+            self._banner.show()
         self.lay.addWidget(self._hero())
         self.lay.addLayout(self._actions())
         grid = QGridLayout()

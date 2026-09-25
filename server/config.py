@@ -75,7 +75,7 @@ class ServerConfig:
                     loaded = json.load(f)
                 if not isinstance(loaded, dict):
                     raise ValueError("config is not a JSON object")
-                self.values.update(loaded)
+                self.values.update(self._checked(loaded))
             except (OSError, ValueError) as e:
                 # keep the damaged file for inspection and start with defaults
                 broken = self.path + ".broken"
@@ -91,8 +91,36 @@ class ServerConfig:
         return self.values[key]
 
     def update(self, **kw):
-        self.values.update({k: v for k, v in kw.items() if k in DEFAULTS})
+        self.values.update(self._checked({k: v for k, v in kw.items() if k in DEFAULTS}))
         self.save()
+
+    @staticmethod
+    def _checked(values):
+        """Coerce each setting to the type of its default; drop what can't be (a typo must not stop logins)."""
+        out = {}
+        for k, v in values.items():
+            default = DEFAULTS.get(k)
+            if k not in DEFAULTS or default is None:
+                out[k] = v
+                continue
+            try:
+                if isinstance(default, bool):
+                    if isinstance(v, str):
+                        v = v.strip().lower() in ("1", "true", "yes", "on")
+                    out[k] = bool(v)
+                elif isinstance(default, int):
+                    out[k] = int(float(v))
+                elif isinstance(default, float):
+                    out[k] = float(v)
+                elif isinstance(default, str):
+                    out[k] = "" if v is None else str(v)
+                elif isinstance(v, type(default)):
+                    out[k] = v
+                else:
+                    raise TypeError
+            except (TypeError, ValueError):
+                logging.getLogger("server").error("Setting %s=%r is invalid; using the default %r", k, v, default)
+        return out
 
     def save(self):
         tmp = self.path + ".tmp"          # write-then-rename: a power cut can't leave half a file

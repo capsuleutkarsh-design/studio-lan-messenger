@@ -312,10 +312,11 @@ class MainWindow(QMainWindow):
             self.config["compact_on_top"] = on
             self.config.save()
         if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) != on:
-            geo = self.geometry()
+            geo, visible = self.geometry(), self.isVisible()
             self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
-            self.show()
-            self.setGeometry(geo)
+            if visible:
+                self.show()
+                self.setGeometry(geo)
             T.dark_title_bar(self)
 
     def _tray_icon(self, unread):
@@ -519,7 +520,8 @@ class MainWindow(QMainWindow):
         card.done.connect(lambda rid: self.conn.request("reminder_done", None, id=rid))
         card.snooze.connect(lambda rid, ts: self.conn.request("reminder_snooze", None, id=rid, due_at=ts))
         card.open_chat.connect(lambda conv: (self.show_normal(), self.open_conv(conv)))
-        card.destroyed.connect(lambda *_, rid=r["id"]: self.reminder_cards.pop(rid, None))
+        card.destroyed.connect(lambda *_, rid=r["id"], c=card: self.reminder_cards.get(rid) is c
+                               and self.reminder_cards.pop(rid, None))
         self.reminder_cards[r["id"]] = card
         card.show_at(len(self.reminder_cards) - 1)
         if sound and self.config["sounds"]:
@@ -589,8 +591,13 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QPoint, QPropertyAnimation
         if self.isMaximized() or self.isFullScreen():
             return
+        if getattr(self, "_shaking", False):          # still shaking: don't start again from mid-swing
+            return
         start = self.pos()
         anim = QPropertyAnimation(self, b"pos", self)
+        self._shaking = True
+        anim.finished.connect(lambda: setattr(self, "_shaking", False))
+        anim.finished.connect(anim.deleteLater)
         anim.setDuration(650)
         steps = 12
         for i in range(steps + 1):
@@ -730,7 +737,8 @@ class MainWindow(QMainWindow):
 
     def download_file_as(self, info, conv=None):
         path, _ = QFileDialog.getSaveFileName(self, "Save file as",
-                                              os.path.join(self.config["download_dir"], info["name"]))
+                                              os.path.join(self.config["download_dir"],
+                                                           os.path.basename(info["name"].replace("\\", "/"))))
         if path:
             self.transfers.download(info, path, conv)
 
@@ -835,7 +843,8 @@ class MainWindow(QMainWindow):
         if not info:
             return
         import tempfile
-        dest = os.path.join(tempfile.gettempdir(), "LANMessenger", info["name"])
+        dest = os.path.join(tempfile.gettempdir(), "LANMessenger",
+                            os.path.basename(str(info["name"]).replace("\\", "/")) or "LANMessenger-update.exe")
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         self.update_btn.setEnabled(False)
         self.update_label.setText(f"Downloading version {info['version']}...")
@@ -994,6 +1003,18 @@ class MainWindow(QMainWindow):
             self.config.save()
             self.tray.showMessage("LAN Messenger", "Still running here in the tray. "
                                   "Right-click the icon to quit.", self.base_icon, 4000)
+
+    def signed_out(self):
+        """Sign-out: close everything that belongs to this account so the next person sees none of it."""
+        self.screens.stop()
+        for w in list(self.reminder_cards.values()) + list(self.popups.values()):
+            w.close()
+        self.reminder_cards.clear()
+        self.popups.clear()
+        self.chat.conv = None
+        self.chat._clear()
+        self.stack.setCurrentWidget(self.home)
+        self.store.reset()
 
     def quit(self):
         if self.quitting:

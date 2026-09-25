@@ -31,6 +31,7 @@ class Transfer(QObject):
         self.started = time.time()
         self.speed = 0.0
         self._last = (time.time(), 0)
+        self._shown = 0.0          # when progress was last signalled
         self.sock = make_socket(self)
         self.sock.errorOccurred.connect(self._on_socket_error)
         self.sock.connected.connect(self._on_tcp_connected)
@@ -79,7 +80,9 @@ class Transfer(QObject):
             self.speed = (self.done - d0) / (now - t0)
             self._last = (now, self.done)
         self.stall.start()
-        self.progress.emit(self)
+        if now - self._shown >= 0.1 or self.done >= self.size:     # ~10 UI updates a second is plenty
+            self._shown = now
+            self.progress.emit(self)
 
     def _read_line(self):
         self.buf += bytes(self.sock.readAll())
@@ -315,7 +318,8 @@ class TransferManager(QObject):
         for t in self.transfers:
             if t.kind == "download" and t.file_id == file_info["id"] and t.active and t.hidden == hidden:
                 return t
-        dest_path = dest_path or unique_path(self.config["download_dir"], file_info["name"])
+        name = os.path.basename(str(file_info["name"]).replace("\\", "/")) or "file"     # never trust a path
+        dest_path = dest_path or unique_path(self.config["download_dir"], name)
         t = Download(file_info, dest_path, conv)
         t.hidden = hidden
         self._start(t)
@@ -342,11 +346,23 @@ class TransferManager(QObject):
                 if not t.hidden:
                     self.config.remember_download(t.file_id, t.dest_path)
                 self.download_done.emit(t)
+        if t.hidden and t in self.transfers:       # background preview downloads: nobody lists them
+            self.transfers.remove(t)
 
     def retry(self, t):
         if t.kind == "upload":
-            return self.upload(t.path, t.conv, t.caption)
+            new = self.upload(t.path, t.conv, t.caption)
+            if getattr(t, "temp_file", None):       # the packed folder's zip now belongs to the new try
+                new.temp_file, t.temp_file = t.temp_file, None
+            return new
         return self.download({"id": t.file_id, "name": t.name, "size": t.size}, t.dest_path, t.conv)
 
     def clear_finished(self):
+        for t in self.transfers:
+            temp = getattr(t, "temp_file", None)
+            if temp and not t.active:
+                try:
+                    os.remove(temp)
+                except OSError:
+                    pass
         self.transfers = [t for t in self.transfers if t.active]

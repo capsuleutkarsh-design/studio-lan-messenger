@@ -24,6 +24,7 @@ from client.ui.widgets import (
 )
 
 GROUP_SECONDS = 300
+RENDER_MAX = 150        # message widgets built when a chat opens; scrolling up shows more
 EMOJIS = ("😀 😂 😊 😍 😎 🤔 😅 😭 😡 👍 👎 👌 🙏 👏 💪 🙌 🎉 🔥 ✅ ❌ ⚠️ ❓ 💡 ⭐ "
           "❤️ 💯 🚀 🎬 🎥 🖥️ 📁 📎 ☕ 🍕 🕐 👀 🤝 😴 🤯 🥳").split()
 
@@ -222,6 +223,29 @@ _PATH_RE = __import__("re").compile(r'\\\\[^\s<>"|?*]+(?:\\[^\s<>"|?*]+)*|[A-Za-
 PREVIEW_MAX_BYTES = 15 * 1024 * 1024
 
 
+_THUMBS = {}          # path -> rounded preview pixmap (small LRU: dicts keep insertion order)
+
+
+def thumbnail(path):
+    """Chat-sized preview of an image, decoded at that size (not full resolution) and cached."""
+    from PySide6.QtGui import QImageReader, QPixmap
+    pm = _THUMBS.pop(path, None)
+    if pm is None:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid() and (size.width() > 340 or size.height() > 260):
+            reader.setScaledSize(size.scaled(340, 260, Qt.KeepAspectRatio))
+        img = reader.read()
+        if img.isNull():
+            return None
+        pm = rounded(QPixmap.fromImage(img), 10)
+        while len(_THUMBS) >= 200:
+            _THUMBS.pop(next(iter(_THUMBS)))
+    _THUMBS[path] = pm
+    return pm
+
+
 def rounded(pm, radius):
     """Copy of a pixmap with rounded corners."""
     from PySide6.QtGui import QPainter, QPainterPath, QPixmap
@@ -270,13 +294,11 @@ class ImagePreview(QLabel):
             self.setText("Preview not available")
 
     def _show(self, path):
-        from PySide6.QtGui import QPixmap
-        pm = QPixmap(path)
-        if pm.isNull():
+        pm = thumbnail(path)
+        if pm is None:
             self.setText("No preview")
             return
         self.path = path
-        pm = rounded(pm.scaled(340, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation), 10)
         self.setStyleSheet("background: transparent;")
         self.setPixmap(pm)
         self.setFixedSize(pm.size())
@@ -758,7 +780,7 @@ class MessageRow(QWidget):
     def flash(self):
         """Briefly highlight (after jumping to this message)."""
         self.bubble.setStyleSheet(self._bubble_style(flash=True))
-        QTimer.singleShot(1500, lambda: self.bubble.setStyleSheet(self._bubble_style()))
+        QTimer.singleShot(1500, self, lambda: self.bubble.setStyleSheet(self._bubble_style()))
 
     def set_max_width(self, w):
         self.bubble.setMaximumWidth(w)
@@ -1251,6 +1273,8 @@ class ChatView(QWidget):
         self.store = ctx.store
         self.conv = None
         self.rows = []               # message widgets in order
+        self.render_limit = RENDER_MAX
+        self.rendered = 0            # messages currently shown
         self.last_typing_sent = 0
         self.typing_users = {}       # uid -> expiry
         self._base_subtitle = ""
@@ -1474,8 +1498,12 @@ class ChatView(QWidget):
     # ------------------------------------------------------------ open
     def open(self, conv):
         if self.conv and self.conv in self.store.convs:
-            self.store.conversation(self.conv).draft = self.input.toPlainText()
+            prev = self.store.conversation(self.conv)
+            prev.draft = self.input.toPlainText()
+            if self.conv != conv:
+                prev.trim()
         self.conv = conv
+        self.render_limit = RENDER_MAX
         self.typing_users.clear()
         self.cancel_action()
         self.mention_popup.hide()
@@ -1568,10 +1596,12 @@ class ChatView(QWidget):
         self._clear()
         c = self.store.conversation(self.conv)
         msgs = sorted(c.messages.values(), key=lambda m: m["id"])
-        prev = None
-        for m in msgs:
+        cut = max(0, len(msgs) - self.render_limit)
+        prev = msgs[cut - 1] if cut else None
+        for m in msgs[cut:]:
             self._append(m, prev)
             prev = m
+        self.rendered = len(msgs) - cut
         self.loading.setVisible(not c.complete and bool(c.history_requested) and not msgs)
         self.setUpdatesEnabled(True)
         self._apply_widths()
@@ -1631,7 +1661,14 @@ class ChatView(QWidget):
         if any(getattr(r, "msg", {}).get("id") == msg["id"] for r in self.rows[-20:]):
             return
         near_bottom = self._at_bottom() or msg["sender_id"] == self.store.my_id
+        if near_bottom and self.rendered >= self.render_limit + 60:
+            # a busy chat left open all day: drop the oldest widgets instead of growing forever
+            self.render_limit = RENDER_MAX
+            self._stick_bottom = True
+            self.render_all()
+            return
         w = self._append(msg, last)
+        self.rendered += 1
         if isinstance(w, MessageRow):
             w.set_max_width(int(max(300, self.scroll.viewport().width() - 40) * 0.72))
         self.loading.hide()
@@ -1646,6 +1683,7 @@ class ChatView(QWidget):
         if older:
             self._keep_from_bottom = bar.maximum() - bar.value()
             self._stick_bottom = False
+            self.render_limit = self.rendered + len(msgs)
         else:
             self._stick_bottom = True
         self.render_all()
@@ -1678,7 +1716,12 @@ class ChatView(QWidget):
         self._stick_bottom = value >= bar.maximum() - 60
         if value == 0 and bar.maximum() > 0 and self.conv:
             c = self.store.conversation(self.conv)
-            if not c.complete and c.history_requested:
+            if len(c.messages) > self.rendered:        # already in memory: just show more
+                self._keep_from_bottom = bar.maximum() - bar.value()
+                self._stick_bottom = False
+                self.render_limit = self.rendered + 100
+                self.render_all()
+            elif not c.complete and c.history_requested:
                 self.store.load_history(self.conv, older=True)
 
     # ---------------------------------------------------------- typing

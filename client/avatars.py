@@ -73,18 +73,27 @@ class AvatarCache(QObject):
         if os.path.exists(path):
             pm = QPixmap(path)
             if not pm.isNull():
-                self.pixmaps[key] = pm
-                return pm
+                return self._keep(key, pm)
         if key not in self.pending and key not in self.missing and self.conn.online:
             self.pending.add(key)
             self.conn.request("get_avatar", lambda r, k=key: self._got(k, r), user_id=uid)
         return None
 
+    def _keep(self, key, pm):
+        """Cache at the largest size we draw (88 px, x2 for high-DPI) and only the current version."""
+        if pm.width() > 176:
+            pm = pm.scaled(176, 176, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        for old in [k for k in self.pixmaps if k[0] == key[0]]:
+            del self.pixmaps[old]
+        self.pixmaps[key] = pm
+        return pm
+
     def _got(self, key, reply):
         self.pending.discard(key)
         uid, ver = key
         if not reply.get("ok"):
-            self.missing.add(key)
+            if self.conn.online:            # a dropped connection is not "no photo": try again later
+                self.missing.add(key)
             return
         data = base64.b64decode(reply["data"])
         pm = QPixmap()
@@ -102,7 +111,7 @@ class AvatarCache(QObject):
                 f.write(data)
         except OSError:
             pass
-        self.pixmaps[key] = pm
+        self._keep(key, pm)
         self.changed.emit(uid)
 
     def put_mine(self, ver, data):
@@ -110,7 +119,7 @@ class AvatarCache(QObject):
         uid = self.store.my_id
         pm = QPixmap()
         if ver and pm.loadFromData(data):
-            self.pixmaps[(uid, ver)] = pm
+            self._keep((uid, ver), pm)
             try:
                 with open(os.path.join(self.dir, f"{uid}_{ver}.img"), "wb") as f:
                     f.write(data)

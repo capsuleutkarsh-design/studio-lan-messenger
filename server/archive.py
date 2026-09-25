@@ -108,14 +108,34 @@ def _size(n):
     return f"{n} B"
 
 
-def export_chat_logs(db, config) -> dict:
-    """Append every message not exported yet. Returns {'messages': n, 'files': n, 'folder': path}."""
+def _write(root, names, by_file, touched):
+    """Append lines to the monthly file of each conversation. by_file: {(month, conv): [lines]}"""
+    for (month, conv), lines in by_file.items():
+        folder = os.path.join(root, month)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, _safe(names.file_title(conv)) + ".txt")
+        new = not os.path.exists(path)
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            if new:
+                title = names.file_title(conv)
+                f.write(f"LAN Messenger chat log  ·  {title}  ·  {month}\n{'=' * 72}\n")
+            f.write("\n".join(lines) + "\n")
+        touched.add(path)
+
+
+def export_chat_logs(db, config, batches=None) -> dict:
+    """Append every message not exported yet. Returns {'messages', 'files', 'folder', 'more'}.
+
+    batches: stop after that many 5000-message batches (a huge first export must not hold up the server)."""
     root = log_dir(config)
     os.makedirs(root, exist_ok=True)
     last = int(db.get_meta(META_LAST_ID, 0))
     names = _Names(db)
-    total, touched = 0, set()
+    total, touched, done, more = 0, set(), 0, False
     while True:
+        if batches is not None and done >= batches:
+            more = bool(db.messages_after(last, 1))
+            break
         rows = db.messages_after(last, 5000)
         if not rows:
             break
@@ -123,24 +143,21 @@ def export_chat_logs(db, config) -> dict:
         for m in rows:
             month = time.strftime("%Y-%m", time.localtime(m["created_at"]))
             by_file.setdefault((month, m["conv"]), []).append(format_message(m, names, db))
-        for (month, conv), lines in by_file.items():
-            folder = os.path.join(root, month)
-            os.makedirs(folder, exist_ok=True)
-            path = os.path.join(folder, _safe(names.file_title(conv)) + ".txt")
-            new = not os.path.exists(path)
-            with open(path, "a", encoding="utf-8", newline="\n") as f:
-                if new:
-                    title = names.file_title(conv)
-                    f.write(f"LAN Messenger chat log  ·  {title}  ·  {month}\n{'=' * 72}\n")
-                f.write("\n".join(lines) + "\n")
-            touched.add(path)
+        _write(root, names, by_file, touched)
         last = rows[-1]["id"]
         db.set_meta(META_LAST_ID, last)        # progress is saved per batch: a crash never duplicates much
         total += len(rows)
-    db.set_meta(META_LAST_RUN, time.time())
+        done += 1
+    if not more:
+        mark_run(db)
     if total:
         log.info("Chat backup: %s new message(s) written to %s file(s) in %s", total, len(touched), root)
-    return {"messages": total, "files": len(touched), "folder": root}
+    return {"messages": total, "files": len(touched), "folder": root, "more": more}
+
+
+def mark_run(db):
+    """Today's run is over (also after a failure: it is tried again tomorrow, or with 'Back up now')."""
+    db.set_meta(META_LAST_RUN, time.time())
 
 
 def apply_retention(db, config) -> int:
@@ -151,7 +168,19 @@ def apply_retention(db, config) -> int:
     exported = int(db.get_meta(META_LAST_ID, 0))
     if not exported:
         return 0
-    removed = db.delete_old_messages(time.time() - days * 86400, exported)
+    cutoff = time.time() - days * 86400
+    # messages that changed after they went into the log (edited, deleted, poll votes since then):
+    # write their final state next to them first, so nothing is lost when they leave the database
+    changed = db.changed_before_removal(cutoff, exported)
+    if changed:
+        names, by_file = _Names(db), {}
+        stamp = time.strftime("%Y-%m-%d")
+        for m in changed:
+            month = time.strftime("%Y-%m", time.localtime(m["created_at"]))
+            by_file.setdefault((month, m["conv"]), []).append(
+                f"[final version, saved {stamp}]  " + format_message(m, names, db))
+        _write(log_dir(config), names, by_file, set())
+    removed = db.delete_old_messages(cutoff, exported)
     if removed:
         log.info("Moved %s message(s) older than %s days out of the live database (kept in the chat logs)",
                  removed, int(days))

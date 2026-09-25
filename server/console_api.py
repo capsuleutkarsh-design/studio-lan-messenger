@@ -8,6 +8,7 @@ Both raise ValueError with a readable message when the server refuses something.
 """
 
 import json
+import os
 import socket
 
 from common import protocol as P
@@ -60,6 +61,31 @@ class LocalApi:
         pass
 
 
+def _pins_path():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "LANMessenger", "console_pins.json")
+
+
+def load_pins() -> dict:
+    try:
+        with open(_pins_path(), encoding="utf-8") as f:
+            pins = json.load(f)
+        return pins if isinstance(pins, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_pin(key, fingerprint):
+    pins = load_pins()
+    pins[key] = fingerprint
+    try:
+        os.makedirs(os.path.dirname(_pins_path()), exist_ok=True)
+        with open(_pins_path(), "w", encoding="utf-8") as f:
+            json.dump(pins, f, indent=2)
+    except OSError:
+        pass
+
+
 class RemoteApi:
     remote = True
 
@@ -72,20 +98,33 @@ class RemoteApi:
         self.username = ""
         self.label = f"{host}:{port}"
         self.must_change = ""
+        self.pin_mismatch = None          # (remembered, presented) fingerprints when the server changed
 
-    def connect(self, username, password):
-        """Returns '' on success, else an error message."""
+    def connect(self, username, password, trust=""):
+        """Returns '' on success, else an error message.
+
+        The server's certificate is remembered the first time (like the chat client does); a different
+        one later is refused before the password is sent, unless `trust` names that new fingerprint."""
         self.close()
+        self.pin_mismatch = None
+        key = f"{self.host.lower()}:{self.port}"
         try:
             raw = socket.create_connection((self.host, self.port), timeout=10)
-            try:                                  # the server normally requires TLS
+            try:
                 from server.tls import client_context, peer_fingerprint
                 self.sock = client_context().wrap_socket(raw)
                 self.fingerprint = peer_fingerprint(self.sock)
-            except OSError:                       # server with TLS switched off
+            except OSError as e:       # never fall back to plain text: the password would cross the LAN
                 raw.close()
-                self.sock = socket.create_connection((self.host, self.port), timeout=10)
-                self.fingerprint = ""
+                return (f"Could not open an encrypted connection to {self.host}:{self.port} ({e}). "
+                        "The console only connects to servers with encryption (TLS) switched on.")
+            known = load_pins().get(key)
+            if known and known != self.fingerprint and trust != self.fingerprint:
+                self.pin_mismatch = (known, self.fingerprint)
+                self.close()
+                return "The server's identity has changed since the last connection."
+            if known != self.fingerprint:
+                save_pin(key, self.fingerprint)
             self.file = self.sock.makefile("rb")
             self.sock.sendall(P.encode({"op": "login", "username": username, "password": password,
                                         "console": True}))

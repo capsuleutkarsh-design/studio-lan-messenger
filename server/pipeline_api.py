@@ -24,6 +24,7 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 
 log = logging.getLogger("server")
 MAX_BODY = 64 * 1024
@@ -36,6 +37,7 @@ class PipelineApi:
     def __init__(self, core):
         self.core = core
         self.server = None
+        self.wrong = {}            # ip -> times of wrong keys (slows down key guessing)
 
     async def start(self, port):
         self.server = await asyncio.start_server(self._handle, host="0.0.0.0", port=port)
@@ -76,6 +78,8 @@ class PipelineApi:
             h = (await reader.readline()).decode("latin-1")
             if h in ("\r\n", "\n", ""):
                 break
+            if len(headers) >= 64:
+                return 400, {"ok": False, "error": "too many headers"}
             k, _, v = h.partition(":")
             headers[k.strip().lower()] = v.strip()
         length = int(headers.get("content-length", "0") or 0)
@@ -87,10 +91,17 @@ class PipelineApi:
             return 200, {"ok": True, "server": self.core.config["server_name"]}
         key = self.core.config["api_key"]
         given = headers.get("authorization", "").removeprefix("Bearer ").strip() or headers.get("x-api-key", "")
+        peer = writer.get_extra_info("peername")
+        ip = peer[0] if peer else "?"
+        now = time.time()
+        recent = [t for t in self.wrong.get(ip, []) if now - t < 300]
+        if len(recent) >= 10:
+            return 401, {"ok": False, "error": "too many wrong keys - wait a few minutes"}
         if not key or not hmac.compare_digest(given.encode(), key.encode()):
-            peer = writer.get_extra_info("peername")
-            log.warning("Pipeline API: rejected request with a wrong key from %s", peer[0] if peer else "?")
+            self.wrong[ip] = recent + [now]
+            log.warning("Pipeline API: rejected request with a wrong key from %s", ip)
             return 401, {"ok": False, "error": "missing or wrong API key"}
+        self.wrong.pop(ip, None)
         if method != "POST":
             return 405, {"ok": False, "error": "use POST"}
         try:

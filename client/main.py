@@ -151,6 +151,7 @@ class App(QObject):
             t.cancel()
         if self.main:
             self.main.hide()
+            self.main.signed_out()
         self.login.password.clear()
         self.login.remember.setChecked(False)
         self.login.set_busy(False)
@@ -169,6 +170,8 @@ def main():
     app.setWindowIcon(QIcon(asset("app.ico")))
     app.setQuitOnLastWindowClosed(False)
     cfg = ClientConfig()
+    from client.folders import clean_temp
+    clean_temp()
     theme.apply(cfg["theme"], cfg["accent"], festivals=cfg["festival_themes"])
     app.setStyleSheet(theme.STYLESHEET)
 

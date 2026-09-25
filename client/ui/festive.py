@@ -77,7 +77,15 @@ class FestiveBanner(QWidget):
             rnd = random.Random(7)
             self.flakes = [[rnd.random(), rnd.random(), 1.2 + rnd.random() * 2.6, 0.2 + rnd.random() * 0.6]
                            for _ in range(70)]
+
+    # animate only while on screen (not behind a chat, minimised or in the tray)
+    def showEvent(self, e):
+        super().showEvent(e)
         self.timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self.timer.stop()
 
     def _tick(self):
         self.angle = (self.angle + 0.4) % 360

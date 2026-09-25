@@ -29,7 +29,8 @@ class PreviewCache(QObject):
 
     def path_for(self, file_info):
         ext = os.path.splitext(file_info.get("name", ""))[1].lower()[:8]
-        return os.path.join(self.folder, f"{file_info['id']}{ext}")
+        fid = "".join(ch for ch in str(file_info["id"]) if ch.isalnum() or ch in "-_")[:64]
+        return os.path.join(self.folder, f"{fid}{ext}")
 
     def request(self, file_info):
         """Local path if cached, else start a background download and return None."""
