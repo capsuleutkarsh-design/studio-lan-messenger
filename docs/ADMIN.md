@@ -39,7 +39,9 @@ The setup installs to `C:\Program Files\LAN Messenger Server`. The page **Where 
 Use `\\server\share\...` paths, not mapped letters like `Z:` (the background service can't see those). The service
 runs as SYSTEM and reaches a share as the **computer account** (`DOMAIN\PCNAME$`): give that account *Modify* on
 the share, or run the server in the tray instead. If a share is down, the server still starts and the dashboard
-says so. Upgrades never touch the data and skip this page; move folders later in console → *Settings*.
+says so. Setup lists your mapped network drives by their network path, and *Browse* offers them first.
+On an upgrade the page shows the current folders (the database folder is fixed); folders can also be moved in
+console → *Settings*.
 In service mode the data folder is readable only by Administrators and SYSTEM. On uninstall setup asks whether
 to delete the data folder (files and backups kept elsewhere are never deleted).
 
@@ -88,8 +90,8 @@ VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.5.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.5.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.5.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.5.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
