@@ -125,7 +125,7 @@ Console → **Settings**:
 
 | Setting | Default | What it does |
 |---|---|---|
-| *Write a readable chat backup every night* | on | At the backup time, new messages are appended to text files, one per chat per month: `Chat logs6-09\Room - Falcon Comp (r12).txt`. Grep-able, open in Notepad. |
+| *Write a readable chat backup every night* | on | At the backup time, new messages are appended to text files, one per chat per month: `Chat logs\2026-09\Room - Falcon Comp (r12).txt`. Grep-able, open in Notepad. |
 | *Keep messages in the app for* | 90 days | Older messages leave the live database (the app stays fast) — **only after** they are in the chat backup. *Forever* keeps everything. |
 | *Delete shared files after* | 3 days (new installs) | Files are removed from the server's file storage; the file card tells people "available until …". Point *File storage folder* at a separate (temp) drive if you like. Upgraded servers keep their old value — change it here. |
 | *Delete files nobody downloaded after* | never | Extra clean-up for forgotten uploads. |
