@@ -218,8 +218,11 @@ class Connection(QObject):
                 pass
         self.callbacks.clear()
         if self.auto_reconnect:
-            self.connection_lost.emit(reason)
-            self._schedule_retry()
+            try:
+                self.connection_lost.emit(reason)
+                self._schedule_retry()
+            except RuntimeError:          # the app is closing: the connection object is already gone
+                pass
 
     def _schedule_retry(self):
         self.retry_timer.start(self.retry_delay)

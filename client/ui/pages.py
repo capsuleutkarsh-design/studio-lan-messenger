@@ -155,9 +155,10 @@ class HomePage(QWidget):
 
     # ------------------------------------------------------------ build
     def rebuild(self):
+        banner = getattr(self, "_banner", None)
         while self.lay.count():
             it = self.lay.takeAt(0)
-            if it.widget() is getattr(self, "_banner", None):
+            if banner is not None and it.widget() is banner:
                 continue                      # keep the banner (and its animation) across rebuilds
             if it.widget():
                 it.widget().deleteLater()
