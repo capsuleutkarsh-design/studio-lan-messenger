@@ -512,6 +512,9 @@ class SettingsDialog(Dialog):
             self.theme.addItem(label, key)
         self.theme.setCurrentIndex(max(0, self.theme.findData(cfg["theme"])))
         form.addRow("Theme", self.theme)
+        self.festivals = QCheckBox("Festival themes on the day: 15 August, 26 January, Christmas")
+        self.festivals.setChecked(cfg["festival_themes"])
+        form.addRow("", self.festivals)
         swatches = QHBoxLayout()
         swatches.setSpacing(8)
         self.accent = cfg["accent"]
@@ -606,8 +609,10 @@ class SettingsDialog(Dialog):
                 set_autostart(cfg["start_with_windows"])
             except OSError as e:
                 QMessageBox.warning(self, "Settings", f"Could not change Windows startup: {e}")
-        look_changed = (cfg["theme"], cfg["accent"]) != (self.theme.currentData(), self.accent)
+        look_changed = ((cfg["theme"], cfg["accent"], cfg["festival_themes"])
+                        != (self.theme.currentData(), self.accent, self.festivals.isChecked()))
         cfg["theme"], cfg["accent"] = self.theme.currentData(), self.accent
+        cfg["festival_themes"] = self.festivals.isChecked()
         cfg.save()
         super().accept()
         if look_changed and QMessageBox.question(

@@ -134,7 +134,8 @@ class HomePage(QWidget):
         self._timer = QTimer(self, singleShot=True, interval=250,
                              timeout=lambda: self.rebuild() if self.isVisible() else None)
         s = self.store
-        for sig in (s.unread_changed, s.announcements_changed, s.users_changed, s.me_changed, s.rooms_changed):
+        for sig in (s.unread_changed, s.announcements_changed, s.users_changed, s.me_changed, s.rooms_changed,
+                    s.planner_changed):
             sig.connect(self.schedule)
         s.conv_changed.connect(self.schedule)
         s.user_updated.connect(self.schedule)
@@ -162,6 +163,9 @@ class HomePage(QWidget):
                 self._drop_layout(it.layout())
         if not self.store.me:
             return
+        if T.FESTIVAL:
+            from client.ui.festive import FestiveBanner
+            self.lay.addWidget(FestiveBanner())
         self.lay.addWidget(self._hero())
         self.lay.addLayout(self._actions())
         grid = QGridLayout()
@@ -170,7 +174,8 @@ class HomePage(QWidget):
         grid.addWidget(self._catch_up(), 0, 0)
         grid.addWidget(self._announcements(), 0, 1)
         grid.addWidget(self._team(), 1, 0)
-        grid.addWidget(self._tip(), 1, 1)
+        upcoming = self.store.reminders or [x for x in self.store.scheduled if x["state"] == "pending"]
+        grid.addWidget(self._coming_up() if upcoming else self._tip(), 1, 1)
         grid.setColumnStretch(0, 3)
         grid.setColumnStretch(1, 2)
         self.lay.addLayout(grid)
@@ -254,7 +259,8 @@ class HomePage(QWidget):
             items.append(("hash", "New room", "Group chat", lambda: ctx.new_room()))
         if announce_targets(s):
             items.append(("megaphone", "Announce", "To your team or studio", lambda: ComposeAnnouncementDialog(ctx).exec()))
-        items += [("smile", "Set status", "Lunch, meeting, rendering…", ctx.edit_status_message),
+        items += [("clock", "Reminder", "Remind me later", lambda: ctx.new_reminder()),
+                  ("smile", "Set status", "Lunch, meeting, rendering…", ctx.edit_status_message),
                   ("org", "Org chart", "Who's who", lambda: ctx.rail_clicked("directory"))]
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -402,6 +408,52 @@ class HomePage(QWidget):
             cl.addWidget(nm)
             grid.addWidget(cell, i // cols, i % cols)
         body.addLayout(grid)
+        return frame
+
+    def _coming_up(self):
+        """My next reminders and scheduled messages."""
+        from client.ui.planner_ui import fmt_due
+        s = self.store
+        frame, body = _panel("Coming up", "New reminder", lambda: self.ctx.new_reminder())
+        items = [("r", r["due_at"], r) for r in s.reminders]
+        items += [("s", x["due_at"], x) for x in s.scheduled if x["state"] == "pending"]
+        items.sort(key=lambda t: (t[2].get("state") != 1, t[1]))       # fired reminders first
+        for kind, due, x in items[:5]:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            ic = QLabel()
+            ic.setPixmap(pixmap("clock" if kind == "r" else "send", T.DANGER if x.get("state") == 1 else T.ACCENT, 16))
+            row.addWidget(ic, 0, Qt.AlignTop)
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            if kind == "r":
+                what = x.get("text") or (f"{x.get('sender_name', '')}: {x.get('snippet', '')}" if x.get("snippet")
+                                         else f"Chat with {self.store.title(x['conv'])}" if x.get("conv") else "Reminder")
+                when = "Due now" if x.get("state") == 1 else fmt_due(due)
+            else:
+                what = "Sticker" if x["sticker"] else x["text"]
+                when = f"Sends {fmt_due(due)} to {self.store.title(x['conv']) if s.conv_exists(x['conv']) else '?'}"
+            t = plain(QLabel(what.replace("\n", " ")[:80]))
+            t.setStyleSheet("font-weight: 600; background: transparent;")
+            w = QLabel(when)
+            w.setStyleSheet(f"color: {T.DANGER if x.get('state') == 1 else T.MUTED}; font-size: 8.5pt;"
+                            " background: transparent;")
+            col.addWidget(t)
+            col.addWidget(w)
+            row.addLayout(col, 1)
+            if kind == "r":
+                done = IconButton("check", "Done", 28, 15, round_=False)
+                done.clicked.connect(lambda _=False, rid=x["id"]: self.ctx.conn.request("reminder_done", None, id=rid))
+                row.addWidget(done)
+            elif s.conv_exists(x["conv"]):
+                go = IconButton("chat", "Open the chat", 28, 15, round_=False)
+                go.clicked.connect(lambda _=False, c=x["conv"]: self.ctx.open_conv(c))
+                row.addWidget(go)
+            body.addLayout(row)
+        if len(items) > 5:
+            more = QLabel(f"+ {len(items) - 5} more")
+            more.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
+            body.addWidget(more)
         return frame
 
     def _tip(self):

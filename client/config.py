@@ -31,6 +31,7 @@ DEFAULTS = {
     "pins": {},                  # "host:port" -> server certificate fingerprint (trust on first use)
     "theme": "midnight",         # midnight | light | classic
     "accent": "violet",
+    "festival_themes": True,     # 15 Aug, 26 Jan and Christmas switch to their festival look for the day
     "recent_stickers": [],
     "directory_view": "cards",   # cards | chart | list
     "allow_buzz": True,

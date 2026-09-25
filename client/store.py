@@ -53,6 +53,8 @@ class Store(QObject):
     me_changed = Signal()
     unread_changed = Signal(int)
     update_available = Signal(dict)
+    reminder_fired = Signal(dict)          # a reminder is due now
+    planner_changed = Signal()             # reminders / scheduled messages list changed
 
     def __init__(self, conn):
         super().__init__()
@@ -64,6 +66,8 @@ class Store(QObject):
         self.announcements: list[dict] = []
         self.names: dict[int, str] = {}           # sender names seen in messages (incl. deleted users)
         self.muted: set[str] = set()
+        self.reminders: list[dict] = []
+        self.scheduled: list[dict] = []
         self.server_name = ""
         self.max_file_size = 0
         self.is_viewing = lambda conv: False      # set by the main window
@@ -166,6 +170,9 @@ class Store(QObject):
         self.max_file_size = boot.get("max_file_size", 0)
         self.file_retention_days = boot.get("file_retention_days", 0)
         self.buzz_enabled = boot.get("buzz_enabled", False)
+        self.reminders = boot.get("reminders", [])
+        self.scheduled = boot.get("scheduled", [])
+        self.planner_changed.emit()
         self.users = {u["id"]: u for u in boot["users"] if u["id"] != self.my_id}
         self.rooms = {r["id"]: r for r in boot["rooms"]}
         for item in boot["recent"]:
@@ -210,6 +217,14 @@ class Store(QObject):
             (self.muted.add if ev["muted"] else self.muted.discard)(ev["conv"])
             self.conv_changed.emit(ev["conv"])
             self.unread_changed.emit(self.total_unread())
+        elif op == "reminder":
+            self.reminder_fired.emit(ev["reminder"])
+        elif op == "reminders":
+            self.reminders = ev["reminders"]
+            self.planner_changed.emit()
+        elif op == "scheduled":
+            self.scheduled = ev["scheduled"]
+            self.planner_changed.emit()
         elif op == "update_available":
             self.update_available.emit(ev["update"])
         elif op == "presence":

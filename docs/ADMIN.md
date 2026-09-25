@@ -131,6 +131,10 @@ Console → **Settings**:
 | *Delete files nobody downloaded after* | never | Extra clean-up for forgotten uploads. |
 | *Allow Buzz* | on | Lets people buzz one person (shake + ring, even on Do not disturb). One buzz per 20 s per person; users can opt out in their Settings. |
 
+Reminders and scheduled messages are kept on the server, so they fire (and scheduled messages are sent) even when
+the person's PC is off; a scheduled message is sent as that person and fails with a visible reason if they are no
+longer allowed to post there (e.g. they left the room).
+
 *Back up chats now* writes the text backup immediately. Deleted messages written before they were deleted stay in the
 text backup (it is an archive).
 

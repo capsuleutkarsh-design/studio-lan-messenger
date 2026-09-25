@@ -23,6 +23,7 @@ import uuid
 from common import protocol as P
 from common.files import replace_file
 from server import archive
+from server.planner import PlannerMixin
 from server.config import ServerConfig
 from server.db import ANNOUNCE_LEVELS, Database, clean_label, direct_key
 from server.org import SECTION_SEP, Org, section_key
@@ -103,7 +104,7 @@ def safe_filename(name: str) -> str:
     return name[:200] or "file"
 
 
-class ServerCore:
+class ServerCore(PlannerMixin):
     def __init__(self, data_dir: str):
         self.config = ServerConfig(data_dir)
         self.db: Database | None = None
@@ -156,6 +157,7 @@ class ServerCore:
             "close_poll": self.h_close_poll,
             "react": self.h_react,
             "buzz": self.h_buzz,
+            **{op: getattr(self, f"h_{op}") for op in self.PLANNER_HANDLERS},
         }
 
     # ============================================================ lifecycle
@@ -234,6 +236,7 @@ class ServerCore:
                 log.error("Pipeline API disabled (port %s busy?): %s", self.config["api_port"], e)
                 self.pipeline = None
         self.maintenance_task = self.loop.create_task(self._maintenance())
+        self.planner_task = self.loop.create_task(self._planner())
         self.started_at = time.time()
         log.info("Server '%s' listening on port %s (IPs: %s)",
                  self.config["server_name"], port, ", ".join(local_ips()))
@@ -254,6 +257,7 @@ class ServerCore:
             self.server.close()
             await self.server.wait_closed()
         self.maintenance_task.cancel()
+        self.planner_task.cancel()
         await asyncio.sleep(0.1)
         self.db.close()
         self.sessions.clear()
@@ -788,6 +792,7 @@ class ServerCore:
             "update": self.update_info(),
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
             "file_retention_days": float(self.config["file_retention_days"] or 0),
+            **self.planner_boot(uid),
             "buzz_enabled": bool(self.config["buzz_enabled"]),
         }
 

@@ -135,6 +135,9 @@ class MainWindow(QMainWindow):
         self.me_btn = MeButton()
         self.me_btn.clicked.connect(self.me_menu)
         rl.addWidget(self.me_btn, 0, Qt.AlignHCenter)
+        if T.FESTIVAL:
+            from client.ui.festive import FestiveStripe
+            body.addWidget(FestiveStripe())
         body.addWidget(rail)
 
         # ---- sidebar
@@ -186,6 +189,8 @@ class MainWindow(QMainWindow):
         store.room_removed.connect(self._room_removed)
         store.users_changed.connect(self._check_open_conv)
         store.update_available.connect(self._on_update_available)
+        store.reminder_fired.connect(self._show_reminder)
+        self.reminder_cards = {}
         transfers.upload_done.connect(self._upload_done)
         transfers.added.connect(lambda _t: self._update_transfers_badge())
         transfers.changed.connect(lambda _t: self._update_transfers_badge())
@@ -249,7 +254,7 @@ class MainWindow(QMainWindow):
     # ============================================================ compact view
     COMPACT_WIDTH = 440
 
-    def set_compact(self, on):
+    def set_compact(self, on, remember=True):
         """Narrow, full-height window docked to the right edge of the screen (like a phone)."""
         on = bool(on)
         self.b_compact.setChecked(on)
@@ -257,8 +262,9 @@ class MainWindow(QMainWindow):
         if on == self.compact:
             return
         self.compact = on
-        self.config["compact_mode"] = on
-        self.config.save()
+        if remember:
+            self.config["compact_mode"] = on
+            self.config.save()
         self.chat.set_compact(on)
         self.b_pin.setVisible(on)
         if on:
@@ -351,6 +357,9 @@ class MainWindow(QMainWindow):
         if boot.get("must_change_password"):
             QTimer.singleShot(300, lambda: self._force_password_change(boot["must_change_password"]))
             return
+        # reminders that came due while this PC was off / signed out
+        for r in [r for r in self.store.reminders if r.get("state") == 1][:5]:
+            self._show_reminder(r, sound=False)
         # unread announcements pop up after login (max 3)
         unread = [a for a in self.store.announcements if not a.get("read")]
         for a in reversed(unread[:3]):
@@ -389,6 +398,7 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setChecked(me.get("status") == st)
         m.addAction(icon("smile", T.TEXT, 16), "Profile photo & status...", self.edit_status_message)
+        m.addAction(icon("clock", T.TEXT, 16), "New reminder...", self.new_reminder)
         m.addSeparator()
         dark = T.DARK
         m.addAction(icon("palette", T.TEXT, 16), "Switch to light mode" if dark else "Switch to dark mode",
@@ -482,19 +492,98 @@ class MainWindow(QMainWindow):
         title = f"{sender} mentioned you{where}" if mention else f"{sender}{where}"
         self.notify(title, stickers.summary(msg), msg["conv"])
 
+    # ======================================================= reminders
+    def add_reminder(self, due_at, text="", conv="", message_id=None):
+        from client.ui.planner_ui import fmt_due
+
+        def done(reply):
+            self.toast(f"⏰ Reminder set for {fmt_due(due_at)}" if reply.get("ok")
+                       else f"Reminder not set: {reply.get('error')}")
+        self.conn.request("reminder_add", done, due_at=due_at, text=text, conv=conv, message_id=message_id)
+
+    def new_reminder(self, conv="", message=None):
+        """Ask what and when, then set a reminder (optionally about a chat or a message)."""
+        from client.ui.planner_ui import TimeDialog
+        label = "Remind me about" + (" this message" if message else f" {self.store.title(conv)}" if conv else "")
+        dlg = TimeDialog(self, "New reminder", text="", text_label=label, ok_text="Set reminder")
+        dlg.text.setPlaceholderText("e.g. Send the FAL_030 comp to Dev")
+        if dlg.exec():
+            self.add_reminder(dlg.timestamp(), dlg.message(), conv, message["id"] if message else None)
+
+    def _show_reminder(self, r, sound=True):
+        from client.ui.planner_ui import ReminderPopup
+        old = self.reminder_cards.pop(r["id"], None)
+        if old:
+            old.close()
+        card = ReminderPopup(self, r)
+        card.done.connect(lambda rid: self.conn.request("reminder_done", None, id=rid))
+        card.snooze.connect(lambda rid, ts: self.conn.request("reminder_snooze", None, id=rid, due_at=ts))
+        card.open_chat.connect(lambda conv: (self.show_normal(), self.open_conv(conv)))
+        card.destroyed.connect(lambda *_, rid=r["id"]: self.reminder_cards.pop(rid, None))
+        self.reminder_cards[r["id"]] = card
+        card.show_at(len(self.reminder_cards) - 1)
+        if sound and self.config["sounds"]:
+            play_sound()
+        if sound:
+            self.tray.showMessage("⏰ Reminder", r.get("text") or r.get("snippet", ""), self.base_icon, 5000)
+
     def buzzed(self, msg):
         """Someone buzzed me: come to the front, open the chat, shake and ring - even on Do not disturb."""
         sender = self.store.user_name(msg["sender_id"])
         if not self.config["allow_buzz"]:
             self.notify(f"⚡ {sender} buzzed you", "Buzz", msg["conv"])
             return
+        hidden = not self.isVisible() or self.isMinimized()
         self.show_normal()
+        if hidden:
+            # it was out of sight: pop up as the phone-style view on the right, above everything for a while
+            self.set_compact(True, remember=False)
+            self._dock_right()
+            if not self.b_pin.isChecked():
+                self.set_on_top(True, save=False)
+                QTimer.singleShot(15000, lambda: self.set_on_top(self.config["compact_on_top"], save=False)
+                                  if self.compact else None)
         self.open_conv(msg["conv"])
         self.last_notified_conv = msg["conv"]
         self.tray.showMessage(f"⚡ BUZZ from {sender}", f"{sender} needs your attention", self.base_icon, 6000)
         play_sound("buzz")
         QApplication.alert(self, 3000)
-        self.shake()
+        self.glow()
+        if not hidden:
+            self.shake()
+
+    def glow(self):
+        """A pulsing accent border around the whole window for a couple of seconds."""
+        from PySide6.QtGui import QPen
+
+        class Glow(QWidget):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self.setAttribute(Qt.WA_TransparentForMouseEvents)
+                self.tick = 0
+                self.setGeometry(parent.rect())
+                self.timer = QTimer(self, interval=60, timeout=self.step)
+                self.timer.start()
+                self.show()
+                self.raise_()
+
+            def step(self):
+                self.tick += 1
+                if self.tick > 45:
+                    self.deleteLater()
+                    return
+                self.setGeometry(self.parent().rect())
+                self.update()
+
+            def paintEvent(self, _):
+                import math
+                p = QPainter(self)
+                p.setRenderHint(QPainter.Antialiasing)
+                c = QColor(T.ACCENT)
+                c.setAlpha(int(90 + 165 * abs(math.sin(self.tick / 4))))
+                p.setPen(QPen(c, 6))
+                p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+        Glow(self.centralWidget())
 
     def shake(self):
         from PySide6.QtCore import QPoint, QPropertyAnimation
