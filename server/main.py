@@ -1,4 +1,4 @@
-"""LAN Messenger server entry point.
+"""Quillo server entry point.
 
     python -m server.main               # console window (runs in the tray)
     python -m server.main --minimized   # start hidden in the tray (for Windows startup)
@@ -56,10 +56,10 @@ def startup_failed(e, data_dir, headless) -> int:
     """The settings could not even be read: write a note to %TEMP% and tell the admin."""
     import tempfile
     import traceback
-    text = (f"LAN Messenger Server could not start.\n\nData folder: {data_dir}\n{type(e).__name__}: {e}\n\n"
+    text = (f"Quillo Server could not start.\n\nData folder: {data_dir}\n{type(e).__name__}: {e}\n\n"
             + ("The data folder can only be changed by administrators. If the server runs as the background "
                "service, the console connects to it - make sure the service is running (Start menu > "
-               "LAN Messenger Server). Otherwise start the console as administrator."
+               "Quillo Server). Otherwise start the console as administrator."
                if isinstance(e, PermissionError) else "Check that the data folder exists and is not full."))
     try:
         with open(os.path.join(tempfile.gettempdir(), "LANMessengerServer-startup.log"), "a",
@@ -70,7 +70,7 @@ def startup_failed(e, data_dir, headless) -> int:
     if not headless:
         from PySide6.QtWidgets import QApplication, QMessageBox
         QApplication.instance() or QApplication(sys.argv)
-        QMessageBox.critical(None, "LAN Messenger Server", text)
+        QMessageBox.critical(None, "Quillo Server", text)
     return 1
 
 
@@ -95,7 +95,7 @@ def run_remote_console(host, port, note=""):
     from common import theme
     from server.admin_gui import ConsoleLoginDialog, ServerWindow
     app = QApplication(sys.argv)
-    app.setApplicationName("LAN Messenger Server console")
+    app.setApplicationName("Quillo Server console")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
     from common import crash
@@ -105,7 +105,7 @@ def run_remote_console(host, port, note=""):
         setup_logging(log_file)
     except OSError:
         log_file = ""
-    crash.install("LAN Messenger Server console", log_file)
+    crash.install("Quillo Server console", log_file)
     dlg = ConsoleLoginDialog(host, port, note)
     if not dlg.exec():
         return 0
@@ -114,7 +114,7 @@ def run_remote_console(host, port, note=""):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="LAN Messenger server")
+    ap = argparse.ArgumentParser(description="Quillo server")
     ap.add_argument("--data", default=default_data_dir(), help="data folder (database, files, config)")
     ap.add_argument("--headless", action="store_true", help="run without a window (Windows service mode)")
     ap.add_argument("--minimized", action="store_true", help="start hidden in the system tray")
@@ -153,7 +153,7 @@ def main():
         return startup_failed(e, data_dir, args.headless)
     setup_logging(core.config.log_path, os.path.join(data_dir, "server.log"))
     from common import crash
-    crash.install("LAN Messenger Server", core.config.log_path)
+    crash.install("Quillo Server", core.config.log_path)
 
     if args.headless:
         core.start()
@@ -168,7 +168,7 @@ def main():
     from server.console_api import LocalApi
 
     app = QApplication(sys.argv)
-    app.setApplicationName("LAN Messenger Server")
+    app.setApplicationName("Quillo Server")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
     win = ServerWindow(LocalApi(core), start_minimized=args.minimized)

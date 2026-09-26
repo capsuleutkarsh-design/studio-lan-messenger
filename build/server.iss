@@ -1,4 +1,4 @@
-; LAN Messenger Server - Inno Setup script
+; Quillo Server - Inno Setup script
 ; Compiled by build\build.py (which passes AppVersion, DistDir and RootDir).
 ; Manual compile: ISCC.exe /DAppVersion=1.1.0 /DDistDir=..\build\dist /DRootDir=.. server.iss
 
@@ -12,7 +12,9 @@
   #define RootDir ".."
 #endif
 
-#define AppName   "LAN Messenger Server"
+#define AppName   "Quillo Server"
+; internal names below (registry key, data folder, service task, firewall rule) stay as before 1.6.0
+; so upgrades, the running service and existing data are found
 #define ExeName   "LANMessengerServer.exe"
 #define RegKey    "Software\LAN Messenger Server"
 #define FwRule    "LAN Messenger Server"
@@ -23,13 +25,16 @@ AppId={{8F3C2A51-6B1E-4C7D-9A2F-5E0B7D1C4A11}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=LAN Messenger
+AppPublisher=Utkarsh Tripathi
+AppCopyright=Quillo Community License - (c) 2026 Utkarsh Tripathi
 VersionInfoVersion={#AppVersion}
 VersionInfoDescription={#AppName} Setup
-DefaultDirName={autopf}\LAN Messenger Server
-DefaultGroupName=LAN Messenger Server
+DefaultDirName={autopf}\Quillo Server
+DefaultGroupName=Quillo Server
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
-OutputBaseFilename=LANMessenger-Server-Setup-{#AppVersion}
+OutputBaseFilename=Quillo-Server-Setup-{#AppVersion}
+LicenseFile=..\LICENSE
 SetupIconFile={#RootDir}\assets\app.ico
 UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName}
@@ -46,7 +51,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 ; ask to close a server/console running in this Windows session before files are replaced
 ; (the background service is stopped automatically in PrepareToInstall)
-AppMutex=LANMessengerServerMutex
+AppMutex=LANMessengerServerMutex,Global\LANMessengerServerMutex
 CloseApplications=yes
 RestartApplications=no
 InfoAfterFile=server_after_install.txt
@@ -70,12 +75,18 @@ Name: "{code:GetDataDir}"; Flags: uninsneveruninstall
 Source: "{#DistDir}\LANMessengerServer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "service.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; shortcuts made by versions before 1.6.0, when the app was called LAN Messenger
+Type: filesandordirs; Name: "{autoprograms}\LAN Messenger Server"
+Type: files; Name: "{autodesktop}\LAN Messenger Server console.lnk"
+
 [Icons]
-Name: "{group}\LAN Messenger Server console"; Filename: "{app}\{#ExeName}"
+Name: "{group}\Quillo Server console"; Filename: "{app}\{#ExeName}"
 Name: "{group}\Connect to another server...";  Filename: "{app}\{#ExeName}"; Parameters: "--console"
 Name: "{group}\Server data folder";         Filename: "{code:GetDataDir}"
-Name: "{group}\Uninstall LAN Messenger Server"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\LAN Messenger Server console"; Filename: "{app}\{#ExeName}"; Tasks: desktopicon
+Name: "{group}\Quillo licence"; Filename: "{app}\LICENSE.txt"
+Name: "{group}\Uninstall Quillo Server"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Quillo Server console"; Filename: "{app}\{#ExeName}"; Tasks: desktopicon
 
 [Registry]
 ; where the data lives (the server reads DataDir; the others pre-fill this page next time)
@@ -477,7 +488,7 @@ begin
     DataDirValue := GetDataDir('');
   if (CurStep = ssPostInstall) and (not IsAdminInstallMode) and (not WizardSilent) then
     MsgBox('One more step, done by Windows:' + #13#10 + #13#10 +
-           'The first time the server starts, Windows Firewall may ask whether LAN Messenger Server may use the ' +
+           'The first time the server starts, Windows Firewall may ask whether Quillo Server may use the ' +
            'network. Click "Allow access" (if your account is not an administrator, Windows asks for an ' +
            'administrator''s approval once).' + #13#10 + #13#10 +
            'If IT manages the firewall, ask them to allow TCP port 5150 and UDP port 5151 for this PC.' + #13#10 +

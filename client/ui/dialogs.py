@@ -552,7 +552,7 @@ class SettingsDialog(Dialog):
         self.sounds.setChecked(cfg["sounds"])
         self.close_to_tray = QCheckBox("Keep running in the tray when the window is closed")
         self.close_to_tray.setChecked(cfg["close_to_tray"])
-        self.autostart = QCheckBox("Start LAN Messenger when Windows starts")
+        self.autostart = QCheckBox("Start Quillo when Windows starts")
         self.autostart.setChecked(cfg["start_with_windows"])
         self.allow_buzz = QCheckBox("Let people buzz me (shakes this window and rings, even on Do not disturb)")
         self.allow_buzz.setChecked(cfg["allow_buzz"])
@@ -585,10 +585,10 @@ class SettingsDialog(Dialog):
                   f"<span style='color:{T.DANGER}'>Connection is NOT encrypted</span>")
         policy = ("<br><span style='color:#ff9955'>Administrators can review conversations "
                   "(studio policy).</span>" if getattr(ctx.store, "review_notice", False) else "")
-        from common.version import APP_VERSION
+        from common.version import APP_VERSION, LICENSE_LINE
         info = QLabel(f"Connected to <b>{esc(ctx.store.server_name)}</b> at {esc(ctx.conn.host)}:{ctx.conn.port}"
                       f" as <b>{esc(ctx.store.me.get('username', ''))}</b><br>{secure}{policy}"
-                      f"<br><span style='color:{T.FAINT}'>LAN Messenger {APP_VERSION}</span>")
+                      f"<br><span style='color:{T.FAINT}'>Quillo {APP_VERSION}  ·  {esc(LICENSE_LINE)}</span>")
         info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         T.polish(info, muted=True)
         self.lay.addWidget(info)
@@ -630,7 +630,7 @@ class SettingsDialog(Dialog):
         cfg.save()
         super().accept()
         if look_changed and QMessageBox.question(
-                self.ctx, "New look", "Restart LAN Messenger now to apply the new theme?") == QMessageBox.Yes:
+                self.ctx, "New look", "Restart Quillo now to apply the new theme?") == QMessageBox.Yes:
             self.ctx.restart()
 
 

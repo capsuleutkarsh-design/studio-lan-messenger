@@ -37,8 +37,8 @@ def ensure_certificate(folder: str, common_name: str):
 
     os.makedirs(folder, exist_ok=True)
     key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, (common_name or "LAN Messenger")[:60]),
-                      x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LAN Messenger")])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, (common_name or "Quillo")[:60]),
+                      x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Quillo")])
     now = datetime.datetime.now(datetime.timezone.utc)
     alt = [x509.DNSName(socket.gethostname()), x509.DNSName("localhost")]
     cert = (x509.CertificateBuilder()

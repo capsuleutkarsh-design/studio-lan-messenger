@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from common import protocol as P
 from common import theme as T
-from common.icons import asset, icon, logo_widget
+from common.icons import asset, icon, license_label, logo_widget
 from client.ui.chat_view import ChatView
 from client.ui.dialogs import (
     AnnouncementPopup, ComposeAnnouncementDialog, NewRoomDialog, RoomInfoDialog, SearchDialog,
@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         self.last_notified_conv = None
         self.base_icon = QIcon(asset("app.ico"))
         self.setWindowIcon(self.base_icon)
-        self.setWindowTitle("LAN Messenger")
+        self.setWindowTitle("Quillo")
         self.resize(1280, 800)
         self.setMinimumSize(960, 600)
         store.is_viewing = self.is_viewing
@@ -92,12 +92,13 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         outer.addLayout(body, 1)
+        outer.addWidget(license_label())            # the licence line, very small, at the very bottom
 
         # ---- navigation rail
         rail = QFrame()
         rail.setObjectName("rail")
         rail.setFixedWidth(RailButton.W)
-        rail.setStyleSheet(f"#rail {{ background: {T.RAIL}; border-right: 1px solid {T.BORDER}; }}")
+        rail.setStyleSheet(f"#rail {{ background: {T.RAIL}; }}")
         rl = QVBoxLayout(rail)
         rl.setContentsMargins(0, 16, 0, 10)
         rl.setSpacing(2)
@@ -171,7 +172,7 @@ class MainWindow(QMainWindow):
         body.addWidget(self.stack, 1)
 
         self.toast_label = plain(QLabel(self))
-        self.toast_label.setStyleSheet(f"background: {T.TOOLTIP}; color: #eef0f5; border-radius: 12px;"
+        self.toast_label.setStyleSheet(f"background: {T.TOOLTIP}; color: #eef0f5; border-radius: 16px;"
                                        " padding: 10px 18px; font-weight: 600;")
         self.toast_label.hide()
         self.toast_timer = QTimer(self, singleShot=True, timeout=self.toast_label.hide)
@@ -210,9 +211,9 @@ class MainWindow(QMainWindow):
     # ================================================================ tray
     def _make_tray(self):
         self.tray = QSystemTrayIcon(self.base_icon, self)
-        self.tray.setToolTip("LAN Messenger")
+        self.tray.setToolTip("Quillo")
         m = QMenu()
-        m.addAction("Open LAN Messenger", self.show_normal)
+        m.addAction("Open Quillo", self.show_normal)
         self.tray_compact = m.addAction("Compact view", lambda: (self.show_normal(), self.set_compact(not self.compact)))
         self.tray_compact.setCheckable(True)
         status_menu = m.addMenu("Status")
@@ -346,7 +347,7 @@ class MainWindow(QMainWindow):
     def _on_logged_in(self, boot):
         self.banner.hide()
         self.home.set_name(self.store.me.get("name", ""), self.store.server_name)
-        self.setWindowTitle(f"LAN Messenger — {self.store.me.get('name', '')}  ·  {self.store.server_name}")
+        self.setWindowTitle(f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}")
         self._me_changed()
         if self.chat.conv and self.stack.currentWidget() is self.chat:
             if self.store.conv_exists(self.chat.conv):
@@ -420,8 +421,8 @@ class MainWindow(QMainWindow):
         self.rail["announcements"].set_badge(a)
         total = n + a
         self.tray.setIcon(self._tray_icon(total))
-        self.tray.setToolTip(f"LAN Messenger — {total} unread" if total else "LAN Messenger")
-        title = f"LAN Messenger — {self.store.me.get('name', '')}  ·  {self.store.server_name}"
+        self.tray.setToolTip(f"Quillo — {total} unread" if total else "Quillo")
+        title = f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}"
         self.setWindowTitle(f"({total}) {title}" if total else title)
 
     def _update_transfers_badge(self):
@@ -830,10 +831,10 @@ class MainWindow(QMainWindow):
             return
         self.pending_update = info
         if self._is_admin_user():
-            self.update_label.setText(f"LAN Messenger {info['version']} is available.")
+            self.update_label.setText(f"Quillo {info['version']} is available.")
             self.update_btn.show()
         else:
-            self.update_label.setText(f"LAN Messenger {info['version']} is available — "
+            self.update_label.setText(f"Quillo {info['version']} is available — "
                                       "please ask IT to update this PC.")
             self.update_btn.hide()
         self.update_bar.show()
@@ -856,7 +857,7 @@ class MainWindow(QMainWindow):
                 self.update_label.setText(f"Update download failed: {tr.error}")
                 self.update_btn.setEnabled(True)
                 return
-            self.update_label.setText("Installing the update — LAN Messenger restarts by itself...")
+            self.update_label.setText("Installing the update — Quillo restarts by itself...")
             # The installer closes this app (Restart Manager) and opens it again afterwards.
             rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", dest,
                                                      "/SILENT /SUPPRESSMSGBOXES /NORESTART", None, 1)
@@ -964,7 +965,7 @@ class MainWindow(QMainWindow):
     def switch_mode(self, theme):
         self.config["theme"] = theme
         self.config.save()
-        if QMessageBox.question(self, "New look", "Restart LAN Messenger now to switch to "
+        if QMessageBox.question(self, "New look", "Restart Quillo now to switch to "
                                 f"{'light' if theme == 'light' else 'dark'} mode?") == QMessageBox.Yes:
             self.restart()
         else:
@@ -984,7 +985,7 @@ class MainWindow(QMainWindow):
         SettingsDialog(self).exec()
 
     def confirm_logout(self):
-        if QMessageBox.question(self, "Sign out", "Sign out of LAN Messenger?") == QMessageBox.Yes:
+        if QMessageBox.question(self, "Sign out", "Sign out of Quillo?") == QMessageBox.Yes:
             self.logout_requested.emit()
 
     # ============================================================ window
@@ -1001,7 +1002,7 @@ class MainWindow(QMainWindow):
         if not self.config.get("tray_hint_shown"):
             self.config["tray_hint_shown"] = True
             self.config.save()
-            self.tray.showMessage("LAN Messenger", "Still running here in the tray. "
+            self.tray.showMessage("Quillo", "Still running here in the tray. "
                                   "Right-click the icon to quit.", self.base_icon, 4000)
 
     def signed_out(self):

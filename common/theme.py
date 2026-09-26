@@ -72,6 +72,7 @@ DARK = True
 RAIL = BG = PANEL = SURFACE = SURFACE_HOVER = BORDER = TEXT = MUTED = FAINT = ""
 BUBBLE_OTHER = INPUT_FOCUS_BG = TINT = TOOLTIP = SCROLL = SCROLL_HOVER = DANGER = WARN_BG = WARN_TEXT = ""
 ACCENT = ACCENT_TEXT = ACCENT_HOVER = ACCENT_SOFT = ACCENT_FOCUS = BUBBLE_ME = ""
+HAIR = ""          # a soft hairline, halfway between BORDER and PANEL - edges you notice without seeing
 
 STATUS_COLORS = {
     "online": "#3ecf6e",
@@ -152,7 +153,7 @@ def apply(theme="midnight", accent=None, festivals=False):
 
     festivals=True: on 15 Aug, 26 Jan and 24-26 Dec the festival look replaces the chosen theme."""
     global THEME, ACCENT_NAME, ACCENT, ACCENT_TEXT, ACCENT_HOVER, ACCENT_SOFT, ACCENT_FOCUS
-    global BUBBLE_ME, STYLESHEET, FESTIVAL
+    global BUBBLE_ME, STYLESHEET, FESTIVAL, HAIR
     if festivals and festival_today():
         theme = festival_today()
     if theme == "system":
@@ -173,6 +174,7 @@ def apply(theme="midnight", accent=None, festivals=False):
     ACCENT_SOFT = mix(acc, pal["PANEL"], 0.20 if pal["DARK"] else 0.13)
     ACCENT_FOCUS = mix(acc, pal["SURFACE"], 0.55)
     BUBBLE_ME = mix(acc, pal["BG"], 0.26 if pal["DARK"] else 0.16)
+    HAIR = mix(pal["BORDER"], pal["PANEL"], 0.55)
     STYLESHEET = _stylesheet()
     return STYLESHEET
 
@@ -244,14 +246,14 @@ def _stylesheet():
     return f"""
 * {{ font-family: "Segoe UI"; font-size: 10pt; color: {TEXT}; }}
 QMainWindow, QDialog, QWidget#root {{ background: {BG}; }}
-QToolTip {{ background: {TOOLTIP}; color: #eef0f5; border: none; padding: 6px 10px; border-radius: 6px; }}
+QToolTip {{ background: {TOOLTIP}; color: #eef0f5; border: none; padding: 7px 11px; border-radius: 9px; }}
 QLabel {{ background: transparent; }}
 QLabel[muted="true"] {{ color: {MUTED}; }}
 QLabel[heading="true"] {{ font-size: 15pt; font-weight: 700; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox, QDateTimeEdit {{
-    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px;
-    padding: 7px 11px; selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT};
+    background: {SURFACE}; border: 1px solid {HAIR}; border-radius: 12px;
+    padding: 7px 12px; selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT};
 }}
 QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QSpinBox:hover, QComboBox:hover, QDateTimeEdit:hover {{
     border: 1px solid {SURFACE_HOVER}; }}
@@ -264,16 +266,16 @@ QDateTimeEdit::up-button, QDateTimeEdit::down-button {{ width: 0; border: none; 
 QCalendarWidget QWidget {{ background: {PANEL}; }}
 QCalendarWidget QToolButton {{ background: transparent; border: none; padding: 4px 8px; font-weight: 700; }}
 QCalendarWidget QAbstractItemView {{ selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT}; }}
-QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {BORDER}; padding: 4px;
+QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {HAIR}; padding: 6px;
     selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT}; outline: none; }}
 QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
 
 QPushButton {{
-    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; padding: 8px 16px;
+    background: {SURFACE}; border: 1px solid {HAIR}; border-radius: 12px; padding: 8px 16px;
     font-weight: 600;
 }}
 QPushButton:hover {{ background: {SURFACE_HOVER}; }}
-QPushButton:pressed {{ background: {BORDER}; }}
+QPushButton:pressed {{ background: {HAIR}; }}
 QPushButton:disabled {{ color: {FAINT}; }}
 QPushButton[primary="true"] {{ background: {ACCENT}; color: {ACCENT_TEXT}; border: none; }}
 QPushButton[primary="true"]:hover {{ background: {ACCENT_HOVER}; }}
@@ -281,13 +283,13 @@ QPushButton[primary="true"]:disabled {{ background: {ACCENT_FOCUS}; color: {MUTE
 QPushButton[danger="true"] {{ color: {DANGER}; }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 6px; }}
 QPushButton[flat="true"]:hover {{ background: {SURFACE_HOVER}; }}
-QPushButton[chip="true"] {{ background: transparent; border: 1px solid {BORDER}; border-radius: 11px;
+QPushButton[chip="true"] {{ background: transparent; border: 1px solid {HAIR}; border-radius: 11px;
     padding: 3px 12px; font-weight: 600; font-size: 9pt; color: {MUTED}; min-height: 16px; }}
 QPushButton[chip="true"]:hover {{ background: {SURFACE}; color: {TEXT}; }}
 QPushButton[chip="true"]:checked {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_FOCUS}; color: {TEXT}; }}
 
 QCheckBox, QRadioButton {{ spacing: 8px; }}
-QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; background: {SURFACE};
+QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 6px; background: {SURFACE};
     border: 1px solid {SCROLL}; }}
 QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
@@ -303,22 +305,22 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 
 QTableWidget, QTableView, QListWidget, QTreeWidget {{
-    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 12px;
-    gridline-color: {BORDER}; alternate-background-color: {BG}; outline: none;
+    background: {PANEL}; border: none; border-radius: 16px;
+    gridline-color: {HAIR}; alternate-background-color: {BG}; outline: none;
     selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT};
 }}
-QListWidget::item, QTreeWidget::item {{ padding: 5px; border-radius: 6px; }}
+QListWidget::item, QTreeWidget::item {{ padding: 6px; border-radius: 9px; }}
 QListWidget::item:hover, QTreeWidget::item:hover {{ background: {SURFACE}; }}
 QListWidget::item:selected, QTreeWidget::item:selected {{ background: {ACCENT_SOFT}; }}
-QHeaderView::section {{ background: {PANEL}; border: none; border-bottom: 1px solid {BORDER};
+QHeaderView::section {{ background: {PANEL}; border: none; border-bottom: 1px solid {HAIR};
     padding: 7px; font-weight: 600; color: {MUTED}; }}
 QTableCornerButton::section {{ background: {PANEL}; border: none; }}
 
-QMenu {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 10px; padding: 5px; }}
-QMenu::item {{ padding: 7px 24px 7px 12px; border-radius: 6px; }}
+QMenu {{ background: {PANEL}; border: 1px solid {HAIR}; border-radius: 14px; padding: 6px; }}
+QMenu::item {{ padding: 8px 26px 8px 12px; border-radius: 9px; }}
 QMenu::item:selected {{ background: {SURFACE_HOVER}; }}
 QMenu::item:disabled {{ color: {FAINT}; }}
-QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 8px; }}
+QMenu::separator {{ height: 1px; background: {HAIR}; margin: 6px 10px; }}
 QMenu::icon {{ padding-left: 6px; }}
 
 QProgressBar {{ background: {SURFACE}; border: none; border-radius: 3px; height: 6px;

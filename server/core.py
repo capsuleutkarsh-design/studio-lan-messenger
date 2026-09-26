@@ -1710,7 +1710,7 @@ class ServerCore(PlannerMixin):
                 "rooms": rooms, "daily": daily}
 
     # ---------------------------------------------------- client updates
-    UPDATE_PREFIX = "LANMessenger-Client-Setup-"
+    UPDATE_PREFIXES = ("Quillo-Client-Setup-", "LANMessenger-Client-Setup-")   # new name, and before 1.6.0
 
     @property
     def updates_dir(self):
@@ -1724,8 +1724,9 @@ class ServerCore(PlannerMixin):
             return None
         best = None
         for n in names:
-            if n.startswith(self.UPDATE_PREFIX) and n.lower().endswith(".exe"):
-                ver = n[len(self.UPDATE_PREFIX):-4]
+            prefix = next((p for p in self.UPDATE_PREFIXES if n.startswith(p)), None)
+            if prefix and n.lower().endswith(".exe"):
+                ver = n[len(prefix):-4]
                 try:
                     key = tuple(int(x) for x in ver.split("."))
                 except ValueError:
@@ -2372,7 +2373,7 @@ def startup_error_text(e: Exception, config) -> str:
         port = config["tcp_port"]
         owner = port_owner(int(port))
         who = f"It is used by {owner}." if owner else "Another program is using it."
-        hint = (" That is probably another LAN Messenger server already running on this PC "
+        hint = (" That is probably another Quillo server already running on this PC "
                 "(check the system tray, or the background service)."
                 if "LANMessenger" in owner or "python" in owner.lower() or not owner else "")
         return (f"Port {port} is already in use, so the server cannot start.\n\n{who}{hint}\n\n"

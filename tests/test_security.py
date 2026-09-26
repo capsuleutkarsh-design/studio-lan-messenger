@@ -151,7 +151,7 @@ class SecurityTest(unittest.TestCase):
         a = Client("artist")
         with open(os.path.join(folder, "LANMessenger-Client-Setup-9.9.1.exe"), "wb") as f:
             f.write(b"MZ-fake-installer")
-        with open(os.path.join(folder, "LANMessenger-Client-Setup-9.10.0.exe"), "wb") as f:
+        with open(os.path.join(folder, "Quillo-Client-Setup-9.10.0.exe"), "wb") as f:     # the name since 1.6.0
             f.write(b"MZ-newer-installer")
         c.call(c._check_updates)
         push = a.wait_for("update_available")["update"]
@@ -161,7 +161,7 @@ class SecurityTest(unittest.TestCase):
             {"op": "download", "token": a.login["token"], "file_id": "client-update"}))
         f = s.makefile("rb")
         hdr = __import__("json").loads(f.readline())
-        self.assertEqual((hdr["ok"], hdr["name"]), (True, "LANMessenger-Client-Setup-9.10.0.exe"))
+        self.assertEqual((hdr["ok"], hdr["name"]), (True, "Quillo-Client-Setup-9.10.0.exe"))
         self.assertEqual(f.read(hdr["size"]), b"MZ-newer-installer")
         s.close()
         a.close()

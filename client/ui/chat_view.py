@@ -39,7 +39,7 @@ def _file_icon_name(name):
 def _hline():
     line = QFrame()
     line.setFixedHeight(1)
-    line.setStyleSheet(f"background: {T.BORDER}; border: none;")
+    line.setStyleSheet(f"background: {T.HAIR}; border: none;")
     return line
 
 
@@ -104,7 +104,7 @@ class FileCard(QFrame):
         self.conv = conv
         self.sent_ts = sent_ts
         self.setObjectName("filecard")
-        self.setStyleSheet(f"#filecard {{ background: {T.TINT}; border-radius: 12px; }}")
+        self.setStyleSheet(f"#filecard {{ background: {T.TINT}; border-radius: 14px; }}")
         self.setMinimumWidth(270)
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -334,7 +334,7 @@ class SnippetCard(QFrame):
         self.nuke = is_nuke(text)
         self.preview = NUKE_PREVIEW_LINES if self.nuke else PREVIEW_LINES
         self.setObjectName("snippet")
-        self.setStyleSheet(f"#snippet {{ background: {T.TINT}; border-radius: 12px; }}")
+        self.setStyleSheet(f"#snippet {{ background: {T.TINT}; border-radius: 14px; }}")
         self.setMinimumWidth(360)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 8, 10)
@@ -355,8 +355,8 @@ class SnippetCard(QFrame):
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
         self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.view.setStyleSheet(f"QPlainTextEdit {{ background: {T.BG}; border: 1px solid {T.BORDER};"
-                                " border-radius: 8px; font-family: Consolas; font-size: 9pt; padding: 4px; }")
+        self.view.setStyleSheet(f"QPlainTextEdit {{ background: {T.BG}; border: 1px solid {T.HAIR};"
+                                " border-radius: 10px; font-family: Consolas; font-size: 9pt; padding: 4px; }")
         lay.addWidget(self.view)
         self.more = QPushButton()
         T.polish(self.more, flat=True)
@@ -518,14 +518,14 @@ class PollOption(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(QColor(T.ACCENT if self._hover else T.BORDER), 1))
+        p.setPen(QPen(QColor(T.ACCENT if self._hover else T.HAIR), 1))
         p.setBrush(QColor(T.BG))
-        p.drawRoundedRect(r, 10, 10)
+        p.drawRoundedRect(r, 12, 12)
         share = self.option["count"] / self.total if self.total else 0
         if share:
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(T.ACCENT_FOCUS if self.mine else T.ACCENT_SOFT))
-            p.drawRoundedRect(QRectF(r.x(), r.y(), max(20.0, r.width() * share), r.height()), 10, 10)
+            p.drawRoundedRect(QRectF(r.x(), r.y(), max(24.0, r.width() * share), r.height()), 12, 12)
         # choice marker: circle (single answer) or square (multiple answers)
         box = QRectF(12, (self.height() - 16) / 2, 16, 16)
         p.setPen(QPen(QColor(T.ACCENT if self.mine else T.MUTED), 1.6))
@@ -672,7 +672,7 @@ class MessageRow(QWidget):
             if pm:
                 art.setPixmap(pm)
             else:
-                art.setText("Sticker (update LAN Messenger to see it)")
+                art.setText("Sticker (update Quillo to see it)")
                 art.setStyleSheet(f"color: {T.FAINT}; font-style: italic;")
             if msg.get("reply"):
                 q = ReplyQuote(ctx, msg["reply"])
@@ -748,12 +748,12 @@ class MessageRow(QWidget):
             bg = T.mix(T.ACCENT, T.BUBBLE_OTHER, 0.16)
             border = f"border-left: 3px solid {T.ACCENT};"
         elif not T.DARK and not self.mine:
-            border = f"border: 1px solid {T.BORDER};"
+            border = f"border: 1px solid {T.HAIR};"
         if flash:
             border = f"border: 2px solid {T.ACCENT};"
-        r = [16, 16, 16, 16]                     # tl, tr, br, bl
+        r = [18, 18, 18, 18]                     # tl, tr, br, bl
         if self.first:
-            r[1 if self.mine else 0] = 5         # small "tail" corner on the first bubble of a group
+            r[1 if self.mine else 0] = 6         # small "tail" corner on the first bubble of a group
         return (f"#bubble {{ background: {bg}; {border} border-top-left-radius: {r[0]}px;"
                 f" border-top-right-radius: {r[1]}px; border-bottom-right-radius: {r[2]}px;"
                 f" border-bottom-left-radius: {r[3]}px; }}")
@@ -874,7 +874,7 @@ class HoverBar(QFrame):
         self.chat = chat
         self.row = None
         self.setObjectName("hoverbar")
-        self.setStyleSheet(f"#hoverbar {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 10px; }}")
+        self.setStyleSheet(f"#hoverbar {{ background: {T.PANEL}; border: 1px solid {T.HAIR}; border-radius: 14px; }}")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(3, 3, 3, 3)
         lay.setSpacing(0)
@@ -934,8 +934,8 @@ class MentionPopup(QListWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.ToolTip)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setStyleSheet(f"QListWidget {{ background: {T.PANEL}; border: 1px solid {T.BORDER};"
-                           f" border-radius: 10px; padding: 4px; }} QListWidget::item {{ padding: 6px 8px; }}"
+        self.setStyleSheet(f"QListWidget {{ background: {T.PANEL}; border: 1px solid {T.HAIR};"
+                           f" border-radius: 14px; padding: 6px; }} QListWidget::item {{ padding: 6px 8px; }}"
                            f" QListWidget::item:selected {{ background: {T.ACCENT_SOFT}; }}")
         self.itemClicked.connect(lambda it: self.picked.emit(it.data(Qt.UserRole)))
 
@@ -1088,7 +1088,7 @@ class StickerPicker(QFrame):
         self.config = config
         self.packs = stickers.packs()
         self.setObjectName("stickers")
-        self.setStyleSheet(f"#stickers {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 14px; }}")
+        self.setStyleSheet(f"#stickers {{ background: {T.PANEL}; border: 1px solid {T.HAIR}; border-radius: 18px; }}")
         self.setFixedSize(self.CELL * 5 + 34, 420)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -1289,7 +1289,7 @@ class ChatView(QWidget):
         head = self.head = QFrame()
         head.setObjectName("chathead")
         head.setFixedHeight(68)
-        head.setStyleSheet(f"#chathead {{ background: {T.BG}; border-bottom: 1px solid {T.BORDER}; }}")
+        head.setStyleSheet(f"#chathead {{ background: {T.BG}; border-bottom: 1px solid {T.HAIR}; }}")
         hl = QHBoxLayout(head)
         hl.setContentsMargins(22, 10, 16, 10)
         hl.setSpacing(12)
@@ -1329,7 +1329,7 @@ class ChatView(QWidget):
         self.pin_bar = QFrame()
         self.pin_bar.setObjectName("pinbar")
         self.pin_bar.setCursor(Qt.PointingHandCursor)
-        self.pin_bar.setStyleSheet(f"#pinbar {{ background: {T.PANEL}; border-bottom: 1px solid {T.BORDER}; }}")
+        self.pin_bar.setStyleSheet(f"#pinbar {{ background: {T.PANEL}; border-bottom: 1px solid {T.HAIR}; }}")
         pb = QHBoxLayout(self.pin_bar)
         pb.setContentsMargins(22, 7, 16, 7)
         pb.setSpacing(12)
@@ -1435,9 +1435,9 @@ class ChatView(QWidget):
 
         self.action_bar = QFrame()
         self.action_bar.setObjectName("actionbar")
-        self.action_bar.setStyleSheet(f"#actionbar {{ background: {T.PANEL}; border: 1px solid {T.BORDER};"
-                                      " border-bottom: none; border-top-left-radius: 14px;"
-                                      " border-top-right-radius: 14px; }")
+        self.action_bar.setStyleSheet(f"#actionbar {{ background: {T.PANEL}; border: 1px solid {T.HAIR};"
+                                      " border-bottom: none; border-top-left-radius: 18px;"
+                                      " border-top-right-radius: 18px; }")
         ab = QHBoxLayout(self.action_bar)
         ab.setContentsMargins(14, 8, 8, 8)
         ab.setSpacing(10)
@@ -1879,18 +1879,18 @@ class ChatView(QWidget):
 
     def _style_composer(self):
         focus = self.input.hasFocus()
-        top = "14px" if not self.action_bar.isVisible() else "0px"
+        top = "18px" if not self.action_bar.isVisible() else "0px"
         self.composer.setStyleSheet(
-            f"#composer {{ background: {T.SURFACE}; border: 1px solid {T.ACCENT_FOCUS if focus else T.BORDER};"
+            f"#composer {{ background: {T.SURFACE}; border: 1px solid {T.ACCENT_FOCUS if focus else T.HAIR};"
             f" border-top-left-radius: {top}; border-top-right-radius: {top};"
-            " border-bottom-left-radius: 14px; border-bottom-right-radius: 14px; }")
+            " border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; }")
 
     def _update_send_button(self):
         ready = bool(self.input.toPlainText().strip())
         self.b_send.setIcon(icon("send", T.ACCENT_TEXT if ready else T.FAINT, 18))
         self.b_send.setStyleSheet(
             f"QPushButton {{ background: {T.ACCENT if ready else T.SURFACE_HOVER}; border: none;"
-            " border-radius: 12px; padding: 0; }"
+            " border-radius: 14px; padding: 0; }"
             f"QPushButton:hover {{ background: {T.ACCENT_HOVER if ready else T.SURFACE_HOVER}; }}")
 
     def attach_menu(self):

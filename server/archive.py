@@ -119,7 +119,7 @@ def _write(root, names, by_file, touched):
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             if new:
                 title = names.file_title(conv)
-                f.write(f"LAN Messenger chat log  ·  {title}  ·  {month}\n{'=' * 72}\n")
+                f.write(f"Quillo chat log  ·  {title}  ·  {month}\n{'=' * 72}\n")
             f.write("\n".join(lines) + "\n")
         touched.add(path)
 

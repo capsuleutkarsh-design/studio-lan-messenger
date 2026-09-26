@@ -1,8 +1,8 @@
-; LAN Messenger (client) - Inno Setup script
+; Quillo (client) - Inno Setup script
 ; Compiled by build\build.py (which passes AppVersion, DistDir and RootDir).
 ;
 ; Silent install for IT (e.g. via GPO / PDQ / a login script):
-;   LANMessenger-Client-Setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVER=192.168.1.10
+;   Quillo-Client-Setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVER=192.168.1.10
 ;   add /MERGETASKS="autostart" to start it with Windows, "!desktopicon" to skip the desktop shortcut
 
 #ifndef AppVersion
@@ -15,7 +15,8 @@
   #define RootDir ".."
 #endif
 
-#define AppName  "LAN Messenger"
+#define AppName  "Quillo"
+; internal names below stay as before 1.6.0 so upgrades find the installed copy
 #define ExeName  "LANMessenger.exe"
 #define FwRule   "LAN Messenger Client"
 #define RegKey   "Software\LAN Messenger"
@@ -26,13 +27,16 @@ AppId={{2C7E9B44-1D3A-4F6B-8E25-9A0C6D3B7F22}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=LAN Messenger
+AppPublisher=Utkarsh Tripathi
+AppCopyright=Quillo Community License - (c) 2026 Utkarsh Tripathi
 VersionInfoVersion={#AppVersion}
 VersionInfoDescription={#AppName} Setup
-DefaultDirName={autopf}\LAN Messenger
-DefaultGroupName=LAN Messenger
+DefaultDirName={autopf}\Quillo
+DefaultGroupName=Quillo
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
-OutputBaseFilename=LANMessenger-Client-Setup-{#AppVersion}
+OutputBaseFilename=Quillo-Client-Setup-{#AppVersion}
+LicenseFile=..\LICENSE
 SetupIconFile={#RootDir}\assets\app.ico
 UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName}
@@ -56,16 +60,22 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "autostart";   Description: "Start LAN Messenger when Windows starts"; GroupDescription: "Startup:"
-Name: "firewall";    Description: "Allow LAN Messenger through Windows Firewall (automatic server discovery)"; GroupDescription: "Network:"; Check: IsAdminInstallMode
+Name: "autostart";   Description: "Start Quillo when Windows starts"; GroupDescription: "Startup:"
+Name: "firewall";    Description: "Allow Quillo through Windows Firewall (automatic server discovery)"; GroupDescription: "Network:"; Check: IsAdminInstallMode
 
 [Files]
 Source: "{#DistDir}\LANMessenger\*"; DestDir: "{app}"; Excludes: "client_config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; shortcuts made by versions before 1.6.0, when the app was called LAN Messenger
+Type: filesandordirs; Name: "{autoprograms}\LAN Messenger"
+Type: files; Name: "{autodesktop}\LAN Messenger.lnk"
+
 [Icons]
-Name: "{group}\LAN Messenger";           Filename: "{app}\{#ExeName}"
-Name: "{group}\Uninstall LAN Messenger"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\LAN Messenger";     Filename: "{app}\{#ExeName}"; Tasks: desktopicon
+Name: "{group}\Quillo";           Filename: "{app}\{#ExeName}"
+Name: "{group}\Quillo licence";   Filename: "{app}\LICENSE.txt"
+Name: "{group}\Uninstall Quillo"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Quillo";     Filename: "{app}\{#ExeName}"; Tasks: desktopicon
 
 [Registry]
 Root: HKA; Subkey: "{#RegKey}"; Flags: uninsdeletekey
@@ -76,7 +86,7 @@ Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: s
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FwRule}"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FwRule}"" dir=in action=allow program=""{app}\{#ExeName}"" enable=yes profile=any"; \
   Flags: runhidden; Tasks: firewall; StatusMsg: "Configuring Windows Firewall..."
-Filename: "{app}\{#ExeName}"; Description: "Start LAN Messenger now"; Flags: postinstall nowait skipifsilent runasoriginaluser
+Filename: "{app}\{#ExeName}"; Description: "Start Quillo now"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FwRule}"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
@@ -100,7 +110,7 @@ end;
 procedure InitializeWizard;
 begin
   ServerPage := CreateInputQueryPage(wpSelectTasks,
-    'Server address', 'Where is the LAN Messenger server?',
+    'Server address', 'Where is the Quillo server?',
     'Leave this EMPTY to find the server automatically on the network (recommended).' + #13#10 + #13#10 +
     'Only if this PC is on a different subnet / VLAN than the server, enter the server''s IP address ' +
     'or computer name, for example 192.168.1.10  (or 192.168.1.10:5150 if the port was changed).');

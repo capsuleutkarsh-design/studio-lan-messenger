@@ -1,6 +1,6 @@
 {
- "id": "food",
- "title": "Food & Fun",
+ "id": "office",
+ "title": "Office Life",
  "stickers": [
   "01.webp",
   "02.webp",
@@ -14,11 +14,7 @@
   "10.webp",
   "11.webp",
   "12.webp",
-  "13.webp",
-  "14.webp",
-  "15.webp",
-  "16.webp",
-  "17.webp"
+  "13.webp"
  ],
  "credit": "Designed by Freepik"
 }

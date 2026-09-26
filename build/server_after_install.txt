@@ -1,46 +1,57 @@
-LAN Messenger Server is installed.
+Quillo Server is installed.
 
 NEXT STEPS
-1. Open "LAN Messenger Server console" from the Start menu.
-   - Installed "just for me" (no administrator): the server runs in your
-     system tray while you are signed in, and starts when you sign in.
-     Allow it in Windows Firewall when Windows asks (once).
-   - Background-service mode (recommended): the server is already running.
-     The console asks you to sign in with an administrator account.
-   - Tray mode: the console starts the server and keeps it running in the
-     system tray (right-click the tray icon to quit).
+1. Open "Quillo Server console" from the Start menu.
+   - Installed "just for me" (the default, no administrator): the server
+     runs in your system tray while you are signed in, and starts when you
+     sign in. When Windows Firewall asks the first time, click "Allow" -
+     other PCs cannot connect until you do.
+   - Installed "for all users", background-service mode: the server is
+     already running. The console asks you to sign in with an administrator
+     account.
+   - Installed "for all users", tray mode: the console starts the server and
+     keeps it running in the system tray (right-click the tray icon to quit).
 
 2. First sign-in:   username  admin
                     password  admin
    You will be asked to choose a new password straight away.
 
 3. In the console:
+   - Departments: create your departments and sections, and choose which
+     of them get a chat room.
    - Designations: rename/add titles to match your studio.
    - Users: add everyone (department, section, designation, reports to),
-     or use "Import CSV". New users choose their own password at first sign-in.
+     or use "Import CSV".
    - Settings: check the backup folder (ideally on another disk) and the
      password rules.
    - Dashboard: shows this PC's IP address. Clients find the server by
      themselves; if a PC is on another subnet, give it that IP.
 
 WHERE THINGS ARE
-   Program:  C:\Program Files\LAN Messenger Server
+   Program:  "just for me":    %LOCALAPPDATA%\Programs\Quillo Server
+             "for all users":  C:\Program Files\Quillo Server
+             (an upgrade keeps the folder the previous version used)
    Data:     the folders you chose during setup
-             (default C:\ProgramData\LAN Messenger Server)
              messenger.db  accounts and messages
              files\        shared files
              backups\      daily database backups + readable chat logs
              config.json   settings,  server.log  log
-   Start menu > LAN Messenger Server > "Server data folder" opens it.
+   Start menu > Quillo Server > "Server data folder" opens it.
    To move files, backups or the log later: console > Settings.
    In service mode only Administrators can open the data folder
    (it holds every chat).
 
    Upgrading or uninstalling never deletes the data unless you choose to.
 
-SERVICE CONTROL (as administrator, in the program folder)
+SERVICE CONTROL ("for all users" installs, as administrator, in the program folder)
    powershell -ExecutionPolicy Bypass -File service.ps1 status|start|stop|restart
 
 NETWORK
    TCP port 5150 (chat and files) and UDP port 5151 (automatic discovery).
-   The installer added a Windows Firewall rule for the server program.
+   "For all users" installs added a Windows Firewall rule for the server.
+   "Just for me" installs rely on Windows asking once (see step 1).
+
+LICENCE
+   Quillo Community License - (c) 2026 Utkarsh Tripathi.
+   Free to download and use. If you change it, tell the author and share
+   your changes back (see "Quillo licence" in the Start menu).

@@ -66,7 +66,7 @@ class Sidebar(QFrame):
         self.active_conv = None
         self.typing = {}
         self.setFixedWidth(330)
-        self.setStyleSheet(f"Sidebar {{ background: {T.PANEL}; border-right: 1px solid {T.BORDER}; }}")
+        self.setStyleSheet(f"Sidebar {{ background: {T.PANEL}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 16, 0, 0)
         lay.setSpacing(10)
@@ -85,7 +85,7 @@ class Sidebar(QFrame):
         self.search.setPlaceholderText("Search people and rooms")
         self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
-        self.search.setStyleSheet(f"QLineEdit {{ border-radius: 10px; padding: 7px 8px; background: {T.SURFACE};"
+        self.search.setStyleSheet(f"QLineEdit {{ border-radius: 14px; padding: 7px 10px; background: {T.SURFACE};"
                                   f" border: 1px solid {T.SURFACE}; }}"
                                   f"QLineEdit:focus {{ border: 1px solid {T.ACCENT_FOCUS}; background: {T.SURFACE}; }}")
         self.search.textChanged.connect(lambda: self.rebuild())
