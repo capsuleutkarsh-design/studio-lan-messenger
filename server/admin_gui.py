@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from common import theme as T
-from common.icons import asset, icon
+from common.icons import add_show_password, asset, icon
 from common.protocol import human_size
 from server.core import ServerCore, local_ips, startup_error_text
 
@@ -38,6 +38,31 @@ class _CoreEvents(QObject):
     changed = Signal(str)
 
 
+def console_style():
+    """Minimal, soft look for the console: borderless rounded cards, airy tables, quiet headers."""
+    hair = T.mix(T.BORDER, T.PANEL, 0.45)
+    return f"""
+QTableWidget, QTreeWidget, QListWidget {{ background: {T.PANEL}; border: none; border-radius: 18px; padding: 6px 8px;
+    alternate-background-color: {T.PANEL}; }}
+QTableWidget::item {{ padding: 0 10px; border: none; }}
+QTreeWidget::item {{ padding: 8px 10px; border: none; }}
+QTreeWidget::indicator, QTableWidget::indicator, QListWidget::indicator {{ width: 16px; height: 16px;
+    border-radius: 5px; background: {T.SURFACE}; border: 1px solid {T.SCROLL}; }}
+QTreeWidget::indicator:checked, QTableWidget::indicator:checked, QListWidget::indicator:checked {{
+    background: {T.ACCENT}; border: 1px solid {T.ACCENT}; image: url("{T.check_image()}"); }}
+QTableWidget::item:selected, QTreeWidget::item:selected, QListWidget::item:selected {{
+    background: {T.ACCENT_SOFT}; color: {T.TEXT}; border-radius: 10px; }}
+QHeaderView::section {{ background: {T.PANEL}; border: none; border-bottom: 1px solid {hair}; padding: 12px 10px 10px 10px;
+    color: {T.MUTED}; font-size: 8.5pt; font-weight: 600; }}
+QPushButton {{ border-radius: 12px; border: 1px solid {hair}; }}
+QPushButton[primary="true"] {{ border: none; }}
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateTimeEdit {{ border-radius: 12px; border: 1px solid {hair}; }}
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; border: none; padding: 8px 14px; color: {T.MUTED}; font-weight: 600; }}
+QTabBar::tab:selected {{ color: {T.TEXT}; border-bottom: 2px solid {T.ACCENT}; }}
+"""
+
+
 def btn(text, icon_name=None, primary=False, danger=False):
     b = QPushButton(text)
     if icon_name:
@@ -54,11 +79,14 @@ def make_table(headers):
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setSelectionMode(QAbstractItemView.SingleSelection)
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    t.setAlternatingRowColors(True)
+    t.setAlternatingRowColors(False)
     t.setShowGrid(False)
+    t.setFocusPolicy(Qt.NoFocus)
     t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     t.horizontalHeader().setStretchLastSection(True)
-    t.verticalHeader().setDefaultSectionSize(34)
+    t.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    t.horizontalHeader().setHighlightSections(False)
+    t.verticalHeader().setDefaultSectionSize(44)
     return t
 
 
@@ -81,16 +109,17 @@ class Page(QWidget):
     def __init__(self, title, subtitle=""):
         super().__init__()
         self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(28, 24, 28, 24)
-        self.lay.setSpacing(14)
+        self.lay.setContentsMargins(40, 32, 40, 28)
+        self.lay.setSpacing(16)
         head = QLabel(title)
-        T.polish(head, heading=True)
+        head.setStyleSheet("font-size: 19pt; font-weight: 600;")
         self.lay.addWidget(head)
         if subtitle:
             sub = QLabel(subtitle)
-            T.polish(sub, muted=True)
+            sub.setStyleSheet(f"color: {T.MUTED}; font-size: 9.5pt;")
             sub.setWordWrap(True)
             self.lay.addWidget(sub)
+            self.lay.addSpacing(4)
 
     def refresh(self):
         pass
@@ -100,20 +129,25 @@ class Page(QWidget):
 class StatCard(QFrame):
     def __init__(self, title, icon_name):
         super().__init__()
-        self.setStyleSheet(f"QFrame {{ background: {T.PANEL}; border-radius: 14px; }}")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        ic = QLabel()
-        ic.setPixmap(icon(icon_name, T.ACCENT, 26).pixmap(26, 26))
-        lay.addWidget(ic)
-        col = QVBoxLayout()
-        self.value = QLabel("-")
-        self.value.setStyleSheet("font-size: 20pt; font-weight: 700;")
+        self.setObjectName("stat")
+        self.setStyleSheet(f"#stat {{ background: {T.PANEL}; border-radius: 18px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 18)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
         cap = QLabel(title)
-        T.polish(cap, muted=True)
-        col.addWidget(self.value)
-        col.addWidget(cap)
-        lay.addLayout(col, 1)
+        cap.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; background: transparent;")
+        top.addWidget(cap, 1)
+        ic = QLabel()
+        ic.setFixedSize(30, 30)
+        ic.setAlignment(Qt.AlignCenter)
+        ic.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 15px;")
+        ic.setPixmap(icon(icon_name, T.ACCENT, 16).pixmap(16, 16))
+        top.addWidget(ic)
+        lay.addLayout(top)
+        self.value = QLabel("-")
+        self.value.setStyleSheet("font-size: 22pt; font-weight: 600; background: transparent;")
+        lay.addWidget(self.value)
 
 
 class DashboardPage(Page):
@@ -122,7 +156,7 @@ class DashboardPage(Page):
                                       "find it automatically, or can connect to one of the addresses below.")
         self.win = win
         grid = QGridLayout()
-        grid.setSpacing(12)
+        grid.setSpacing(16)
         self.cards = {}
         for i, (key, title, ic) in enumerate([
                 ("online", "Users online", "users"), ("users", "Accounts", "user"),
@@ -133,11 +167,29 @@ class DashboardPage(Page):
             grid.addWidget(card, i // 3, i % 3)
         self.lay.addLayout(grid)
 
-        self.info = QLabel()
-        self.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.info.setStyleSheet(f"background: {T.PANEL}; border-radius: 14px; padding: 18px; line-height: 150%;")
-        self.info.setWordWrap(True)
-        self.lay.addWidget(self.info)
+        self.lay.addSpacing(4)
+        self.warnings = QLabel()
+        self.warnings.setWordWrap(True)
+        self.warnings.setStyleSheet(f"background: {T.mix(T.DANGER, T.PANEL, 0.86)}; color: {T.TEXT};"
+                                    f" border-radius: 14px; padding: 12px 16px;")
+        self.warnings.hide()
+        self.lay.addWidget(self.warnings)
+        box = QFrame()
+        box.setObjectName("details")
+        box.setStyleSheet(f"#details {{ background: {T.PANEL}; border-radius: 18px; }}")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(24, 20, 24, 20)
+        bl.setSpacing(14)
+        self.headline = QLabel()
+        self.headline.setStyleSheet("background: transparent;")
+        bl.addWidget(self.headline)
+        self.details = QGridLayout()
+        self.details.setHorizontalSpacing(28)
+        self.details.setVerticalSpacing(10)
+        self.details.setColumnStretch(1, 1)
+        bl.addLayout(self.details)
+        self.info = box                       # kept for callers that look for it
+        self.lay.addWidget(box)
         self.lay.addStretch(1)
 
     def refresh(self):
@@ -157,31 +209,7 @@ class DashboardPage(Page):
             backup = f"<span style='color:{T.DANGER}'>FAILED {fmt_time(b['time'])}: {b.get('error', '')}</span>"
         else:
             backup = "none since the server started"
-        self.info.setText(
-            f"<b style='font-size:12pt'>{info['server_name']}</b> &nbsp; {state}{uptime}"
-            f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>version {info.get('version', '')}</span><br><br>"
-            f"<span style='color:{T.MUTED}'>Server address(es):</span> <b>{', '.join(info['ips'])}</b><br>"
-            f"<span style='color:{T.MUTED}'>Chat &amp; file port (TCP):</span> <b>{info['tcp_port']}</b>"
-            f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>Discovery port (UDP):</span> <b>{info['discovery_port']}</b><br>"
-            + (f"<span style='color:{T.DANGER}'>&#9888; Automatic discovery is OFF: "
-               f"{info['discovery_error']}. Clients must type this server's address, or change the discovery "
-               f"port in Settings.</span><br>" if running and info.get("discovery_error") else "") +
-            (f"<span style='color:{T.DANGER}'>&#9888; {info['storage_error']}. Chat works; file uploads are "
-             f"refused until the folder is reachable (check the share, or change it in Settings).</span><br>"
-             if running and info.get("storage_error") else "") +
-            f"<span style='color:{T.MUTED}'>Data folder:</span> {info['data_dir']}<br>"
-            f"<span style='color:{T.MUTED}'>File storage:</span> {info['storage_dir']}<br>"
-            f"<span style='color:{T.MUTED}'>Last backup:</span> {backup}<br>"
-            + (f"<span style='color:{T.MUTED}'>Last chat backup:</span> "
-               + (f"<span style='color:{T.ACCENT}'>OK</span> {fmt_time(cb['time'])} ({cb['messages']} new)"
-                  if cb.get("ok") else f"<span style='color:{T.DANGER}'>FAILED: {cb.get('error', '')}</span>")
-               + "<br>" if (cb := info.get("last_chat_backup")) else "")
-            + (f"<span style='color:{T.MUTED}'>Encryption:</span> <span style='color:{T.ACCENT}'>TLS on</span>"
-               f" &nbsp;·&nbsp; <span style='color:{T.MUTED}'>fingerprint</span> "
-               f"<span style='font-family:Consolas; font-size:8pt'>{info.get('fingerprint', '')}</span>"
-               if info.get("tls") else
-               f"<span style='color:{T.MUTED}'>Encryption:</span> "
-               f"<span style='color:{T.DANGER}'>{'OFF' if running else '-'}</span>"))
+        self._show_details(info, running, state, uptime, backup)
         if not running:
             for c in self.cards.values():
                 c.value.setText("-")
@@ -190,6 +218,50 @@ class DashboardPage(Page):
         for key, card in self.cards.items():
             v = stats.get(key, 0)
             card.value.setText(human_size(v) if key == "files_bytes" else f"{v:,}")
+
+    def _show_details(self, info, running, state, uptime, backup):
+        self.headline.setText(f"<span style='font-size:12.5pt; font-weight:600'>{info['server_name']}</span>"
+                              f" &nbsp; {state}<span style='color:{T.MUTED}'>{uptime} &nbsp;·&nbsp; "
+                              f"version {info.get('version', '')}</span>")
+        warn = []
+        if running and info.get("discovery_error"):
+            warn.append(f"Automatic discovery is off: {info['discovery_error']}. Clients must type this server's "
+                        "address, or change the discovery port in Settings.")
+        if running and info.get("storage_error"):
+            warn.append(f"{info['storage_error']}. Chat works; file uploads are refused until the folder is "
+                        "reachable (check the share, or change it in Settings).")
+        self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
+        self.warnings.setVisible(bool(warn))
+        cb = info.get("last_chat_backup")
+        if not cb:
+            chat_backup = "—"
+        elif cb.get("ok"):
+            chat_backup = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(cb['time'])} ({cb['messages']} new)"
+        else:
+            chat_backup = f"<span style='color:{T.DANGER}'>Failed: {cb.get('error', '')}</span>"
+        encryption = (f"<span style='color:{T.ACCENT}'>On</span>" if info.get("tls") else
+                      f"<span style='color:{T.DANGER}'>{'Off' if running else '—'}</span>")
+        rows = [("Address", f"<b>{', '.join(info['ips'])}</b>"),
+                ("Ports", f"{info['tcp_port']} chat &amp; files &nbsp;·&nbsp; {info['discovery_port']} discovery"),
+                ("Encryption", encryption), ("Last backup", backup), ("Last chat backup", chat_backup),
+                ("Data folder", info["data_dir"]), ("File storage", info["storage_dir"])]
+        if info.get("fingerprint"):
+            rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.MUTED}'>"
+                                        f"{info['fingerprint']}</span>"))
+        while self.details.count():
+            w = self.details.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        for r, (key, value) in enumerate(rows):
+            k = QLabel(key)
+            k.setStyleSheet(f"color: {T.MUTED}; background: transparent;")
+            v = QLabel(value)
+            v.setTextFormat(Qt.RichText)
+            v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            v.setWordWrap(True)
+            v.setStyleSheet("background: transparent;")
+            self.details.addWidget(k, r, 0, Qt.AlignTop)
+            self.details.addWidget(v, r, 1)
 
 
 # ================================================================== users
@@ -234,6 +306,7 @@ class UserDialog(QDialog):
         self.title.setPlaceholderText("optional, e.g. Compositor, Matchmove Artist")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
+        add_show_password(self.password)
         self.password.setPlaceholderText("leave empty to keep" if user else "at least 4 characters")
         self.is_admin = QCheckBox("Administrator (full rights in the client)")
         if user:
@@ -413,6 +486,7 @@ class UsersPage(Page):
         form = QFormLayout(dlg)
         pw = QLineEdit()
         pw.setEchoMode(QLineEdit.Password)
+        add_show_password(pw)
         pw.setPlaceholderText("temporary password")
         must = QCheckBox("User must choose a new password at next sign-in")
         try:
@@ -1295,15 +1369,18 @@ class SettingsPage(Page):
         area.setWidgetResizable(True)
         body = QWidget()
         T.bg_pane(body)
+        body.setMaximumWidth(820)
         self.form = form = QFormLayout(body)
-        form.setSpacing(10)
+        form.setSpacing(12)
+        form.setHorizontalSpacing(24)
         form.setContentsMargins(0, 0, 12, 0)
         area.setWidget(body)
         self.lay.addWidget(area, 1)
 
         def section(text):
-            lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {T.ACCENT}; font-weight: 700; padding-top: 14px;")
+            lbl = QLabel(text.upper())
+            lbl.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 700; letter-spacing: 1px;"
+                              f" padding-top: 18px;")
             form.addRow(lbl)
 
         def spin(lo, hi, suffix="", special=None):
@@ -1689,6 +1766,7 @@ class ConsoleLoginDialog(QDialog):
         self.user = QLineEdit("admin")
         self.pw = QLineEdit()
         self.pw.setEchoMode(QLineEdit.Password)
+        add_show_password(self.pw)
         form.addRow("Server", self.host)
         form.addRow("Port", self.port)
         form.addRow("Admin username", self.user)
@@ -1754,6 +1832,7 @@ def change_password_dialog(parent, api) -> bool:
     old, new, new2 = QLineEdit(), QLineEdit(), QLineEdit()
     for e in (old, new, new2):
         e.setEchoMode(QLineEdit.Password)
+        add_show_password(e)
     form.addRow("Current password", old)
     form.addRow("New password", new)
     form.addRow("Repeat new password", new2)
@@ -1789,6 +1868,7 @@ class ServerWindow(QMainWindow):
 
         root = QWidget()
         root.setObjectName("root")
+        root.setStyleSheet(console_style())
         self.setCentralWidget(root)
         lay = QHBoxLayout(root)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1798,20 +1878,19 @@ class ServerWindow(QMainWindow):
         nav = QFrame()
         nav.setFixedWidth(220)
         nav.setObjectName("nav")
-        nav.setStyleSheet(f"#nav {{ background: {T.PANEL}; border-right: 1px solid {T.BORDER}; }}")
+        nav.setStyleSheet(f"#nav {{ background: {T.PANEL}; }}")
         nl = QVBoxLayout(nav)
-        nl.setContentsMargins(14, 18, 14, 14)
+        nl.setContentsMargins(14, 18, 14, 12)
         nl.setSpacing(4)
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
         from common.icons import logo_widget
         brand_row.addWidget(logo_widget(40))
-        brand = QLabel(f"<span style='color:{T.ACCENT}; font-size:13pt; font-weight:800'>LAN</span>"
-                       f"<span style='font-size:13pt; font-weight:800'> Messenger</span><br>"
-                       f"<span style='color:{T.MUTED}'>Server console</span>")
+        brand = QLabel(f"<span style='font-size:12pt; font-weight:600'>LAN Messenger</span><br>"
+                       f"<span style='color:{T.MUTED}; font-size:9pt'>Server console</span>")
         brand_row.addWidget(brand, 1)
         nl.addLayout(brand_row)
-        nl.addSpacing(14)
+        nl.addSpacing(8)
 
         self.stack = QStackedWidget()
         self.users_page = UsersPage(self)
@@ -1838,13 +1917,22 @@ class ServerWindow(QMainWindow):
         nav_list.setStyleSheet("background: transparent;")
         nll = QVBoxLayout(nav_list)
         nll.setContentsMargins(0, 0, 0, 0)
-        nll.setSpacing(2)
+        nll.setSpacing(1)
         nav_scroll = QScrollArea()
         nav_scroll.setWidgetResizable(True)
         nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         nav_scroll.setFrameShape(QFrame.NoFrame)
         nav_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         nav_scroll.setWidget(nav_list)
+        groups = [("Overview", ("Dashboard", "Online now", "Reports")),
+                  ("People", ("Users", "Departments", "Designations", "Org chart")),
+                  ("Messaging", ("Rooms", "Announcement", "Chat review")),
+                  ("System", ("Settings", "Client updates", "Audit log", "Server log"))]
+        index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
+        order = [t for _g, titles in groups for t in titles if t in index]
+        order += [t for t, _ic, _p in self.pages if t not in order]        # anything new still shows up
+        heading_before = {titles[0]: g for g, titles in groups}
+        buttons = {}
         for i, (title, ic, page) in enumerate(self.pages):
             b = QPushButton("  " + title)
             b.setIcon(icon(ic, T.MUTED, 18, active_color=T.ACCENT))
@@ -1852,24 +1940,43 @@ class ServerWindow(QMainWindow):
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(f"""
                 QPushButton {{ text-align: left; background: transparent; color: {T.MUTED}; border: none;
-                               padding: 9px 12px; border-radius: 10px; font-weight: 600; }}
+                               padding: 6px 12px; border-radius: 12px; font-weight: 500; }}
                 QPushButton:hover {{ background: {T.SURFACE}; color: {T.TEXT}; }}
-                QPushButton:checked {{ background: {T.ACCENT_SOFT}; color: {T.TEXT}; }}""")
-            b.setMinimumHeight(36)
+                QPushButton:checked {{ background: {T.ACCENT_SOFT}; color: {T.TEXT}; font-weight: 600; }}""")
+            b.setMinimumHeight(31)
             self.nav_group.addButton(b, i)
-            nll.addWidget(b)
+            buttons[title] = b
             self.stack.addWidget(page)
+        for title in order:
+            if title in heading_before:
+                head = QLabel(heading_before[title].upper())
+                head.setStyleSheet(f"color: {T.FAINT}; font-size: 7.5pt; font-weight: 700; letter-spacing: 1px;"
+                                   f" padding: {'2' if title == order[0] else '10'}px 12px 3px 12px;")
+                nll.addWidget(head)
+            nll.addWidget(buttons[title])
         nll.addStretch(1)
         self.nav_group.idClicked.connect(self.show_page)
         nl.addWidget(nav_scroll, 1)
 
+        status = QFrame()
+        status.setObjectName("status")
+        status.setStyleSheet(f"#status {{ background: {T.SURFACE}; border-radius: 16px; }}")
+        sl = QVBoxLayout(status)
+        sl.setContentsMargins(14, 12, 14, 12)
+        sl.setSpacing(8)
         self.state_label = QLabel()
         self.state_label.setWordWrap(True)
-        nl.addWidget(self.state_label)
+        self.state_label.setStyleSheet("background: transparent;")
+        sl.addWidget(self.state_label)
         self.toggle_btn = btn("Stop server", "power")
+        self.toggle_btn.setStyleSheet(f"QPushButton {{ background: {T.PANEL}; border: none; border-radius: 10px;"
+                                      f" padding: 6px 10px; font-weight: 600; }}"
+                                      f"QPushButton:hover {{ background: {T.SURFACE_HOVER}; }}")
         self.toggle_btn.clicked.connect(self.toggle_server)
-        nl.addWidget(self.toggle_btn)
+        sl.addWidget(self.toggle_btn)
         self.toggle_btn.setVisible(not api.remote)
+        nl.addSpacing(8)
+        nl.addWidget(status)
 
         lay.addWidget(nav)
         lay.addWidget(self.stack, 1)
@@ -1925,6 +2032,9 @@ class ServerWindow(QMainWindow):
 
     def show_page(self, i):
         self.stack.setCurrentIndex(i)
+        button = self.nav_group.button(i)
+        if button and not button.isChecked():
+            button.setChecked(True)
         self.refresh_current()
 
     def refresh_current(self):
@@ -1972,12 +2082,12 @@ class ServerWindow(QMainWindow):
                 self.state_label.setText(f"<span style='color:{T.DANGER}'>● Not connected</span>")
             return
         if self.core.running:
-            self.state_label.setText(f"<span style='color:{T.ACCENT}'>● Running</span><br>"
-                                     f"<span style='color:{T.MUTED}'>{', '.join(local_ips())}"
+            self.state_label.setText(f"<span style='color:{T.STATUS_COLORS['online']}'>●</span>&nbsp; <b>Running</b><br>"
+                                     f"<span style='color:{T.MUTED}; font-size:8.5pt'>{', '.join(local_ips())}"
                                      f" : {self.core.config['tcp_port']}</span>")
             self.toggle_btn.setText("Stop server")
         else:
-            self.state_label.setText(f"<span style='color:{T.DANGER}'>● Stopped</span>")
+            self.state_label.setText(f"<span style='color:{T.DANGER}'>●</span>&nbsp; <b>Stopped</b>")
             self.toggle_btn.setText("Start server")
 
     def toggle_server(self):

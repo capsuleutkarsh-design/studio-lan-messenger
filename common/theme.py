@@ -208,6 +208,22 @@ def _icon_file(name, svg):
     return path.replace("\\", "/")
 
 
+def tick_image(double, color):
+    """Message receipt ticks as a small image (the text glyph looks like a square root at small sizes).
+
+    Drawn at twice the size it is shown (17 x 11) so it stays crisp."""
+    stroke = f'fill="none" stroke="{color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"'
+    first = f'<path d="M3 12.5l5.5 5.5L20 4" {stroke}/>'
+    second = f'<path d="M15.5 16.5l1.5 1.5L31 4" {stroke}/>'
+    return _icon_file(f"tick{'2' if double else '1'}_v2_{color.strip('#')}.svg",
+                      f'<svg xmlns="http://www.w3.org/2000/svg" width="34" height="22" viewBox="0 0 34 22">'
+                      f'{first}{second if double else ""}</svg>')
+
+
+def check_image():
+    return _check_image()
+
+
 def _check_image():
     color = ACCENT_TEXT
     return _icon_file(f"check_{color.strip('#')}.svg",

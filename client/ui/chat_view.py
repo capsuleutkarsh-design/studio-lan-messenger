@@ -765,13 +765,12 @@ class MessageRow(QWidget):
         if self.seen:
             t = f"{esc(self.seen)}&nbsp;·&nbsp;{t}"
         if self.mine and not self.is_room and not self.msg.get("deleted"):
-            if self.msg.get("read"):
-                tick = f"<span style='color:{T.ACCENT}'>✓✓</span>"
-            elif self.msg.get("delivered"):
-                tick = "✓✓"
-            else:
-                tick = "✓"
+            read, delivered = self.msg.get("read"), self.msg.get("delivered")
+            path = T.tick_image(bool(read or delivered), T.ACCENT if read else T.MUTED)
+            tip = "Read" if read else "Delivered" if delivered else "Sent"
+            tick = f"<img src='{path}' width='17' height='11'>" if path else ("✓✓" if read or delivered else "✓")
             self.meta.setText(f"{t}&nbsp;&nbsp;{tick}")
+            self.meta.setToolTip(tip)
         else:
             self.meta.setText(t)
 
