@@ -19,6 +19,9 @@ DEFAULTS = {
     "server_host": "",
     "server_port": TCP_PORT,
     "server_name": "",           # shown on the sign-in screen instead of the address
+    "calendar_view": "month",
+    "calendar_layers": [],       # empty = all
+    "meeting_reminder_min": 10,  # remind me this many minutes before a meeting (0 = never)
     "username": "",
     "remember": False,
     "password_blob": "",

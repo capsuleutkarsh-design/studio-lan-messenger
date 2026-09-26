@@ -63,6 +63,8 @@ class Store(QObject):
     update_available = Signal(dict)
     reminder_fired = Signal(dict)          # a reminder is due now
     planner_changed = Signal()             # reminders / scheduled messages list changed
+    calendar_changed = Signal()            # something on the calendar changed: fetch again
+    event_invite = Signal(dict)            # someone invited me to a meeting
 
     def __init__(self, conn):
         super().__init__()
@@ -76,6 +78,7 @@ class Store(QObject):
         self.muted: set[str] = set()
         self.reminders: list[dict] = []
         self.scheduled: list[dict] = []
+        self.calendar = None                      # the next two weeks (Home, meeting reminders)
         self.server_name = ""
         self.max_file_size = 0
         self.is_viewing = lambda conv: False      # set by the main window
@@ -168,8 +171,11 @@ class Store(QObject):
 
     @staticmethod
     def status_text(u):
-        """Custom status, e.g. '🍽️ Lunch' (empty if none)."""
-        return " ".join(x for x in ((u or {}).get("status_emoji", ""), (u or {}).get("status_msg", "")) if x)
+        """Custom status, e.g. '🍽️ Lunch' (empty if none); 'On leave' while on leave."""
+        custom = " ".join(x for x in ((u or {}).get("status_emoji", ""), (u or {}).get("status_msg", "")) if x)
+        if (u or {}).get("on_leave") and not custom:
+            return "🌴 On leave"
+        return custom
 
     def designation_line(self, u):
         """'Lead · Compositing · Roto'"""
@@ -205,7 +211,9 @@ class Store(QObject):
         self.allow_name_change = boot.get("allow_name_change", False)
         self.reminders = boot.get("reminders", [])
         self.scheduled = boot.get("scheduled", [])
+        self.calendar = boot.get("calendar")
         self.planner_changed.emit()
+        self.calendar_changed.emit()
         self.users = {u["id"]: u for u in boot["users"] if u["id"] != self.my_id}
         self.rooms = {r["id"]: r for r in boot["rooms"]}
         for item in boot["recent"]:
@@ -257,6 +265,11 @@ class Store(QObject):
             self.planner_changed.emit()
         elif op == "update_available":
             self.update_available.emit(ev["update"])
+        elif op == "calendar_changed":
+            self.calendar_changed.emit()
+        elif op == "event_invite":
+            self.event_invite.emit(ev)
+            self.calendar_changed.emit()
         elif op == "presence":
             uid = ev["user_id"]
             if uid in self.users:

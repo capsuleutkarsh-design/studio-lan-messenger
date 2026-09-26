@@ -61,15 +61,20 @@ can also connect to a server on another PC (admin / IT login).
 2. **Designations**: rename or add titles to match your studio (see below).
 3. **Departments**: add your departments, and sections inside them (select a department → *Add section*).
    Tick **Chat room** for each department or section that should have its own room (see below).
-4. **Users → Add user**, or **Import CSV** with the columns
-   `username,password,display_name,department,section,designation,reports_to,title`
-   (`reports_to` = the lead's username; `designation` must match a name on the Designations page;
-   `department` / `section` must already exist on the Departments page).
-   People sign in with the password you give them (to make them pick their own at first sign-in,
-   tick it in Settings → Passwords).
+4. **Users → Excel template**: an Excel file that already lists everyone, with dropdowns for department,
+   section, designation and *reports to*, and columns for employee ID, birthday and joining date. Fill it in
+   and use **Users → Import** (a CSV works too). You see "X new, Y changed" and any problems before anything
+   is saved. New departments and sections are created; an empty cell keeps the current value, `-` clears it;
+   new people without a password get a random one - the console saves a list of first passwords for you to
+   hand out, and they choose their own at first sign-in. Or add people one by one with **Add user**.
 5. **Settings**: backup folder (ideally another disk), password rules, file size and clean-up, pipeline API,
    chat review.
 6. Use **Rooms → New room** for projects.
+6a. **Holidays**: India's public and festival holidays are listed up to 2035. Tick the days your studio is
+   closed (national days are ticked already). Festival dates follow the lunar calendar - the ones marked
+   *check the date* can be a day off from your almanac, so check them each year. Add your own days, import
+   an `.ics` file, or add India's list for a later year. HR (designations that can manage accounts) can do
+   the same from the calendar in the app (*New → Studio holidays*).
 7. **Org chart** shows who reports to whom; people without a lead appear under *Not in a reporting line*.
 
 ## 3. Designations and permissions

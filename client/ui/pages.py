@@ -137,7 +137,7 @@ class HomePage(QWidget):
                              timeout=lambda: self.rebuild() if self.isVisible() else None)
         s = self.store
         for sig in (s.unread_changed, s.announcements_changed, s.users_changed, s.me_changed, s.rooms_changed,
-                    s.planner_changed):
+                    s.planner_changed, s.calendar_changed):
             sig.connect(self.schedule)
         s.conv_changed.connect(self.schedule)
         s.user_updated.connect(self.schedule)
@@ -195,7 +195,7 @@ class HomePage(QWidget):
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(18)
         upcoming = self.store.reminders or [x for x in self.store.scheduled if x["state"] == "pending"]
-        cards = [self._catch_up(), self._announcements(), self._team(),
+        cards = [self._catch_up(), self._calendar(), self._announcements(), self._team(),
                  self._coming_up() if upcoming else self._tip()]
         for i, card in enumerate(cards):          # two columns when there is room, else one below the other
             grid.addWidget(card, i // 2 if wide else i, i % 2 if wide else 0)
@@ -457,6 +457,43 @@ class HomePage(QWidget):
             grid.addWidget(cell, i // cols, i % cols)
         grid.setColumnStretch(cols, 1)
         body.addLayout(grid)
+        return frame
+
+    def _calendar(self):
+        """A small month (dots on days with something) and what's on in the next days."""
+        from client.ui.calendar_views import MiniMonth, entries_from, kind_color
+        frame, body = _panel("Calendar", "Open calendar", lambda: self.ctx.open_calendar())
+        data = self.store.calendar
+        layers = {"meeting", "event", "note", "deadline", "holiday", "leave", "birthday", "anniversary"}
+        entries = entries_from(data, layers, self.store.my_id)
+        today = datetime.date.today()
+        mini = MiniMonth()
+        mini.set_data(today, entries, {datetime.date.fromisoformat(h["day"]) for h in (data or {}).get("holidays", [])})
+        mini.day_clicked.connect(lambda d: self.ctx.open_calendar(d))
+        body.addWidget(mini)
+        soon = [e for e in entries if today <= e.start.date() <= today + datetime.timedelta(days=6)
+                or (e.all_day and e.start.date() <= today < e.end.date())][:4]
+        if not soon:
+            empty = QLabel("Nothing planned this week.")
+            empty.setStyleSheet(f"color: {T.MUTED}; background: transparent;")
+            body.addWidget(empty)
+        for e in soon:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            dot = QLabel()
+            dot.setFixedSize(8, 8)
+            dot.setStyleSheet(f"background: {kind_color(e.kind)}; border-radius: 4px;")
+            row.addWidget(dot, 0, Qt.AlignVCenter)
+            d = e.start.date()
+            day = "Today" if d <= today else ("Tomorrow" if d == today + datetime.timedelta(days=1) else f"{d:%a %d}")
+            when = QLabel(day + ("" if e.all_day else f" {e.start:%H:%M}"))
+            when.setFixedWidth(92)
+            when.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; background: transparent;")
+            row.addWidget(when)
+            t = plain(QLabel(e.title))
+            t.setStyleSheet("font-weight: 600; background: transparent;")
+            row.addWidget(t, 1)
+            body.addLayout(row)
         return frame
 
     def _coming_up(self):

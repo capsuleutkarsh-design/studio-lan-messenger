@@ -606,6 +606,10 @@ class SettingsDialog(Dialog):
         self.autostart.setChecked(cfg["start_with_windows"])
         self.allow_buzz = QCheckBox("Let people buzz me (shakes this window and rings, even on Do not disturb)")
         self.allow_buzz.setChecked(cfg["allow_buzz"])
+        self.meet_remind = QComboBox()
+        for minutes in (0, 5, 10, 15, 30, 60):
+            self.meet_remind.addItem("Don't remind me" if not minutes else f"{minutes} minutes before", minutes)
+        self.meet_remind.setCurrentIndex(max(0, self.meet_remind.findData(int(cfg.get("meeting_reminder_min", 10)))))
         self.away = QSpinBox()
         self.away.setRange(0, 240)
         self.away.setSuffix(" minutes")
@@ -619,6 +623,7 @@ class SettingsDialog(Dialog):
         form.addRow("", self.notifications)
         form.addRow("", self.sounds)
         form.addRow("", self.allow_buzz)
+        form.addRow("Meetings", self.meet_remind)
         section(form, "Files")
         form.addRow("Download folder", row)
         section(form, "Startup & presence")
@@ -673,6 +678,7 @@ class SettingsDialog(Dialog):
         cfg["close_to_tray"] = self.close_to_tray.isChecked()
         cfg["auto_away_minutes"] = self.away.value()
         cfg["allow_buzz"] = self.allow_buzz.isChecked()
+        cfg["meeting_reminder_min"] = self.meet_remind.currentData()
         if cfg["start_with_windows"] != self.autostart.isChecked():
             cfg["start_with_windows"] = self.autostart.isChecked()
             from client.config import set_autostart

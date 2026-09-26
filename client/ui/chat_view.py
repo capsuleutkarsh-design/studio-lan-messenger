@@ -1324,9 +1324,11 @@ class ChatView(QWidget):
         self.b_search.clicked.connect(lambda: self.ctx.show_search())
         self.b_members = IconButton("users", "Members", 38, 19)
         self.b_members.clicked.connect(lambda: self.ctx.show_room_info(self.conv))
+        self.b_calendar = IconButton("calendar", "This room's calendar - meetings, deadlines and notes", 38, 19)
+        self.b_calendar.clicked.connect(lambda: self.ctx.open_calendar(room_id=P.parse_conv(self.conv)[1]))
         self.b_more = IconButton("more_options", "More", 38, 18)
         self.b_more.clicked.connect(self.more_menu)
-        for b in (self.b_buzz, self.b_screen, self.b_search, self.b_members, self.b_more):
+        for b in (self.b_buzz, self.b_screen, self.b_search, self.b_calendar, self.b_members, self.b_more):
             hl.addWidget(b)
         lay.addWidget(head)
 
@@ -1560,6 +1562,7 @@ class ChatView(QWidget):
         self.title.setText(title)
         is_room = kind == "r"
         self.b_members.setVisible(is_room)
+        self.b_calendar.setVisible(is_room and not self.compact)
         self.b_screen.setVisible(not is_room and target != self.store.my_id and not self.compact)
         self.b_search.setVisible(not self.compact)
         self.b_buzz.setVisible(target != self.store.my_id and getattr(self.store, "buzz_enabled", False)
