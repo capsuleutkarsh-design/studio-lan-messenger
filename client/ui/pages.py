@@ -18,7 +18,7 @@ class PageHeader(QFrame):
     def __init__(self, title, subtitle=""):
         super().__init__()
         self.setFixedHeight(68)
-        self.setStyleSheet(f"PageHeader {{ background: {T.BG}; border-bottom: 1px solid {T.BORDER}; }}")
+        self.setStyleSheet(f"PageHeader {{ background: {T.BG}; }}")
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(24, 10, 18, 10)
         col = QVBoxLayout()
@@ -66,7 +66,7 @@ def _panel(title, action_text=None, action=None):
     """Rounded card with a heading row; returns (frame, body layout)."""
     frame = QFrame()
     frame.setObjectName("panel")
-    frame.setStyleSheet(f"#panel {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 16px; }}")
+    frame.setStyleSheet(f"#panel {{ background: {T.PANEL}; border-radius: 20px; }}")
     lay = QVBoxLayout(frame)
     lay.setContentsMargins(18, 14, 18, 16)
     lay.setSpacing(8)
@@ -222,7 +222,7 @@ class HomePage(QWidget):
         hero = QFrame()
         hero.setObjectName("hero")
         deep = T.mix(T.ACCENT, T.BG, 0.28)
-        hero.setStyleSheet(f"#hero {{ border-radius: 20px; border: 1px solid {T.BORDER};"
+        hero.setStyleSheet(f"#hero {{ border-radius: 24px;"
                            f" background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {deep}, stop:1 {T.PANEL}); }}")
         h = QHBoxLayout(hero)
         h.setContentsMargins(28, 24, 24, 24)
@@ -300,9 +300,9 @@ class HomePage(QWidget):
         row = QGridLayout()
         row.setSpacing(12)
         for i, (ic, title, sub, fn) in enumerate(items):
-            tile = _Clickable(fn, 14)
-            tile.setStyleSheet(f"#click {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 14px; }}"
-                               f"#click:hover {{ border: 1px solid {T.ACCENT_FOCUS}; background: {T.SURFACE}; }}")
+            tile = _Clickable(fn, 18)
+            tile.setStyleSheet(f"#click {{ background: {T.PANEL}; border-radius: 18px; }}"
+                               f"#click:hover {{ background: {T.SURFACE}; }}")
             tl = QHBoxLayout(tile)
             tl.setContentsMargins(14, 12, 14, 12)
             tl.setSpacing(12)
@@ -540,7 +540,7 @@ class AnnouncementCard(QFrame):
         super().__init__()
         unread = not ann.get("read")
         border = T.ACCENT if unread else T.BORDER
-        self.setStyleSheet(f"AnnouncementCard {{ background: {T.PANEL}; border-radius: 14px;"
+        self.setStyleSheet(f"AnnouncementCard {{ background: {T.PANEL}; border-radius: 18px;"
                            f" border-left: 4px solid {border}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
@@ -685,7 +685,7 @@ class TransferRow(QFrame):
         super().__init__()
         self.manager = manager
         self.t = t
-        self.setStyleSheet(f"TransferRow {{ background: {T.PANEL}; border-radius: 12px; }}")
+        self.setStyleSheet(f"TransferRow {{ background: {T.PANEL}; border-radius: 16px; }}")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(14, 10, 10, 10)
         lay.setSpacing(12)

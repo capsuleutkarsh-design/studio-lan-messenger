@@ -1320,7 +1320,7 @@ class _DailyChart(QWidget):
 class UpdatesPage(Page):
     def __init__(self, win):
         super().__init__("Client updates", "Publish a new client version: build it (build\\build.bat), then copy "
-                                           "LANMessenger-Client-Setup-x.y.z.exe into the updates folder below. "
+                                           "Quillo-Client-Setup-x.y.z.exe into the updates folder below. "
                                            "Signed-in clients are told within a minute and can install it "
                                            "(Windows asks for an administrator password on PCs where the user "
                                            "is not an admin). For silent roll-outs use your deployment tool.")
@@ -1749,7 +1749,7 @@ class ConsoleLoginDialog(QDialog):
 
     def __init__(self, host="127.0.0.1", port=5150, note=""):
         super().__init__()
-        self.setWindowTitle("LAN Messenger Server console")
+        self.setWindowTitle("Quillo Server console")
         self.setWindowIcon(ServerWindow._app_icon())
         self.setMinimumWidth(420)
         self.api = None
@@ -1861,7 +1861,7 @@ class ServerWindow(QMainWindow):
         self.api = api
         self.core = getattr(api, "core", None)          # only in local mode
         self.quitting = False
-        self.setWindowTitle("LAN Messenger Server" + (f" — {api.label}" if api.remote else ""))
+        self.setWindowTitle("Quillo Server" + (f" — {api.label}" if api.remote else ""))
         self.setWindowIcon(self._app_icon())
         self.resize(1140, 740)
         self.setMinimumSize(920, 580)
@@ -1886,7 +1886,7 @@ class ServerWindow(QMainWindow):
         brand_row.setSpacing(10)
         from common.icons import logo_widget
         brand_row.addWidget(logo_widget(40))
-        brand = QLabel(f"<span style='font-size:12pt; font-weight:600'>LAN Messenger</span><br>"
+        brand = QLabel(f"<span style='font-size:12pt; font-weight:600'>Quillo</span><br>"
                        f"<span style='color:{T.MUTED}; font-size:9pt'>Server console</span>")
         brand_row.addWidget(brand, 1)
         nl.addLayout(brand_row)
@@ -1977,6 +1977,8 @@ class ServerWindow(QMainWindow):
         self.toggle_btn.setVisible(not api.remote)
         nl.addSpacing(8)
         nl.addWidget(status)
+        from common.icons import license_label
+        nl.addWidget(license_label(align=Qt.AlignLeft, wrap=True))
 
         lay.addWidget(nav)
         lay.addWidget(self.stack, 1)
@@ -2012,7 +2014,7 @@ class ServerWindow(QMainWindow):
 
     def _make_tray(self):
         self.tray = QSystemTrayIcon(self._app_icon(), self)
-        self.tray.setToolTip("LAN Messenger Server" + (" console" if self.api.remote else ""))
+        self.tray.setToolTip("Quillo Server" + (" console" if self.api.remote else ""))
         m = QMenu()
         m.addAction("Open console", self.show_normal)
         m.addSeparator()
@@ -2121,7 +2123,7 @@ class ServerWindow(QMainWindow):
             return
         event.ignore()
         self.hide()
-        self.tray.showMessage("LAN Messenger Server", "The server keeps running in the background. "
+        self.tray.showMessage("Quillo Server", "The server keeps running in the background. "
                               "Right-click the tray icon to quit.", QSystemTrayIcon.Information, 3000)
 
     def quit(self):

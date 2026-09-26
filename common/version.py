@@ -1,10 +1,26 @@
 """Version and product information (used by the apps, the exe file properties and the installers)."""
 
-APP_VERSION = "1.5.6"
-PUBLISHER = "LAN Messenger"
-PRODUCT_NAME = "LAN Messenger"
-SERVER_PRODUCT_NAME = "LAN Messenger Server"
+APP_VERSION = "1.6.0"
+AUTHOR = "Utkarsh Tripathi"
+PUBLISHER = AUTHOR
+PRODUCT_NAME = "Quillo"
+SERVER_PRODUCT_NAME = "Quillo Server"
+LICENSE_NAME = "Quillo Community License"
+LICENSE_LINE = f"{LICENSE_NAME}  ·  © 2026 {AUTHOR}"
+REPOSITORY = "https://github.com/capsuleutkarsh-design/studio-lan-messenger"
 
+
+def license_path():
+    """The full licence text: LICENSE.txt next to the installed program, or LICENSE in the source folder."""
+    import os
+    import sys
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "LICENSE.txt")
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "LICENSE")
+
+
+# Internal names below keep the old "LANMessenger" spelling on purpose: installed copies, the installers
+# and the Windows service find each other by them, so renaming would break upgrades.
 # Named mutexes let the installers detect a running copy and ask to close it.
 CLIENT_MUTEX = "LANMessengerClientMutex"
 SERVER_MUTEX = "LANMessengerServerMutex"

@@ -1,5 +1,5 @@
 <#
-  LAN Messenger Server - background service control.
+  Quillo Server - background service control.
 
   Runs LANMessengerServer.exe --headless at Windows startup as SYSTEM (no user needs to be logged on),
   restarts it automatically if it stops unexpectedly, never times out.
@@ -36,7 +36,7 @@ switch ($Action) {
             -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
         Stop-Server
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
-            -Settings $settings -Description "LAN Messenger Server running in the background (no login needed)." `
+            -Settings $settings -Description "Quillo Server running in the background (no login needed)." `
             -Force | Out-Null
         Start-ScheduledTask -TaskName $TaskName
         # wait until the server holds its mutex: the console opened right after setup must find it running

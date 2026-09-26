@@ -1,6 +1,8 @@
 # Administrator & IT guide
 
-Everything needed to install, run and look after LAN Messenger in a studio.
+Everything needed to install, run and look after Quillo in a studio.
+
+> Quillo was called *LAN Messenger* before version 1.6.0. Upgrading keeps everything: the installers still use the old internal names (data folders, registry keys, the service task, program files), so only what you see changes.
 For what the app does, see the [README](../README.md).
 
 - [1. Install the server](#1-install-the-server)
@@ -20,7 +22,7 @@ For what the app does, see the [README](../README.md).
 ## 1. Install the server
 
 Pick one always-on PC (a small workstation or a VM is plenty; load-tested with 500 people online at once: 500 signed in within 2 s, ~390,000 deliveries with none lost, typical delivery 3–40 ms, server ~460 MB of RAM).
-Run **`LANMessenger-Server-Setup-x.y.z.exe`**. It first asks how to install:
+Run **`Quillo-Server-Setup-x.y.z.exe`**. It first asks how to install:
 
 - **Install for me only** (recommended, **no administrator needed**): installs into your user folder and runs the
   server in the system tray under your Windows account, starting when you sign in. Your mapped drives and NAS
@@ -32,7 +34,7 @@ Run **`LANMessenger-Server-Setup-x.y.z.exe`**. It first asks how to install:
   - **Run as a background service**: starts with Windows, nobody needs to be logged in
     (alternative: *start in the tray when I log in*)
 
-The setup installs to `C:\Program Files\LAN Messenger Server` (all users) or `%LOCALAPPDATA%\Programs\LAN Messenger Server` (just for me). The page **Where to keep the data** asks for:
+The setup installs to `C:\Program Files\Quillo Server` (all users) or `%LOCALAPPDATA%\Programs\Quillo Server` (just for me); an upgrade keeps the folder the earlier version used. The page **Where to keep the data** asks for:
 
 | Folder | Default | Where it may be |
 |---|---|---|
@@ -52,7 +54,7 @@ to delete the data folder (files and backups kept elsewhere are never deleted).
 
 ## 2. First-time setup
 
-Open **LAN Messenger Server** from the Start menu. It opens the console for the running service; the console
+Open **Quillo Server console** from the Start menu. It opens the console for the running service; the console
 can also connect to a server on another PC (admin / IT login).
 
 1. Sign in as **admin / admin**. You must choose a new password straight away.
@@ -100,7 +102,7 @@ and the old automatic rooms stay as normal rooms; ticking Chat room picks the ol
 
 ## 4. Install the clients
 
-Run **`LANMessenger-Client-Setup-x.y.z.exe`** on every PC. It asks *Install for me only* (no administrator
+Run **`Quillo-Client-Setup-x.y.z.exe`** on every PC. It asks *Install for me only* (no administrator
 rights needed; goes to `%LOCALAPPDATA%\Programs`) or *for all users* (administrator). Leave the *Server address*
 page empty and the client finds the server by itself; enter the server's IP only for PCs on a different subnet /
 VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question.
@@ -108,12 +110,12 @@ VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.5.6.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.5.6.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
+Quillo-Client-Setup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+Quillo-Client-Setup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
-downloads in `Downloads\LAN Messenger` (changeable in Settings).
+downloads in `Downloads\Quillo` (changeable in Settings; earlier installs keep `Downloads\LAN Messenger`).
 
 **Portable use** without installing: copy a `build\dist\...` folder anywhere. A portable server keeps its data in
 `server_data\` next to the exe if that folder exists (`firewall_setup.bat`, run as administrator, opens the ports).
@@ -126,7 +128,7 @@ IP in it.
 2. **Server first:** run the new server setup over the old one. Accounts, messages, files and settings are kept;
    the database updates itself on start.
 3. **Then the clients:** either run the new client setup on each PC (it closes and restarts a running client and
-   keeps everyone's settings), or copy `LANMessenger-Client-Setup-x.y.z.exe` into the server's `updates` folder
+   keeps everyone's settings), or copy `Quillo-Client-Setup-x.y.z.exe` into the server's `updates` folder
    (console → *Client updates*). Signed-in users then see "version x.y.z is available"; people who are
    administrators on their PC install it with one click, everyone else is told to ask IT.
 

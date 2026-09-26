@@ -15,7 +15,7 @@ pushed by the server without being asked have no ``rid``.
 
 import json
 
-APP_NAME = "LAN Messenger"
+APP_NAME = "Quillo"
 PROTOCOL_VERSION = 1
 
 TCP_PORT = 5150

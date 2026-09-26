@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from common import protocol as P
 from common import theme as T
-from common.icons import add_show_password, asset, icon, logo_widget, pixmap
+from common.icons import add_show_password, asset, icon, license_label, logo_widget, pixmap
 from client.network import Discovery
 from client.ui.widgets import IconButton, plain
 
@@ -19,7 +19,7 @@ class LoginWindow(QWidget):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.setWindowTitle("LAN Messenger")
+        self.setWindowTitle("Quillo")
         self.setWindowIcon(QIcon(asset("app.ico")))
         self.setFixedSize(860, 580)
         self.setObjectName("root")
@@ -48,7 +48,7 @@ class LoginWindow(QWidget):
         hl.setSpacing(10)
         hl.addWidget(logo_widget(64))
         hl.addSpacing(10)
-        name = QLabel("LAN Messenger")
+        name = QLabel("Quillo")
         name.setStyleSheet(f"color: {ink}; font-size: 22pt; font-weight: 800;")
         hl.addWidget(name)
         if T.FESTIVAL:
@@ -142,6 +142,7 @@ class LoginWindow(QWidget):
         help_.setAlignment(Qt.AlignCenter)
         help_.setStyleSheet(f"color: {T.FAINT}; font-size: 8.5pt;")
         lay.addWidget(help_)
+        lay.addWidget(license_label(align=Qt.AlignCenter))
         outer.addWidget(form, 1)
 
         for w in (self.username, self.password):

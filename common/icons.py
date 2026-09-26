@@ -87,10 +87,18 @@ def asset(*parts) -> str:
 
 
 def logo_widget(size: int):
-    """The app logo (the 'Prism' tile - a fixed brand mark that works on any background)."""
-    from PySide6.QtSvgWidgets import QSvgWidget
-    w = QSvgWidget(asset("logo.svg"))
-    w.setFixedSize(w.renderer().defaultSize().scaled(size, size, Qt.KeepAspectRatio))
+    """The Quillo logo (the Q mark on its white tile - a fixed brand mark that works on any background)."""
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QLabel
+    w = QLabel()
+    ratio = max(2.0, QGuiApplication.instance().devicePixelRatio() if QGuiApplication.instance() else 1.0)
+    pm = QPixmap(asset("logo.png"))
+    if not pm.isNull():
+        pm = pm.scaled(round(size * ratio), round(size * ratio), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pm.setDevicePixelRatio(ratio)
+        w.setPixmap(pm)
+    w.setFixedSize(size, size)
+    w.setStyleSheet("background: transparent;")
     return w
 
 
@@ -155,3 +163,21 @@ def icon(name: str, color: str | None = None, size: int = 20, active_color: str 
         ic.addPixmap(pixmap(name, active_color, size), QIcon.Normal, QIcon.On)
         ic.addPixmap(pixmap(name, active_color, size), QIcon.Active, QIcon.On)
     return ic
+
+
+def license_label(color=None, align=Qt.AlignRight, wrap=False):
+    """The very small licence line shown at the bottom of every window; click it to read the licence."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QLabel
+    from common import theme as T
+    from common.version import LICENSE_LINE, license_path
+    lbl = QLabel(LICENSE_LINE)
+    lbl.setTextFormat(Qt.PlainText)
+    lbl.setWordWrap(wrap)
+    lbl.setAlignment(align | Qt.AlignVCenter)
+    lbl.setCursor(Qt.PointingHandCursor)
+    lbl.setToolTip("Free to download and use. Changed it? Tell the author and share it back - click to read the licence.")
+    lbl.setStyleSheet(f"color: {color or T.FAINT}; font-size: 7pt; background: transparent; padding: 2px 10px 3px 10px;")
+    lbl.mousePressEvent = lambda _e: QDesktopServices.openUrl(QUrl.fromLocalFile(license_path()))
+    return lbl

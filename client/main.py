@@ -1,4 +1,4 @@
-"""LAN Messenger client entry point.
+"""Quillo client entry point.
 
     python -m client.main              # normal start
     python -m client.main --minimized  # start in the tray (used for Windows startup)
@@ -180,17 +180,17 @@ def setup_logging():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="LAN Messenger client")
+    ap = argparse.ArgumentParser(description="Quillo client")
     ap.add_argument("--minimized", action="store_true", help="start in the system tray")
     args, _ = ap.parse_known_args()
 
     log_file = setup_logging()
     from common import crash
-    crash.install("LAN Messenger", log_file)
+    crash.install("Quillo", log_file)
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
-    app.setApplicationName("LAN Messenger")
+    app.setApplicationName("Quillo")
     app.setWindowIcon(QIcon(asset("app.ico")))
     app.setQuitOnLastWindowClosed(False)
     cfg = ClientConfig()
@@ -250,5 +250,5 @@ if __name__ == "__main__":
         with open(os.path.join(config_dir(), "crash.log"), "a", encoding="utf-8") as f:
             traceback.print_exc(file=f)
         if QApplication.instance():
-            QMessageBox.critical(None, "LAN Messenger", f"Unexpected error:\n{e}")
+            QMessageBox.critical(None, "Quillo", f"Unexpected error:\n{e}")
         raise

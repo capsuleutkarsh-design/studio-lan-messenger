@@ -1,4 +1,4 @@
-"""Build LAN Messenger: both programs (PyInstaller) and both installers (Inno Setup).
+"""Build Quillo: both programs (PyInstaller) and both installers (Inno Setup).
 
     build\\build.bat                 (or: .venv\\Scripts\\python build\\build.py)
 
@@ -9,8 +9,8 @@ Options:
 Output (all inside the build folder):
     build\\dist\\LANMessenger\\          client program folder
     build\\dist\\LANMessengerServer\\    server program folder
-    build\\output\\LANMessenger-Client-Setup-<version>.exe
-    build\\output\\LANMessenger-Server-Setup-<version>.exe
+    build\\output\\Quillo-Client-Setup-<version>.exe
+    build\\output\\Quillo-Server-Setup-<version>.exe
 """
 
 import os
@@ -101,6 +101,8 @@ def build_programs():
                 os.remove(path)
     shutil.copy(os.path.join(ROOT, "client_config.example.json"), os.path.join(DIST, "LANMessenger"))
     shutil.copy(os.path.join(ROOT, "firewall_setup.bat"), os.path.join(DIST, "LANMessengerServer"))
+    for folder in ("LANMessenger", "LANMessengerServer"):          # the licence travels with the program
+        shutil.copy(os.path.join(ROOT, "LICENSE"), os.path.join(DIST, folder, "LICENSE.txt"))
     for name, _, _ in PROGRAMS:
         size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(os.path.join(DIST, name)) for f in fs)
         print(f"  {name}: {size / 1e6:.0f} MB")

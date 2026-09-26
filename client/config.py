@@ -21,7 +21,7 @@ DEFAULTS = {
     "username": "",
     "remember": False,
     "password_blob": "",
-    "download_dir": os.path.join(os.path.expanduser("~"), "Downloads", "LAN Messenger"),
+    "download_dir": os.path.join(os.path.expanduser("~"), "Downloads", "Quillo"),
     "notifications": True,
     "sounds": True,
     "close_to_tray": True,

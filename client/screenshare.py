@@ -120,7 +120,7 @@ class ViewerWindow(QWidget):
 
     def __init__(self, sharer_name):
         super().__init__(None, Qt.Window)
-        self.setWindowTitle(f"{sharer_name}'s screen — LAN Messenger")
+        self.setWindowTitle(f"{sharer_name}'s screen — Quillo")
         self.resize(1280, 760)
         T.bg_pane(self, "#000000")
         lay = QVBoxLayout(self)

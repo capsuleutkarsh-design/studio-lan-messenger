@@ -587,8 +587,8 @@ class OrgBrowser(QWidget):
         self.chart_area.setWidgetResizable(False)
         self.chart_area.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.chart_area.setWidget(self.chart)
-        self.chart_area.setStyleSheet(f"QScrollArea {{ background: {T.BG}; border: 1px solid {T.BORDER};"
-                                      " border-radius: 12px; }")
+        self.chart_area.setStyleSheet(f"QScrollArea {{ background: {T.BG}; border: 1px solid {T.HAIR};"
+                                      " border-radius: 20px; }")
         self.chart_area.viewport().setAutoFillBackground(False)
         T.bg_pane(self.chart_area.viewport())
         cl.addWidget(self.chart_area, 1)

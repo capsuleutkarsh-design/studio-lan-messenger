@@ -8,7 +8,6 @@ import sys
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QLinearGradient, QPainter, QPen, QRadialGradient
-from PySide6.QtSvg import QSvgRenderer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W, H = 1600, 520
@@ -35,22 +34,23 @@ def main():
     p.setRenderHint(QPainter.TextAntialiasing)
 
     bg = QLinearGradient(0, 0, W, H)
-    bg.setColorAt(0, QColor("#16163f"))
-    bg.setColorAt(0.55, QColor("#0d0e24"))
-    bg.setColorAt(1, QColor("#08091a"))
+    bg.setColorAt(0, QColor("#132456"))
+    bg.setColorAt(0.55, QColor("#0c1638"))
+    bg.setColorAt(1, QColor("#070c22"))
     p.setBrush(bg)
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(QRectF(0, 0, W, H), 36, 36)
-    glow(p, 250, 120, 420, "#6a55ff", 120)
-    glow(p, 520, 470, 360, "#ff4d9a", 70)
-    glow(p, 1450, 80, 420, "#29c7ff", 70)
-    glow(p, 1250, 520, 380, "#6a55ff", 60)
+    glow(p, 250, 120, 420, "#3f6fd8", 110)
+    glow(p, 520, 470, 360, "#3cc8b4", 60)
+    glow(p, 1450, 80, 420, "#3cc8b4", 60)
+    glow(p, 1250, 520, 380, "#3f6fd8", 60)
     p.setPen(QPen(QColor(255, 255, 255, 26), 2))
     p.setBrush(Qt.NoBrush)
     p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 36, 36)
 
-    icon = QSvgRenderer(os.path.join(ROOT, "assets", "app_icon.svg"))
-    icon.render(p, QRectF(120, 130, 260, 260))
+    icon = QImage(os.path.join(ROOT, "assets", "logo.png"))
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.drawImage(QRectF(120, 130, 260, 260), icon)
 
     x = 440
     f = QFont("Segoe UI")
@@ -58,7 +58,7 @@ def main():
     f.setWeight(QFont.ExtraBold)
     p.setFont(f)
     p.setPen(QColor("#ffffff"))
-    p.drawText(QRectF(x, 118, 1100, 120), Qt.AlignLeft | Qt.AlignVCenter, "LAN Messenger")
+    p.drawText(QRectF(x, 118, 1100, 120), Qt.AlignLeft | Qt.AlignVCenter, "Quillo")
     f = QFont("Segoe UI")
     f.setPixelSize(34)
     p.setFont(f)
@@ -74,8 +74,8 @@ def main():
     f.setWeight(QFont.DemiBold)
     p.setFont(f)
     px = x + 4
-    for text, color in (("Encrypted", "#8b7bff"), ("20 GB files", "#3fd2ff"), ("Stickers & polls", "#ff5ca8"),
-                        ("Org chart", "#8b7bff"), ("Windows service", "#3fd2ff")):
+    for text, color in (("Encrypted", "#5b8def"), ("20 GB files", "#3cc8b4"), ("Stickers & polls", "#8fa8ff"),
+                        ("Org chart", "#5b8def"), ("Windows service", "#3cc8b4")):
         w = p.fontMetrics().horizontalAdvance(text) + 36
         c = QColor(color)
         c.setAlpha(40)

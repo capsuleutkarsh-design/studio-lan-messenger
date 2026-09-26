@@ -1,0 +1,50 @@
+Quillo Community License
+Version 1.0, September 2026
+
+Copyright (c) 2026 Utkarsh Tripathi. All rights reserved except as granted below.
+
+"Quillo" means the Quillo chat and file-sharing software (client, server and server console),
+its installers, source code, documentation, logo and icons, as published at
+https://github.com/capsuleutkarsh-design/studio-lan-messenger (the "Official Repository").
+
+1. FREE USE
+   You may download, install and use Quillo free of charge, for any purpose, on any number
+   of computers, including inside a company or studio. You may also give unmodified copies
+   to others, as long as this license comes with them.
+
+2. CHANGES ARE WELCOME, ON TWO CONDITIONS
+   You may modify Quillo, build on it, or use parts of it in your own software (together,
+   a "Modified Version"). If you do, you must:
+
+   a) Inform the author. Before you use a Modified Version or share it with anyone, tell
+      the author by opening an issue in the Official Repository that says who you are,
+      what you changed and why.
+
+   b) Share it back. Upload the complete source code of your Modified Version to the
+      Official Repository as a pull request (or, if that is not possible, attach it to the
+      issue from (a)), under this same license, within 30 days of first using it.
+
+   The author may include your changes in Quillo. You keep the credit for your own work.
+
+3. KEEP THE CREDIT
+   Every copy and every Modified Version must keep this license file, the copyright notice
+   above, and the line "Quillo Community License · © 2026 Utkarsh Tripathi" at the bottom
+   of its windows. You may add your own name next to it, but not remove or hide it.
+
+4. NAME AND LOGO
+   A Modified Version must not be presented as the official Quillo. Use the name "Quillo"
+   and its logo only to say truthfully that your work is based on Quillo.
+
+5. OTHER PEOPLE'S WORK INSIDE QUILLO
+   Quillo includes parts that belong to others and keep their own licenses:
+   Python (PSF License), Qt / PySide6 (LGPL v3), OpenSSL (Apache 2.0), cryptography
+   (Apache 2.0 / BSD) and the sticker artwork, designed by Freepik (Freepik license, with
+   attribution). This license does not change their terms.
+
+6. NO WARRANTY
+   Quillo is provided "as is", without warranty of any kind. The author is not liable for
+   any loss of data, messages or files, or any other damage, arising from its use.
+
+7. ENDING
+   If you break these terms, your rights under this license end automatically. They come
+   back if you fix the problem within 30 days of noticing it.
