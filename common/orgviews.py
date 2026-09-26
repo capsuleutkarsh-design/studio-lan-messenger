@@ -1,6 +1,6 @@
 """Visual organisation views shared by the client directory and the server console.
 
-PeopleGrid - people as cards in rows and columns, grouped by department and section.
+PeopleGrid - people as cards in rows and columns, grouped by department (section shown on the card).
 OrgChart   - top-down reporting chart (boxes and connector lines), with zoom.
 
 Both are painted in one widget each (no child widget per person), so they stay fast with
@@ -94,10 +94,10 @@ class PeopleGrid(QWidget):
                      .setdefault(u.get("section") or "", []).append(u)
         self.groups = []
         for dept in sorted(depts, key=lambda d: (d == "No department", d.lower())):
-            sections = depts[dept]
-            ordered = [("", sorted(sections.pop("", []), key=_sort_key))] if "" in sections else []
-            ordered += [(s, sorted(sections[s], key=_sort_key)) for s in sorted(sections, key=str.lower)]
-            self.groups.append((dept, [x for x in ordered if x[1]]))
+            # one flowing row of cards per department (the section is written on each card): a row per
+            # section left mostly empty rows when sections are small
+            people = sorted((u for us in depts[dept].values() for u in us), key=_sort_key)
+            self.groups.append((dept, [("", people)]))
         self._relayout()
 
     def count(self):
@@ -183,9 +183,9 @@ class PeopleGrid(QWidget):
         p.setFont(_font(11))
         lead = (u.get("level") or 0) >= 60
         p.setPen(QColor(T.ACCENT if lead else T.MUTED))
+        role = " · ".join(x for x in (u.get("designation") or u.get("title"), u.get("section")) if x)
         p.drawText(QRect(inner.left(), rect.top() + 104, inner.width(), 16), Qt.AlignCenter,
-                   QFontMetrics(p.font()).elidedText(u.get("designation") or u.get("title") or "", Qt.ElideRight,
-                                                     inner.width()))
+                   QFontMetrics(p.font()).elidedText(role, Qt.ElideRight, inner.width()))
         status = u.get("status", "offline")
         line = _status_line(u) or T.STATUS_LABELS.get(status, status)
         p.setPen(QColor(T.FAINT if status == "offline" and not _status_line(u) else T.MUTED))

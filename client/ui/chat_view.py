@@ -1486,6 +1486,7 @@ class ChatView(QWidget):
         cw.addWidget(self.action_bar)
         cw.addWidget(self.composer)
         self.offline_note = plain(QLabel())
+        self.offline_note.setWordWrap(True)
         self.offline_note.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; padding: 6px 14px 0 14px;")
         self.offline_note.hide()
         cw.addWidget(self.offline_note)
@@ -1569,6 +1570,12 @@ class ChatView(QWidget):
             else:
                 sub = ""
             self.offline_note.hide()
+        elif target == self.store.my_id:
+            me = self.store.me
+            self.avatar.set(title, title, status=me.get("status", "online"), uid=target)
+            sub = "Your notes  ·  only you can see this chat"
+            self.subtitle.setToolTip("")
+            self.offline_note.hide()
         else:
             u = self.store.users.get(target) or {}
             status = u.get("status", "offline")
@@ -1622,10 +1629,23 @@ class ChatView(QWidget):
             self._append(m, prev)
             prev = m
         self.rendered = len(msgs) - cut
-        self.loading.setVisible(not c.complete and bool(c.history_requested) and not msgs)
+        empty = not msgs and c.complete
+        self.loading.setText(self._empty_text() if empty else "Loading...")
+        self.loading.setStyleSheet(f"color: {T.MUTED if empty else T.FAINT}; font-size: {'11pt' if empty else '10pt'};"
+                                   f" padding: {'80px 20px' if empty else '8px'};")
+        self.loading.setVisible(empty or (not c.complete and bool(c.history_requested) and not msgs))
         self.setUpdatesEnabled(True)
         self._apply_widths()
         QTimer.singleShot(300, self._update_seen)
+
+    def _empty_text(self):
+        kind, target = P.parse_conv(self.conv)
+        if kind == "r":
+            return f"No messages in {self.store.title(self.conv)} yet.\nSay hello to the room 👋"
+        if target == self.store.my_id:
+            return "Your own space: notes, links and files for later.\nOnly you can see this chat."
+        first = self.store.user_name(target).split()[0] if self.store.user_name(target) else "them"
+        return f"No messages yet.\nSay hi to {first} 👋"
 
     def _append(self, m, prev):
         is_room = self.conv.startswith("r:")
@@ -1897,6 +1917,7 @@ class ChatView(QWidget):
     def set_compact(self, on):
         self.compact = on
         self.b_back.setVisible(on)
+        self.input.setPlaceholderText("Message..." if on else "Write a message...")
         self.head.layout().setContentsMargins(8 if on else 22, 10, 10 if on else 16, 10)
         self.update_header()
 

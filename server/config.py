@@ -20,13 +20,14 @@ DEFAULTS = {
     "api_port": 5152,
     "api_key": "",
     "api_bot_name": "Pipeline Bot",
-    "auto_department_rooms": True,   # one room per department, members kept in sync
-    "auto_section_rooms": True,      # one room per department section
-    "auto_all_room": False,          # an "All Studio" room with everyone
+    "auto_all_room": False,          # an "All Studio" room with everyone (department rooms: Departments page)
     # password rules
-    "min_password_length": 6,
-    "password_require_mix": True,    # at least one letter and one digit
+    "min_password_length": 4,
+    "password_require_mix": False,   # at least one letter and one digit
+    "password_block_weak": False,    # refuse 123456, password, the username, ...
+    "force_password_change": False,  # new accounts and resets must choose their own password at first sign-in
     "password_max_age_days": 0,      # 0 = never expires
+    "settings_version": 2,
     # automatic database backup
     "backup_enabled": True,
     "backup_dir": "",                # empty = <data dir>/backups
@@ -42,6 +43,9 @@ DEFAULTS = {
     # admins may open any conversation from the console (users are told at sign-in)
     "admin_review_enabled": True,
 }
+
+# Settings of older versions that no longer do anything; dropped when an old config.json is read.
+REMOVED = {"auto_department_rooms", "auto_section_rooms"}
 
 
 def app_dir() -> str:
@@ -105,7 +109,8 @@ class ServerConfig:
                     loaded = json.load(f)
                 if not isinstance(loaded, dict):
                     raise ValueError("config is not a JSON object")
-                self.values.update(self._checked(loaded))
+                self.values.update(self._checked({k: v for k, v in loaded.items() if k not in REMOVED}))
+                self._upgrade(loaded)
             except (OSError, ValueError) as e:
                 # keep the damaged file for inspection and start with defaults
                 broken = self.path + ".broken"
@@ -119,6 +124,16 @@ class ServerConfig:
             self.save()
         except OSError as e:           # read-only / full disk: run with what was read, report it
             logging.getLogger("server").error("Could not write %s: %s", self.path, e)
+
+    def _upgrade(self, loaded):
+        """Settings written by older versions: move untouched old defaults to the new, simpler ones."""
+        if int(loaded.get("settings_version") or 1) < 2:
+            # 1.5.5: simpler sign-in. Only values still at the old defaults change; an admin's own choice stays.
+            if loaded.get("min_password_length") == 6:
+                self.values["min_password_length"] = 4
+            if loaded.get("password_require_mix") is True:
+                self.values["password_require_mix"] = False
+            self.values["settings_version"] = 2
 
     def __getitem__(self, key):
         return self.values[key]

@@ -682,32 +682,47 @@ class ServerCore(PlannerMixin):
                                  "users": self.visible_users(uid)})
 
     def sync_auto_rooms(self):
-        """Create/update/remove the automatic department, section and all-studio rooms."""
+        """Keep the automatic rooms in step: "All Studio" (a setting) and every department/section with
+        "Chat room" ticked on the Departments page. Nothing else gets a room by itself."""
         self.invalidate_org()
         org = self.org
-        cfg = self.config
         wanted = {}          # auto_key -> (name, topic, member ids)
-        if cfg["auto_all_room"]:
+        if self.config["auto_all_room"]:
             wanted["all"] = ("All Studio", "Everyone in the studio", list(org.users))
-        if cfg["auto_department_rooms"]:
-            for dept, ids in org.departments().items():
-                wanted[f"dept:{dept.lower()}"] = (clean_label(dept), f"Everyone in {dept}", ids)
-        if cfg["auto_section_rooms"]:
-            for (dept, sect), ids in org.sections().items():
-                wanted[f"sect:{section_key(dept, sect)}"] = (clean_label(f"{dept} · {sect}"),
-                                                             f"{sect} section of {dept}", ids)
+        depts = {d["id"]: d for d in self.db.list_departments()}
+        for d in depts.values():
+            if not d["has_room"]:
+                continue
+            parent = depts.get(d["parent_id"])
+            if parent is None:            # a department (the key uses the id, so a rename keeps the room)
+                ids = [u["id"] for u in org.users.values() if u["department"].strip().lower() == d["name"].lower()]
+                wanted[f"dept#{d['id']}"] = (clean_label(d["name"]), f"Everyone in {d['name']}", ids)
+            else:
+                ids = [u["id"] for u in org.users.values()
+                       if u["department"].strip().lower() == parent["name"].lower()
+                       and u["section"].strip().lower() == d["name"].lower()]
+                wanted[f"sect#{d['id']}"] = (clean_label(f"{parent['name']} · {d['name']}"),
+                                             f"{d['name']} section of {parent['name']}", ids)
         existing = {r["auto_key"]: r for r in self.db.auto_rooms()}
         for key, room in existing.items():
-            if key not in wanted:
+            if key in wanted:
+                continue
+            if key == "all":
                 self.admin_delete_room(room["id"])
+                continue
+            # unticked or department deleted: keep the room and its history as a normal room
+            self.db.set_room_auto_key(room["id"], None)
+            self.db.set_meta(f"released_room:{key}", room["id"])
+            self._push_room(room["id"])
+            log.info("Room '%s' is no longer automatic (kept as a normal room)", room["name"])
         for key, (name, topic, ids) in wanted.items():
-            room = existing.get(key)
+            room = existing.get(key) or self._readopt_room(key)
             if room is None:
                 room_id = self.db.create_room(name, None, ids, topic, auto_key=key)
                 self._push_room(room_id)
                 continue
             before = set(self.db.room_member_ids(room["id"]))
-            changed = False
+            changed = key not in existing           # a room picked up again is automatic once more
             if room["name"] != name or room["topic"] != topic:
                 self.db.update_room(room["id"], name, topic)
                 changed = True
@@ -720,6 +735,16 @@ class ServerCore(PlannerMixin):
             if changed:
                 self._push_room(room["id"], extra_uids=before - set(ids))
         self.invalidate_org()
+
+    def _readopt_room(self, key):
+        """The room this department/section had before its "Chat room" was unticked (or before the managed
+        departments existed), if it is still there as a normal room: ticking again continues that chat."""
+        room_id = self.db.get_meta(f"released_room:{key}")
+        room = self.db.get_room(int(room_id)) if room_id and room_id.isdigit() else None
+        if room is None or room["auto_key"]:
+            return None
+        self.db.set_room_auto_key(room["id"], key)
+        return self.db.get_room(room["id"])
 
     def _extras(self, row) -> dict:
         """Poll and reaction data of a message, shared by every viewer (see msg_for)."""
@@ -1306,16 +1331,22 @@ class ServerCore(PlannerMixin):
         if cfg["password_require_mix"] and not (any(c.isalpha() for c in password)
                                                 and any(c.isdigit() for c in password)):
             raise ValueError("Password must contain both letters and numbers")
-        if username and password.lower() == username.lower():
-            raise ValueError("Password can't be the same as the username")
-        if password.lower() in self.WEAK_PASSWORDS:
-            raise ValueError("That password is too easy to guess")
+        if username.lower() == "admin" and password.lower() == "admin":
+            raise ValueError("Choose a password other than 'admin' - everyone knows that one")
+        if cfg["password_block_weak"]:
+            if username and password.lower() == username.lower():
+                raise ValueError("Password can't be the same as the username")
+            if password.lower() in self.WEAK_PASSWORDS:
+                raise ValueError("That password is too easy to guess")
 
     def password_change_reason(self, row, password) -> str:
         """Why this user must change their password now ('' = no need)."""
         if row["must_change_pw"]:
             return "Your password was set by an administrator. Please choose your own password."
-        if password.lower() in self.WEAK_PASSWORDS or password.lower() == row["username"].lower():
+        if row["username"].lower() == "admin" and password.lower() == "admin":
+            return "The built-in admin password must be changed. Please choose your own password."
+        if self.config["password_block_weak"] and (password.lower() in self.WEAK_PASSWORDS
+                                                  or password.lower() == row["username"].lower()):
             return "Your password is too easy to guess. Please choose a stronger one."
         days = float(self.config["password_max_age_days"] or 0)
         if days > 0 and (row["pw_changed_at"] or row["created_at"]) < time.time() - days * 86400:
@@ -1388,7 +1419,7 @@ class ServerCore(PlannerMixin):
             if action == "reset_password":
                 password = str(req.get("password", ""))
                 self.check_password_rules(password, target["username"])
-                self.db.set_password(uid, password, must_change=True)
+                self.db.set_password(uid, password, must_change=bool(self.config["force_password_change"]))
                 self.kick(uid, "Your password was reset. Please sign in with the new one.")
                 self.audit(actor, "password reset", target["username"], "from the client (HR/IT)")
             elif action == "disable":
@@ -1777,7 +1808,8 @@ class ServerCore(PlannerMixin):
                  "admin_log_tail", "backup_now", "purge_files", "sync_auto_rooms",
                  "admin_announcements", "admin_announcement_reads", "admin_review_conversations",
                  "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
-                 "chat_backup_now"}
+                 "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
+                 "admin_delete_department"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -1945,7 +1977,37 @@ class ServerCore(PlannerMixin):
             self.invalidate_org()
             if self.org.would_cycle(uid, int(fields["manager_id"])):
                 raise ValueError("That reporting line would make a loop (someone reporting to their own team)")
+        if "department" in fields or "section" in fields:
+            self._check_department_fields(uid, fields)
         return fields
+
+    def _check_department_fields(self, uid, fields):
+        """Departments and sections come from the Departments page: accept only those (any capitalisation)
+        and store the spelling used there. Empty is fine (no department)."""
+        before = self.db.get_user(uid) if uid is not None else None
+        explicit_section = "section" in fields
+        dept_name = str(fields.get("department", before["department"] if before else "") or "").strip()
+        sect_name = str(fields.get("section", before["section"] if before else "") or "").strip()
+        if not dept_name:
+            if sect_name and explicit_section:
+                raise ValueError("Choose a department before choosing a section")
+            fields["department"], fields["section"] = "", ""
+            return
+        dept = self.db.find_department(dept_name)
+        if not dept:
+            raise ValueError(f"Unknown department '{dept_name}' - add it on the Departments page first")
+        fields["department"] = dept["name"]
+        if not sect_name:
+            fields["section"] = ""
+            return
+        sect = self.db.find_department(sect_name, dept["id"])
+        if not sect:
+            if not explicit_section and before:
+                fields["section"] = ""        # moved to another department: the old section doesn't apply
+                return
+            raise ValueError(f"Unknown section '{sect_name}' in {dept['name']} - add it on the Departments "
+                             "page first")
+        fields["section"] = sect["name"]
 
     def _after_user_change(self, uid=None):
         if uid is not None:
@@ -1956,10 +2018,12 @@ class ServerCore(PlannerMixin):
         self.push_directory()
         self._emit("users")
 
-    def admin_create_user(self, must_change=True, **kw):
+    def admin_create_user(self, must_change=None, **kw):
         kw = self._resolve_user_fields(None, dict(kw))
         self.check_password_rules(kw.get("password", ""), kw.get("username", ""))
         uid = self.db.create_user(**kw)
+        if must_change is None:
+            must_change = bool(self.config["force_password_change"])
         if must_change:
             self.db.set_must_change(uid, True)
         self._after_user_change(uid)
@@ -1967,13 +2031,15 @@ class ServerCore(PlannerMixin):
                    ", ".join(f"{k}={v}" for k, v in kw.items() if k != "password" and v not in ("", None)))
         return uid
 
-    def admin_update_user(self, uid, password=None, must_change=True, **fields):
+    def admin_update_user(self, uid, password=None, must_change=None, **fields):
         before = self.db.get_user(uid)
         fields = self._resolve_user_fields(uid, dict(fields))
         if password:
             self.check_password_rules(password, fields.get("username") or before["username"])
         self.db.update_user(uid, **fields)
         if password:
+            if must_change is None:
+                must_change = bool(self.config["force_password_change"])
             self.db.set_password(uid, password, must_change=must_change)
             self.kick(uid, "Your password was reset. Please sign in with the new one.")
         self._after_user_change(uid)
@@ -2018,6 +2084,53 @@ class ServerCore(PlannerMixin):
         self.db.delete_role(role_id)
         self.push_directory()
         self.audit(None, "designation deleted", role["name"] if role else role_id)
+
+    # ---- departments and sections (Departments page)
+    def admin_departments(self):
+        usage = self.db.department_usage()
+        return [{"id": d["id"], "name": d["name"], "parent_id": d["parent_id"], "has_room": bool(d["has_room"]),
+                 "people": usage.get(d["id"], 0)} for d in self.db.list_departments()]
+
+    def _department_label(self, dept):
+        parent = self.db.get_department(dept["parent_id"])
+        return f"{parent['name']} · {dept['name']}" if parent else dept["name"]
+
+    def admin_save_department(self, dept_id=None, name="", parent_id=None):
+        """Add a department (or a section when parent_id is given), or rename one (dept_id)."""
+        if dept_id is None:
+            dept_id = self.db.create_department(name, parent_id)
+            dept = self.db.get_department(dept_id)
+            self.audit(None, "section created" if parent_id else "department created", self._department_label(dept))
+        else:
+            old = self.db.rename_department(dept_id, name)
+            dept = self.db.get_department(dept_id)
+            if old != dept["name"]:
+                self.audit(None, "section renamed" if dept["parent_id"] else "department renamed",
+                           self._department_label(dept), f"was '{old}'")
+                self.sync_auto_rooms()           # the room name follows
+                self.push_directory()            # everyone's department/section text changed
+        self._emit("users")
+        return dept_id
+
+    def admin_set_department_room(self, dept_id, has_room):
+        dept = self.db.get_department(dept_id)
+        if not dept:
+            raise ValueError("Department not found")
+        self.db.set_department_room(dept_id, has_room)
+        self.sync_auto_rooms()
+        self.audit(None, "chat room turned on" if has_room else "chat room turned off", self._department_label(dept),
+                   "" if has_room else "the room is kept as a normal room")
+        self._emit("users")
+
+    def admin_delete_department(self, dept_id):
+        dept = self.db.get_department(dept_id)
+        if not dept:
+            raise ValueError("Department not found")
+        label = self._department_label(dept)
+        self.db.delete_department(dept_id)
+        self.sync_auto_rooms()                  # its rooms become normal rooms
+        self.audit(None, "section deleted" if dept["parent_id"] else "department deleted", label)
+        self._emit("users")
 
     def admin_org(self):
         """Users + reporting data for the console's org chart."""

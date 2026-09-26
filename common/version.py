@@ -1,6 +1,6 @@
 """Version and product information (used by the apps, the exe file properties and the installers)."""
 
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 PUBLISHER = "LAN Messenger"
 PRODUCT_NAME = "LAN Messenger"
 SERVER_PRODUCT_NAME = "LAN Messenger Server"

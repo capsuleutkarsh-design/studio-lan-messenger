@@ -73,6 +73,8 @@ class ServerTest(unittest.TestCase):
         cls.core = ServerCore(cls.tmp)
         cls.core.config.update(tcp_port=PORT, discovery_port=UDP_PORT, server_name="Test")
         cls.core.start()
+        for dept in ("Comp", "Lighting"):
+            cls.core.call(cls.core.admin_save_department, None, dept)
         cls.alice = cls.core.call(cls.core.admin_create_user, must_change=False, username="alice", password="Artist2026",
                                   display_name="Alice", department="Comp")
         cls.bob = cls.core.call(cls.core.admin_create_user, must_change=False, username="bob", password="Artist2026",

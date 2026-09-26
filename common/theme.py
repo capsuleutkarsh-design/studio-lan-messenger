@@ -7,6 +7,7 @@ widgets read the module-level colours (T.ACCENT, T.PANEL, ...) when they are cre
 
 import ctypes
 import hashlib
+import os
 import sys
 
 THEMES = {"midnight": "Midnight (dark)", "light": "Light", "system": "Follow Windows (light or dark)",
@@ -192,7 +193,38 @@ def initials(name: str) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
+def _icon_file(name, svg):
+    """Write a small SVG used by the stylesheet (QSS can only load images from files)."""
+    import tempfile
+    folder = os.path.join(tempfile.gettempdir(), "LANMessenger", "style")
+    path = os.path.join(folder, name)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(svg)
+    except OSError:
+        return ""
+    return path.replace("\\", "/")
+
+
+def _check_image():
+    color = ACCENT_TEXT
+    return _icon_file(f"check_{color.strip('#')}.svg",
+                      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.3l3 3 6-6.3" '
+                      f'fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" '
+                      'stroke-linejoin="round"/></svg>')
+
+
+def _arrow_image():
+    color = MUTED
+    return _icon_file(f"arrow_{color.strip('#')}.svg",
+                      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" '
+                      f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
 def _stylesheet():
+    check, arrow = _check_image(), _arrow_image()
     return f"""
 * {{ font-family: "Segoe UI"; font-size: 10pt; color: {TEXT}; }}
 QMainWindow, QDialog, QWidget#root {{ background: {BG}; }}
@@ -201,15 +233,21 @@ QLabel {{ background: transparent; }}
 QLabel[muted="true"] {{ color: {MUTED}; }}
 QLabel[heading="true"] {{ font-size: 15pt; font-weight: 700; }}
 
-QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {{
+QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox, QDateTimeEdit {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px;
     padding: 7px 11px; selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT};
 }}
-QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QSpinBox:hover, QComboBox:hover {{
+QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QSpinBox:hover, QComboBox:hover, QDateTimeEdit:hover {{
     border: 1px solid {SURFACE_HOVER}; }}
-QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {{
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus, QDateTimeEdit:focus {{
     border: 1px solid {ACCENT}; background: {INPUT_FOCUS_BG}; }}
-QComboBox::drop-down {{ border: none; width: 24px; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDateTimeEdit:disabled {{ color: {FAINT}; }}
+QComboBox::drop-down, QDateTimeEdit::drop-down {{ border: none; width: 26px; }}
+QComboBox::down-arrow, QDateTimeEdit::down-arrow {{ image: url("{arrow}"); width: 14px; height: 14px; }}
+QDateTimeEdit::up-button, QDateTimeEdit::down-button {{ width: 0; border: none; }}
+QCalendarWidget QWidget {{ background: {PANEL}; }}
+QCalendarWidget QToolButton {{ background: transparent; border: none; padding: 4px 8px; font-weight: 700; }}
+QCalendarWidget QAbstractItemView {{ selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT}; }}
 QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {BORDER}; padding: 4px;
     selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT}; outline: none; }}
 QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
@@ -227,15 +265,17 @@ QPushButton[primary="true"]:disabled {{ background: {ACCENT_FOCUS}; color: {MUTE
 QPushButton[danger="true"] {{ color: {DANGER}; }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 6px; }}
 QPushButton[flat="true"]:hover {{ background: {SURFACE_HOVER}; }}
-QPushButton[chip="true"] {{ background: transparent; border: 1px solid {BORDER}; border-radius: 13px;
-    padding: 3px 12px; font-weight: 600; font-size: 9pt; color: {MUTED}; }}
+QPushButton[chip="true"] {{ background: transparent; border: 1px solid {BORDER}; border-radius: 11px;
+    padding: 3px 12px; font-weight: 600; font-size: 9pt; color: {MUTED}; min-height: 16px; }}
 QPushButton[chip="true"]:hover {{ background: {SURFACE}; color: {TEXT}; }}
 QPushButton[chip="true"]:checked {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_FOCUS}; color: {TEXT}; }}
 
 QCheckBox, QRadioButton {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; background: {SURFACE};
     border: 1px solid {SCROLL}; }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; }}
+QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
+QCheckBox:disabled {{ color: {FAINT}; }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}

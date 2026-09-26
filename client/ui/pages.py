@@ -4,7 +4,8 @@ import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
+    QWidget,
 )
 
 from common import protocol as P
@@ -115,7 +116,7 @@ class HomePage(QWidget):
         T.bg_pane(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        area = QScrollArea()
+        area = self.area = QScrollArea()
         area.setWidgetResizable(True)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         page = QWidget()
@@ -153,6 +154,17 @@ class HomePage(QWidget):
         super().showEvent(e)
         self.rebuild()
 
+    # ---- responsive layout: nothing may be wider than the window (there is no sideways scrolling)
+    def _layout_key(self):
+        """(two card columns?, action tiles per row, room for the profile box?) for the current width."""
+        w = max(300, self.area.viewport().width() - 64)
+        return w >= 760, max(2, min(6, w // 240)), w >= 640, w
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if getattr(self, "_built_key", None) and self._layout_key()[:3] != self._built_key[:3]:
+            self.schedule()
+
     # ------------------------------------------------------------ build
     def rebuild(self):
         banner = getattr(self, "_banner", None)
@@ -168,6 +180,8 @@ class HomePage(QWidget):
             self._banner.hide()
         if not self.store.me:
             return
+        self._built_key = self._layout_key()
+        wide = self._built_key[0]
         if T.FESTIVAL:
             if getattr(self, "_banner", None) is None:
                 from client.ui.festive import FestiveBanner
@@ -179,15 +193,20 @@ class HomePage(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(18)
-        grid.addWidget(self._catch_up(), 0, 0)
-        grid.addWidget(self._announcements(), 0, 1)
-        grid.addWidget(self._team(), 1, 0)
         upcoming = self.store.reminders or [x for x in self.store.scheduled if x["state"] == "pending"]
-        grid.addWidget(self._coming_up() if upcoming else self._tip(), 1, 1)
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 2)
+        cards = [self._catch_up(), self._announcements(), self._team(),
+                 self._coming_up() if upcoming else self._tip()]
+        for i, card in enumerate(cards):          # two columns when there is room, else one below the other
+            grid.addWidget(card, i // 2 if wide else i, i % 2 if wide else 0)
+        if wide:
+            grid.setColumnStretch(0, 3)
+            grid.setColumnStretch(1, 2)
         self.lay.addLayout(grid)
         self.lay.addStretch(1)
+        # any text wraps rather than making the page wider than the window (no sideways scrolling here)
+        for label in self.col.findChildren(QLabel):
+            if label.text() and label.sizePolicy().horizontalPolicy() != QSizePolicy.Ignored:
+                label.setWordWrap(True)
 
     def _drop_layout(self, lay):
         while lay.count():
@@ -214,10 +233,12 @@ class HomePage(QWidget):
         part = "Good morning" if hour < 12 else "Good afternoon" if hour < 17 else "Good evening"
         first = (me.get("name") or "").split()[0] if me.get("name") else ""
         hi = plain(QLabel(f"{part}, {first}"))
+        hi.setWordWrap(True)
         hi.setStyleSheet("font-size: 21pt; font-weight: 800;")
         col.addWidget(hi)
         today = QLabel(datetime.date.today().strftime("%A, %d %B")
                        + f"  ·  {s.server_name}")
+        today.setWordWrap(True)
         today.setStyleSheet(f"color: {T.MUTED}; font-size: 10pt;")
         col.addWidget(today)
         col.addSpacing(8)
@@ -231,9 +252,12 @@ class HomePage(QWidget):
         online = sum(1 for u in s.users.values() if u.get("status", "offline") != "offline")
         bits.append(f"<b>{online}</b> {'person' if online == 1 else 'people'} online")
         summary = QLabel("  ·  ".join(bits) if (chats or anns) else "You're all caught up  ·  " + bits[-1])
+        summary.setWordWrap(True)
         summary.setStyleSheet(f"color: {T.TEXT}; font-size: 10.5pt;")
         col.addWidget(summary)
         h.addLayout(col, 1)
+        if not self._built_key[2]:
+            return hero
 
         me_box = _Clickable(self.ctx.edit_status_message, 16)
         mb = QHBoxLayout(me_box)
@@ -270,9 +294,12 @@ class HomePage(QWidget):
         items += [("clock", "Reminder", "Remind me later", lambda: ctx.new_reminder()),
                   ("smile", "Set status", "Lunch, meeting, rendering…", ctx.edit_status_message),
                   ("org", "Org chart", "Who's who", lambda: ctx.rail_clicked("directory"))]
-        row = QHBoxLayout()
+        fit = min(len(items), self._built_key[1])
+        rows = -(-len(items) // fit)
+        per_row = -(-len(items) // rows)
+        row = QGridLayout()
         row.setSpacing(12)
-        for ic, title, sub, fn in items:
+        for i, (ic, title, sub, fn) in enumerate(items):
             tile = _Clickable(fn, 14)
             tile.setStyleSheet(f"#click {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 14px; }}"
                                f"#click:hover {{ border: 1px solid {T.ACCENT_FOCUS}; background: {T.SURFACE}; }}")
@@ -291,10 +318,16 @@ class HomePage(QWidget):
             a.setStyleSheet("font-weight: 700; font-size: 10pt; background: transparent;")
             b = QLabel(sub)
             b.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; background: transparent;")
+            for lbl in (a, b):                 # a narrow tile cuts the text instead of widening the page
+                lbl.setMinimumWidth(1)
+                lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            tile.setToolTip(f"{title} — {sub}")
             c.addWidget(a)
             c.addWidget(b)
             tl.addLayout(c, 1)
-            row.addWidget(tile, 1)
+            row.addWidget(tile, i // per_row, i % per_row)
+        for col in range(per_row):
+            row.setColumnStretch(col, 1)
         return row
 
     def _catch_up(self):
@@ -355,6 +388,7 @@ class HomePage(QWidget):
             c = QVBoxLayout()
             c.setSpacing(1)
             t = plain(QLabel(a["title"]))
+            t.setWordWrap(True)
             t.setStyleSheet(f"font-weight: {'800' if not a.get('read') else '600'}; background: transparent;")
             c.addWidget(t)
             when = datetime.datetime.fromtimestamp(a["ts"]).strftime("%d %b, %H:%M")
@@ -362,6 +396,7 @@ class HomePage(QWidget):
             who.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; background: transparent;")
             c.addWidget(who)
             preview = plain(QLabel(a["body"].replace("\n", " ")[:110]))
+            preview.setWordWrap(True)
             preview.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; background: transparent;")
             c.addWidget(preview)
             rl.addLayout(c, 1)
@@ -398,9 +433,11 @@ class HomePage(QWidget):
             return frame
         grid = QGridLayout()
         grid.setSpacing(6)
-        cols = 5
+        width = self._built_key[3] * (0.58 if self._built_key[0] else 1.0) - 40
+        cols = max(3, min(8, int(width // 92)))
         for i, u in enumerate(people[:15]):
             cell = _Clickable(lambda uid=u["id"]: self.ctx.open_conv(P.direct_conv(uid)), 12)
+            cell.setFixedWidth(86)
             cell.setToolTip(f"{u['name']}\n{s.status_text(u) or T.STATUS_LABELS.get(u.get('status', 'offline'))}"
                             "\nClick to chat")
             cl = QVBoxLayout(cell)
@@ -411,10 +448,13 @@ class HomePage(QWidget):
             cl.addWidget(av, 0, Qt.AlignHCenter)
             nm = QLabel(u["name"].split()[0])
             nm.setAlignment(Qt.AlignCenter)
+            nm.setMinimumWidth(1)
+            nm.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             nm.setStyleSheet(f"font-size: 8.5pt; background: transparent;"
                              f" color: {T.TEXT if u.get('status', 'offline') != 'offline' else T.FAINT};")
             cl.addWidget(nm)
             grid.addWidget(cell, i // cols, i % cols)
+        grid.setColumnStretch(cols, 1)
         body.addLayout(grid)
         return frame
 

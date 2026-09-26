@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QStackedWidget,
-    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from common import theme as T
@@ -194,26 +194,30 @@ class DashboardPage(Page):
 
 # ================================================================== users
 class UserDialog(QDialog):
-    def __init__(self, parent, user=None, users=(), roles=()):
+    def __init__(self, parent, user=None, users=(), roles=(), depts=()):
         super().__init__(parent)
         self.setWindowTitle("Edit user" if user else "New user")
         self.setMinimumWidth(460)
         self.users = [u for u in users if not u["disabled"]]
+        self.depts = list(depts)
         form = QFormLayout(self)
         form.setSpacing(10)
         self.username = QLineEdit(user["username"] if user else "")
         self.name = QLineEdit(user["display_name"] if user else "")
+        # only departments/sections made on the Departments page can be chosen (no typing)
         self.department = QComboBox()
-        self.department.setEditable(True)
-        self.department.addItems(sorted({u["department"] for u in self.users if u["department"]}, key=str.lower))
-        self.department.setCurrentText(user["department"] if user else "")
-        self.department.lineEdit().setPlaceholderText("e.g. Compositing, Lighting, FX")
+        self.department.addItem("(none)", "")
+        for d in sorted((d for d in self.depts if d["parent_id"] is None), key=lambda d: d["name"].lower()):
+            self.department.addItem(d["name"], d["name"])
         self.section = QComboBox()
-        self.section.setEditable(True)
-        self.department.currentTextChanged.connect(self._fill_sections)
-        self._fill_sections(self.department.currentText())
-        self.section.setCurrentText(user["section"] if user else "")
-        self.section.lineEdit().setPlaceholderText("optional, e.g. Roto, Paint, Prep")
+        current = user["department"] if user else ""
+        if current and self._find(self.department, current) < 0:
+            self.department.addItem(current, current)      # old value not on the list: show it, don't hide it
+        self.department.setCurrentIndex(max(0, self._find(self.department, current)))
+        self.department.currentIndexChanged.connect(lambda _i: self._fill_sections())
+        self._fill_sections(user["section"] if user else "")
+        hint = QLabel("Add departments on the Departments page")
+        T.polish(hint, muted=True)
         self.designation = QComboBox()
         self.designation.addItem("(none)", None)
         for r in roles:
@@ -238,6 +242,7 @@ class UserDialog(QDialog):
         form.addRow("Display name", self.name)
         form.addRow("Department", self.department)
         form.addRow("Section", self.section)
+        form.addRow("", hint)
         form.addRow("Designation", self.designation)
         form.addRow("Reports to", self.manager)
         form.addRow("Job title", self.title)
@@ -249,17 +254,29 @@ class UserDialog(QDialog):
         bb.rejected.connect(self.reject)
         form.addRow(bb)
 
-    def _fill_sections(self, dept):
-        current = self.section.currentText()
+    @staticmethod
+    def _find(combo, name):
+        """Index of an entry by name, ignoring capitals (-1 if missing)."""
+        return next((i for i in range(combo.count()) if (combo.itemData(i) or "").lower() == name.lower()), -1)
+
+    def _fill_sections(self, keep=None):
+        """Sections of the chosen department only."""
+        keep = (self.section.currentData() or "") if keep is None else keep
+        dept_name = (self.department.currentData() or "").lower()
+        dept = next((d for d in self.depts if d["parent_id"] is None and d["name"].lower() == dept_name), None)
         self.section.clear()
-        self.section.addItems(sorted({u["section"] for u in self.users if u["section"]
-                                      and u["department"].lower() == dept.strip().lower()}, key=str.lower))
-        self.section.setCurrentText(current)
+        self.section.addItem("(none)", "")
+        for s in sorted((s for s in self.depts if dept and s["parent_id"] == dept["id"]),
+                        key=lambda s: s["name"].lower()):
+            self.section.addItem(s["name"], s["name"])
+        if keep and self._find(self.section, keep) < 0 and dept_name and not dept:
+            self.section.addItem(keep, keep)                # old value of an old department: still shown
+        self.section.setCurrentIndex(max(0, self._find(self.section, keep)))
 
     def values(self):
         return {"username": self.username.text().strip(), "display_name": self.name.text().strip(),
-                "department": self.department.currentText().strip(),
-                "section": self.section.currentText().strip(),
+                "department": self.department.currentData() or "",
+                "section": self.section.currentData() or "",
                 "role_id": self.designation.currentData(), "manager_id": self.manager.currentData(),
                 "title": self.title.text().strip(), "is_admin": int(self.is_admin.isChecked()),
                 "password": self.password.text()}
@@ -280,7 +297,8 @@ class UsersPage(Page):
         imp = btn("Import CSV", "upload")
         imp.clicked.connect(self.import_csv)
         imp.setToolTip("CSV columns: username, password, display_name, department, section,\n"
-                       "designation, reports_to (username of the lead/supervisor), title")
+                       "designation, reports_to (username of the lead/supervisor), title\n"
+                       "Departments and sections must already exist on the Departments page.")
         bar.addWidget(imp)
         bar.addWidget(add)
         self.lay.addLayout(bar)
@@ -361,7 +379,7 @@ class UsersPage(Page):
         return self.win.api.call("admin_roles")
 
     def add_user(self):
-        dlg = UserDialog(self, users=self.users, roles=self.roles())
+        dlg = UserDialog(self, users=self.users, roles=self.roles(), depts=self.win.api.call("admin_departments"))
         while dlg.exec():
             v = dlg.values()
             try:
@@ -375,7 +393,7 @@ class UsersPage(Page):
         u = self.selected_user()
         if not u:
             return
-        dlg = UserDialog(self, u, self.users, self.roles())
+        dlg = UserDialog(self, u, self.users, self.roles(), self.win.api.call("admin_departments"))
         while dlg.exec():
             v = dlg.values()
             password = v.pop("password") or None
@@ -397,7 +415,10 @@ class UsersPage(Page):
         pw.setEchoMode(QLineEdit.Password)
         pw.setPlaceholderText("temporary password")
         must = QCheckBox("User must choose a new password at next sign-in")
-        must.setChecked(True)
+        try:
+            must.setChecked(bool(self.win.api.config().get("force_password_change", False)))
+        except (ValueError, ConnectionError):
+            must.setChecked(False)
         form.addRow(f"New password for {u['username']}", pw)
         form.addRow("", must)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -470,6 +491,147 @@ class UsersPage(Page):
         QMessageBox.information(self, "Import finished", msg)
 
 
+# ============================================================ departments
+class DepartmentsPage(Page):
+    """The studio's departments and their sections, and which of them get a chat room."""
+
+    EMPTY = ("Create your departments here, then pick them for each person on the Users page. "
+             "Tick Chat room to give a department or section its own room.")
+
+    def __init__(self, win):
+        super().__init__("Departments", "Departments and their sections. People are put in them on the Users "
+                                        "page. A ticked Chat room keeps its members in step by itself; "
+                                        "unticking keeps the room (and its history) as a normal room.")
+        self.win = win
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        add_sect = btn("Add section", "plus")
+        add_sect.clicked.connect(self.add_section)
+        add_dept = btn("Add department", "plus", primary=True)
+        add_dept.clicked.connect(self.add_department)
+        bar.addWidget(add_sect)
+        bar.addWidget(add_dept)
+        self.lay.addLayout(bar)
+        self.empty = QLabel(self.EMPTY)
+        self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setStyleSheet(f"background: {T.PANEL}; border-radius: 14px; padding: 28px; color: {T.MUTED};")
+        self.empty.hide()
+        self.lay.addWidget(self.empty)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Name", "People", "Chat room"])
+        self.tree.setRootIsDecorated(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.itemChanged.connect(self._item_changed)
+        self.tree.itemDoubleClicked.connect(lambda *_: self.rename())
+        self.lay.addWidget(self.tree, 1)
+        row = QHBoxLayout()
+        r = btn("Rename", "edit")
+        r.clicked.connect(self.rename)
+        d = btn("Delete", "trash", danger=True)
+        d.clicked.connect(self.delete)
+        row.addWidget(r)
+        row.addWidget(d)
+        row.addStretch(1)
+        self.lay.addLayout(row)
+        self.depts = []
+        self._filling = False
+
+    def refresh(self):
+        if not self.win.api.running:
+            return
+        selected = self.selected()
+        self.depts = self.win.api.call("admin_departments")
+        self._filling = True            # setting check states below must not call the server
+        try:
+            self.tree.clear()
+            items = {}
+            by_name = sorted(self.depts, key=lambda d: d["name"].lower())
+            for d in (d for d in by_name if d["parent_id"] is None):
+                items[d["id"]] = self._item(self.tree, d)
+            for s in (d for d in by_name if d["parent_id"] is not None):
+                if s["parent_id"] in items:
+                    items[s["id"]] = self._item(items[s["parent_id"]], s)
+            self.tree.expandAll()
+            if selected and selected["id"] in items:
+                self.tree.setCurrentItem(items[selected["id"]])
+        finally:
+            self._filling = False
+        self.empty.setVisible(not self.depts)
+        self.tree.setVisible(bool(self.depts))
+
+    @staticmethod
+    def _item(parent, d):
+        it = QTreeWidgetItem(parent, [d["name"], str(d["people"]), ""])
+        it.setData(0, Qt.UserRole, d["id"])
+        it.setTextAlignment(1, Qt.AlignCenter)
+        it.setForeground(1, QColor(T.MUTED))
+        it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+        it.setCheckState(2, Qt.Checked if d["has_room"] else Qt.Unchecked)
+        return it
+
+    def selected(self):
+        it = self.tree.currentItem()
+        if not it:
+            return None
+        return next((d for d in self.depts if d["id"] == it.data(0, Qt.UserRole)), None)
+
+    def _call(self, title, fn, *args):
+        """Run an admin function; show the server's refusal (e.g. people still in it) as a message."""
+        try:
+            self.win.api.call(fn, *args)
+        except ValueError as e:
+            QMessageBox.warning(self, title, str(e))
+        # refresh after this click has been handled: the tree is rebuilt, the clicked item would vanish under Qt
+        QTimer.singleShot(0, self.win.refresh_current)
+
+    def _item_changed(self, it, column):
+        if self._filling or column != 2:
+            return
+        self._call("Chat room", "admin_set_department_room", it.data(0, Qt.UserRole),
+                   it.checkState(2) == Qt.Checked)
+
+    def add_department(self):
+        name, ok = QInputDialog.getText(self, "Add department", "Department name (e.g. Compositing, Lighting, FX):")
+        if ok and name.strip():
+            self._call("Cannot add department", "admin_save_department", None, name.strip())
+
+    def add_section(self):
+        d = self.selected()
+        if d and d["parent_id"] is not None:          # a section is selected: add next to it
+            d = next((x for x in self.depts if x["id"] == d["parent_id"]), None)
+        if not d:
+            QMessageBox.information(self, "Add section", "Select the department the section belongs to first.")
+            return
+        name, ok = QInputDialog.getText(self, "Add section", f"New section of {d['name']} (e.g. Roto, Paint, Prep):")
+        if ok and name.strip():
+            self._call("Cannot add section", "admin_save_department", None, name.strip(), d["id"])
+
+    def rename(self):
+        d = self.selected()
+        if not d:
+            return
+        name, ok = QInputDialog.getText(self, "Rename", "New name (everyone in it moves along, and so does "
+                                        "its chat room):", text=d["name"])
+        if ok and name.strip() and name.strip() != d["name"]:
+            self._call("Cannot rename", "admin_save_department", d["id"], name.strip())
+
+    def delete(self):
+        d = self.selected()
+        if not d:
+            return
+        what = "department" if d["parent_id"] is None else "section"
+        extra = " and its sections" if what == "department" and any(
+            x["parent_id"] == d["id"] for x in self.depts) else ""
+        room = " Its chat room stays as a normal room (delete it on the Rooms page if not needed)." \
+            if d["has_room"] else ""
+        if QMessageBox.question(self, f"Delete {what}", f"Delete the {what} '{d['name']}'{extra}?{room}"
+                                ) == QMessageBox.Yes:
+            self._call(f"Cannot delete {what}", "admin_delete_department", d["id"])
+
+
 # ================================================================== rooms
 class RoomDialog(QDialog):
     def __init__(self, parent, users, room=None):
@@ -523,9 +685,9 @@ class RoomDialog(QDialog):
 
 class RoomsPage(Page):
     def __init__(self, win):
-        super().__init__("Chat rooms", "Group chats for teams and projects. Automatic rooms (one per "
-                                       "department / section) keep their members in sync by themselves — "
-                                       "turn them on or off in Settings.")
+        super().__init__("Chat rooms", "Group chats for teams and projects. Automatic rooms keep their members "
+                                       "in sync by themselves — choose them with Chat room on the Departments "
+                                       "page (and \"All Studio\" in Settings).")
         self.win = win
         bar = QHBoxLayout()
         bar.addStretch(1)
@@ -587,8 +749,9 @@ class RoomsPage(Page):
     def delete_room(self):
         room = self.selected()
         if room and room["auto"]:
-            QMessageBox.information(self, "Automatic room", "Automatic rooms come back while the department "
-                                    "or section exists. Turn automatic rooms off in Settings instead.")
+            QMessageBox.information(self, "Automatic room", "Untick Chat room for this department or section on "
+                                    "the Departments page first (\"All Studio\": in Settings). The room then "
+                                    "becomes a normal room that you can delete here.")
             return
         if room and QMessageBox.question(self, "Delete room",
                                          f"Delete room '{room['name']}'?") == QMessageBox.Yes:
@@ -1184,19 +1347,23 @@ class SettingsPage(Page):
         form.addRow("Log folder", log_row)
 
         section("Automatic rooms")
-        self.auto_dept = QCheckBox("A room for every department (members follow each user's department)")
-        self.auto_sect = QCheckBox("A room for every section inside a department")
         self.auto_all = QCheckBox("An \"All Studio\" room with everyone")
-        form.addRow("", self.auto_dept)
-        form.addRow("", self.auto_sect)
         form.addRow("", self.auto_all)
+        dept_hint = QLabel("Rooms for departments and sections: tick Chat room on the Departments page.")
+        T.polish(dept_hint, muted=True)
+        form.addRow("", dept_hint)
 
         section("Passwords")
         self.pw_len = spin(4, 64, " characters")
         self.pw_mix = QCheckBox("Must contain letters and numbers")
+        self.pw_weak = QCheckBox("Refuse easy passwords (123456, password, the username...)")
+        self.pw_force = QCheckBox("New users and password resets: people must choose their own password at "
+                                  "first sign-in")
         self.pw_age = spin(0, 3650, " days", "Never")
         form.addRow("Minimum length", self.pw_len)
         form.addRow("", self.pw_mix)
+        form.addRow("", self.pw_weak)
+        form.addRow("", self.pw_force)
         form.addRow("Ask for a new password every", self.pw_age)
 
         section("Backups")
@@ -1313,11 +1480,11 @@ class SettingsPage(Page):
         self.api_key.setText(cfg.get("api_key", ""))
         self.api_bot.setText(cfg.get("api_bot_name", "Pipeline Bot"))
         self._update_example()
-        self.auto_dept.setChecked(bool(cfg["auto_department_rooms"]))
-        self.auto_sect.setChecked(bool(cfg["auto_section_rooms"]))
         self.auto_all.setChecked(bool(cfg["auto_all_room"]))
         self.pw_len.setValue(int(cfg["min_password_length"]))
         self.pw_mix.setChecked(bool(cfg["password_require_mix"]))
+        self.pw_weak.setChecked(bool(cfg.get("password_block_weak", False)))
+        self.pw_force.setChecked(bool(cfg.get("force_password_change", False)))
         self.pw_age.setValue(int(cfg["password_max_age_days"]))
         self.bk_enabled.setChecked(bool(cfg["backup_enabled"]))
         self.bk_dir.setText(cfg["backup_dir"])
@@ -1397,9 +1564,9 @@ class SettingsPage(Page):
             discovery_port=self.udp.value(), storage_dir=self.storage.text().strip(),
             log_dir=self.log_dir.text().strip(),
             max_file_mb=self.max_mb.value(), file_retention_days=self.retention.value(),
-            auto_department_rooms=self.auto_dept.isChecked(), auto_section_rooms=self.auto_sect.isChecked(),
             auto_all_room=self.auto_all.isChecked(), min_password_length=self.pw_len.value(),
             password_require_mix=self.pw_mix.isChecked(), password_max_age_days=self.pw_age.value(),
+            password_block_weak=self.pw_weak.isChecked(), force_password_change=self.pw_force.isChecked(),
             backup_enabled=self.bk_enabled.isChecked(), backup_dir=self.bk_dir.text().strip(),
             backup_hour=self.bk_hour.value(), backup_keep=self.bk_keep.value(),
             admin_review_enabled=self.review.isChecked(), unclaimed_file_days=self.unclaimed.value(),
@@ -1652,6 +1819,7 @@ class ServerWindow(QMainWindow):
         self.pages = [
             ("Dashboard", "dashboard", DashboardPage(self)),
             ("Users", "users", self.users_page),
+            ("Departments", "folder", DepartmentsPage(self)),
             ("Designations", "badge", RolesPage(self)),
             ("Org chart", "org", OrgPage(self)),
             ("Rooms", "hash", RoomsPage(self)),
@@ -1665,6 +1833,18 @@ class ServerWindow(QMainWindow):
             ("Server log", "file", self.log_page),
         ]
         self.nav_group = QButtonGroup(self)
+        # the menu scrolls on a short screen instead of squashing its buttons
+        nav_list = QWidget()
+        nav_list.setStyleSheet("background: transparent;")
+        nll = QVBoxLayout(nav_list)
+        nll.setContentsMargins(0, 0, 0, 0)
+        nll.setSpacing(2)
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav_scroll.setFrameShape(QFrame.NoFrame)
+        nav_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        nav_scroll.setWidget(nav_list)
         for i, (title, ic, page) in enumerate(self.pages):
             b = QPushButton("  " + title)
             b.setIcon(icon(ic, T.MUTED, 18, active_color=T.ACCENT))
@@ -1675,11 +1855,13 @@ class ServerWindow(QMainWindow):
                                padding: 9px 12px; border-radius: 10px; font-weight: 600; }}
                 QPushButton:hover {{ background: {T.SURFACE}; color: {T.TEXT}; }}
                 QPushButton:checked {{ background: {T.ACCENT_SOFT}; color: {T.TEXT}; }}""")
+            b.setMinimumHeight(36)
             self.nav_group.addButton(b, i)
-            nl.addWidget(b)
+            nll.addWidget(b)
             self.stack.addWidget(page)
+        nll.addStretch(1)
         self.nav_group.idClicked.connect(self.show_page)
-        nl.addStretch(1)
+        nl.addWidget(nav_scroll, 1)
 
         self.state_label = QLabel()
         self.state_label.setWordWrap(True)
@@ -1759,7 +1941,7 @@ class ServerWindow(QMainWindow):
 
     def _on_core_event(self, event):
         page = self.stack.currentWidget()
-        if isinstance(page, (OnlinePage, DashboardPage, UsersPage)):
+        if isinstance(page, (OnlinePage, DashboardPage, UsersPage, DepartmentsPage)):
             self.refresh_current()
 
     def _keepalive(self):
