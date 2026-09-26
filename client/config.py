@@ -31,7 +31,7 @@ DEFAULTS = {
     "tls": True,                 # encrypted connection (must match the server)
     "pins": {},                  # "host:port" -> server certificate fingerprint (trust on first use)
     "theme": "midnight",         # midnight | light | classic
-    "accent": "violet",
+    "accent": "quillo",          # the logo's navy & teal (new users; saved choices stay)
     "festival_themes": True,     # 15 Aug, 26 Jan and Christmas switch to their festival look for the day
     "recent_stickers": [],
     "directory_view": "cards",   # cards | chart | list

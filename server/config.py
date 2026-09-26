@@ -127,7 +127,11 @@ class ServerConfig:
 
     def _upgrade(self, loaded):
         """Settings written by older versions: move untouched old defaults to the new, simpler ones."""
-        if int(loaded.get("settings_version") or 1) < 2:
+        try:
+            version = int(float(loaded.get("settings_version") or 1))
+        except (TypeError, ValueError, OverflowError):
+            version = 1
+        if version < 2:
             # 1.5.5: simpler sign-in. Only values still at the old defaults change; an admin's own choice stays.
             if loaded.get("min_password_length") == 6:
                 self.values["min_password_length"] = 4
@@ -164,6 +168,9 @@ class ServerConfig:
                     if k.endswith("_port") and not 1 <= out[k] <= 65535:
                         del out[k]
                         raise ValueError(v)
+                    if out[k] < 0 or (k == "max_file_mb" and out[k] < 1):      # sizes, counts, days
+                        del out[k]
+                        raise ValueError(v)
                 elif isinstance(default, float):
                     out[k] = float(v)
                 elif isinstance(default, str):
@@ -179,7 +186,7 @@ class ServerConfig:
     def save(self):
         tmp = self.path + ".tmp"          # write-then-rename: a power cut can't leave half a file
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.values, f, indent=2)
+            json.dump(self.values, f, indent=2, ensure_ascii=False)     # folder names as typed (the setup reads them)
         replace_file(tmp, self.path)
 
     @property

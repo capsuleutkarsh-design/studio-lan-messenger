@@ -179,6 +179,8 @@ class ServerCore(PlannerMixin):
             if self.running:
                 return
             self.thread.join(10)             # a failed start is still cleaning up: let it finish first
+            if self.thread.is_alive():
+                raise RuntimeError("The server is still stopping - try again in a moment")
         self._ready.clear()
         self._start_error = None
         self.thread = threading.Thread(target=self._run, name="server-loop", daemon=True)
@@ -337,8 +339,10 @@ class ServerCore(PlannerMixin):
             hourly = time.time() - last_purge >= 3600
             if hourly:
                 last_purge = time.time()
+            if hourly:
+                self._prune_login_failures()
             steps = [("statuses", self.expire_statuses, lambda: True),
-                     ("backup", self.backup_now, self._backup_due),
+                     ("backup", "backup", self._backup_due),
                      ("chat backup", None, lambda: archive.due(self.db, self.config)),
                      ("updates", self._check_updates, lambda: True),
                      ("file purge", self.purge_files, lambda: hourly)]
@@ -347,6 +351,8 @@ class ServerCore(PlannerMixin):
                     if when():
                         if step is None:
                             await self.chat_backup_async()
+                        elif step == "backup":
+                            await self.backup_async()
                         else:
                             step()
                 except Exception:  # noqa: BLE001
@@ -356,13 +362,19 @@ class ServerCore(PlannerMixin):
         days = float(self.config["file_retention_days"] or 0)
         unclaimed = float(self.config["unclaimed_file_days"] or 0)
         rows = list(self.db.stale_uploads(time.time() - 86400))
-        if days > 0:
-            rows += list(self.db.expired_files(time.time() - days * 86400))
+        rows += list(self.db.expired_files(time.time(), days))        # rooms may keep files longer or shorter
         if unclaimed > 0:
             seen = {r["id"] for r in rows}
             rows += [r for r in self.db.unclaimed_files(time.time() - unclaimed * 86400) if r["id"] not in seen]
         seen = {r["id"] for r in rows}
         rows += [r for r in self.db.orphan_files(time.time() - 86400) if r["id"] not in seen]
+        removed, freed = self._delete_stored(rows)
+        if removed:
+            log.info("Purged %d stored files (%s)", removed, P.human_size(freed))
+
+    def _delete_stored(self, rows):
+        """Delete these stored files from disk; the chats then show them as expired. Returns (count, bytes)."""
+        removed = freed = 0
         for f in rows:
             try:
                 if os.path.exists(f["path"]):
@@ -374,8 +386,9 @@ class ServerCore(PlannerMixin):
                 self.db.mark_file_purged(f["id"])
             else:
                 self.db.delete_file_row(f["id"])
-        if rows:
-            log.info("Purged %d stored files", len(rows))
+            removed += 1
+            freed += f["size"] or 0
+        return removed, freed
 
     # ========================================================= connections
     async def _handle_conn(self, reader, writer):
@@ -552,6 +565,10 @@ class ServerCore(PlannerMixin):
             pass
         finally:
             session.close()
+            try:                             # let the last replies (e.g. "kicked") go out before the socket closes
+                await asyncio.wait_for(asyncio.shield(session.writer_task), 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, ConnectionError, OSError):
+                pass
 
     def _dispatch(self, session, req):
         rid = req.get("rid")
@@ -578,10 +595,11 @@ class ServerCore(PlannerMixin):
                 log.warning("Bad %s request from user %s: %s", req.get("op"), session.user_id, text[:200])
             if rid is not None:
                 session.send({"op": "reply", "rid": rid, "ok": False, "error": error})
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             log.exception("Handler %s failed", req.get("op"))
             if rid is not None:
-                session.send({"op": "reply", "rid": rid, "ok": False, "error": f"Server error: {e}"})
+                session.send({"op": "reply", "rid": rid, "ok": False,
+                              "error": "Something went wrong on the server - please try again"})
 
     # ======================================================= login throttle
     LOGIN_WINDOW = 300          # seconds
@@ -601,12 +619,28 @@ class ServerCore(PlannerMixin):
         for key, limit, lock in (((ip, username.lower()), self.MAX_USER_FAILS, self.LOCK_SECONDS),
                                  ((ip, None), self.MAX_IP_FAILS, self.LOGIN_WINDOW)):
             times = [t for t in self.failed_logins.get(key, []) if now - t < self.LOGIN_WINDOW]
-            self.failed_logins[key] = times
+            if times:
+                self.failed_logins[key] = times
+            else:
+                self.failed_logins.pop(key, None)
             if len(times) >= limit:
                 remaining = int(times[-1] + lock - now)
                 if remaining > 0:
                     return remaining
         return 0
+
+    def _prune_login_failures(self):
+        """Forget failed sign-ins older than the lock window (the table must not grow for ever)."""
+        cutoff = time.time() - self.LOGIN_WINDOW
+        for key in [k for k, v in self.failed_logins.items() if not v or v[-1] < cutoff]:
+            del self.failed_logins[key]
+
+    def _token_uid(self, token):
+        """The user a transfer token belongs to - only for a live session that has no pending password change."""
+        uid = self.tokens.get(token)
+        if uid and any(s.token == token and not s.must_change for s in self.sessions.get(uid, ())):
+            return uid
+        return None
 
     # =========================================================== helpers
     def visible_status(self, uid: int) -> str:
@@ -639,7 +673,7 @@ class ServerCore(PlannerMixin):
     def room_public(self, row) -> dict:
         return {"id": row["id"], "name": row["name"], "topic": row["topic"],
                 "owner_id": row["owner_id"], "members": self.db.room_member_ids(row["id"]),
-                "auto": bool(row["auto_key"])}
+                "auto": bool(row["auto_key"]), "file_retention_days": row["file_retention_days"]}
 
     # ---------------------------------------------------------- organisation
     @property
@@ -1490,7 +1524,11 @@ class ServerCore(PlannerMixin):
 
     def h_mute(self, s, req):
         conv = req.get("conv")
-        self._internal_conv(s, conv)
+        kind, target, _key = self._internal_conv(s, conv)
+        if kind == "u":
+            other = self.db.get_user(target)
+            if not other or other["deleted"]:
+                raise ClientError("User not found")
         self.db.set_muted(s.user_id, conv, bool(req.get("muted", True)))
         self.push_user(s.user_id, {"op": "muted", "conv": conv, "muted": bool(req.get("muted", True))}, exclude=s)
 
@@ -1609,7 +1647,7 @@ class ServerCore(PlannerMixin):
 
     async def _handle_screen(self, reader, writer, msg):
         """Relay connection: the sharer publishes JPEG frames, the viewer receives the latest one."""
-        uid = self.tokens.get(msg.get("token"))
+        uid = self._token_uid(msg.get("token"))
         share = self.shares.get(str(msg.get("share_id", "")))
         role = msg.get("op")
         if (not uid or not share or not share["accepted"]
@@ -1810,11 +1848,14 @@ class ServerCore(PlannerMixin):
                  "admin_announcements", "admin_announcement_reads", "admin_review_conversations",
                  "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
-                 "admin_delete_department"}
+                 "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
-        if not row or not row["is_admin"]:
+        if not row or not row["is_admin"] or row["disabled"] or row["deleted"]:
+            if s.token is None:              # a console whose admin was disabled, deleted or demoted meanwhile
+                s.send({"op": "kicked", "reason": "Your administrator access was removed"})
+                s.close()
             raise ClientError("Administrator rights are required")
         fn = str(req.get("fn", ""))
         if fn not in self.ADMIN_API:
@@ -1840,7 +1881,7 @@ class ServerCore(PlannerMixin):
 
     # ======================================================= file transfer
     async def _handle_upload(self, reader, writer, msg):
-        uid = self.tokens.get(msg.get("token"))
+        uid = self._token_uid(msg.get("token"))
         size = int(msg.get("size", -1))
         max_size = int(self.config["max_file_mb"]) * 1024 * 1024
         if not uid:
@@ -1907,7 +1948,7 @@ class ServerCore(PlannerMixin):
         log.info("Stored file '%s' (%s) from user %s", name, P.human_size(size), uid)
 
     async def _handle_download(self, writer, msg):
-        uid = self.tokens.get(msg.get("token"))
+        uid = self._token_uid(msg.get("token"))
         file_id = str(msg.get("file_id", ""))
         if file_id == "client-update" and uid:
             u = self.latest_client_update()
@@ -2143,6 +2184,8 @@ class ServerCore(PlannerMixin):
     def admin_save_room(self, room_id, name, topic, member_ids):
         member_ids = set(self._valid_user_ids(member_ids))
         room = self.db.get_room(room_id) if room_id is not None else None
+        if room_id is not None and not room:
+            raise ValueError("This room no longer exists")
         if room and room["auto_key"]:
             raise ValueError("This room is automatic: its members follow the department/section of each user")
         if room_id is None:
@@ -2223,17 +2266,18 @@ class ServerCore(PlannerMixin):
     # ---- backups
     last_backup = None       # {"time": ts, "path": ..., "ok": bool, "error": ...}
 
-    def backup_now(self):
-        """Copy the database + settings into the backup folder and prune old copies."""
+    def _backup_plan(self):
         folder = self.config.backup_dir
         stamp = time.strftime("%Y-%m-%d_%H%M")
-        path = os.path.join(folder, f"messenger_{stamp}.db")
+        return folder, stamp, os.path.join(folder, f"messenger_{stamp}.db"), max(1, int(self.config["backup_keep"]))
+
+    def _backup_copy(self, folder, stamp, path, keep, config_path):
+        """The slow part (safe in a worker thread): copy the database + settings, prune old copies."""
         try:
             os.makedirs(folder, exist_ok=True)
             self.db.backup_to(path + ".tmp")
             replace_file(path + ".tmp", path)
-            shutil.copy2(self.config.path, os.path.join(folder, f"config_{stamp}.json"))
-            keep = max(1, int(self.config["backup_keep"]))
+            shutil.copy2(config_path, os.path.join(folder, f"config_{stamp}.json"))
             just_written = {os.path.basename(path), f"config_{stamp}.json"}
             for prefix in ("messenger_", "config_"):
                 old = sorted((f for f in os.listdir(folder) if f.startswith(prefix) and not f.endswith(".tmp")
@@ -2241,18 +2285,73 @@ class ServerCore(PlannerMixin):
                              key=lambda f: os.path.getmtime(os.path.join(folder, f)))
                 for f in old[:max(0, len(old) - (keep - 1))]:
                     os.remove(os.path.join(folder, f))
-            self.last_backup = {"time": time.time(), "path": path, "ok": True,
-                                "size": os.path.getsize(path)}
-            log.info("Backup written to %s (%s)", path, P.human_size(os.path.getsize(path)))
+            return {"time": time.time(), "path": path, "ok": True, "size": os.path.getsize(path)}
         except (OSError, sqlite3.Error) as e:
             try:
                 os.remove(path + ".tmp")
             except OSError:
                 pass
-            self.last_backup = {"time": time.time(), "path": path, "ok": False, "error": str(e)}
-            log.error("BACKUP FAILED (%s): %s", path, e)
-            self.audit("server", "backup failed", folder, str(e))
-        return self.last_backup
+            return {"time": time.time(), "path": path, "ok": False, "error": str(e)}
+
+    def _backup_done(self, result, folder):
+        self.last_backup = result
+        if result["ok"]:
+            log.info("Backup written to %s (%s)", result["path"], P.human_size(result["size"]))
+        else:
+            log.error("BACKUP FAILED (%s): %s", result["path"], result["error"])
+            self.audit("server", "backup failed", folder, result["error"])
+        return result
+
+    def backup_now(self):
+        """Copy the database + settings into the backup folder and prune old copies (waits for it)."""
+        folder, stamp, path, keep = self._backup_plan()
+        return self._backup_done(self._backup_copy(folder, stamp, path, keep, self.config.path), folder)
+
+    async def backup_async(self):
+        """The nightly backup: the copy runs in a worker thread, so chats never stall while it runs."""
+        folder, stamp, path, keep = self._backup_plan()
+        result = await self.loop.run_in_executor(None, self._backup_copy, folder, stamp, path, keep,
+                                                 self.config.path)
+        return self._backup_done(result, folder)
+
+    # ---- storage: who uses the space, per-room file retention, manual clean-up
+    def admin_storage(self):
+        report = self.db.storage_report()
+        try:
+            usage = shutil.disk_usage(self.config.storage_dir)
+            disk = {"total": usage.total, "free": usage.free}
+        except OSError:
+            disk = None
+        stats = self.db.message_stats()
+        report.update(total_bytes=stats["files_bytes"], total_files=stats["files"], disk=disk,
+                      storage_dir=self.config.storage_dir,
+                      default_days=float(self.config["file_retention_days"] or 0),
+                      unclaimed_days=float(self.config["unclaimed_file_days"] or 0))
+        return report
+
+    def admin_cleanup_files(self, days):
+        """Delete every stored file older than `days` days now (at least 1 day)."""
+        days = float(days)
+        if not days >= 1:
+            raise ValueError("Choose at least 1 day")
+        removed, freed = self._delete_stored(self.db.files_older_than(time.time() - days * 86400))
+        self.audit(None, "files cleaned up", f"older than {days:g} days", f"{removed} files, {P.human_size(freed)}")
+        self._emit("stats")
+        return {"removed": removed, "bytes": freed}
+
+    def admin_set_room_retention(self, room_id, days):
+        """Keep a room's shared files for `days` days (0 = forever, None = the server default)."""
+        room = self.db.get_room(int(room_id))
+        if not room:
+            raise ValueError("This room no longer exists")
+        if days is not None:
+            days = float(days)
+            if not 0 <= days <= 36500:
+                raise ValueError("Days must be between 0 and 36500")
+        self.db.set_room_retention(room["id"], days)
+        what = "server default" if days is None else ("forever" if days == 0 else f"{days:g} days")
+        self.audit(None, "room file retention", room["name"], what)
+        return True
 
     # ---- readable chat backup + message retention (see server/archive.py)
     last_chat_backup = None

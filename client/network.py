@@ -4,11 +4,14 @@ Everything runs on the Qt event loop (no threads).
 """
 
 import json
+import logging
 
 from PySide6.QtCore import QCryptographicHash, QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkInterface, QSslSocket, QUdpSocket
 
 from common import protocol as P
+
+log = logging.getLogger("client")
 
 
 def make_socket(parent=None) -> QSslSocket:
@@ -78,6 +81,16 @@ class Connection(QObject):
         self.online = False
         self.token = None
         self.sock.abort()
+        self._fail_callbacks("Signed out")
+
+    def _fail_callbacks(self, reason):
+        """Waiting requests get an answer, so no dialog stays at 'Searching...' for ever."""
+        pending, self.callbacks = list(self.callbacks.values()), {}
+        for cb in pending:
+            try:
+                cb({"ok": False, "error": reason})
+            except Exception:  # noqa: BLE001
+                log.exception("request callback failed")
 
     def send(self, op, **kw):
         if self.online:
@@ -156,7 +169,10 @@ class Connection(QObject):
                 msg = json.loads(line)
             except ValueError:
                 continue
-            self._handle(msg)
+            try:
+                self._handle(msg)
+            except Exception:  # noqa: BLE001 - one bad event must not drop the rest of this batch
+                log.exception("Could not handle %s from the server", msg.get("op") if isinstance(msg, dict) else "?")
 
     def _handle(self, msg):
         op = msg.get("op")
@@ -174,6 +190,7 @@ class Connection(QObject):
             self.auto_reconnect = False
             self.online = False
             self.sock.abort()
+            self._fail_callbacks("Not signed in")
             self.login_failed.emit(msg.get("error", "Login failed"))
         elif op == "reply":
             cb = self.callbacks.pop(msg.get("rid"), None)
@@ -183,6 +200,7 @@ class Connection(QObject):
             self.auto_reconnect = False
             self.online = False
             self.sock.abort()
+            self._fail_callbacks("Disconnected")
             self.kicked.emit(msg.get("reason", "Disconnected by the server"))
         else:
             self.event.emit(msg)
@@ -211,12 +229,7 @@ class Connection(QObject):
             return
         self.online = False
         self.ping_timer.stop()
-        for cb in self.callbacks.values():
-            try:
-                cb({"ok": False, "error": "Connection lost"})
-            except Exception:  # noqa: BLE001
-                pass
-        self.callbacks.clear()
+        self._fail_callbacks("Connection lost")
         if self.auto_reconnect:
             try:
                 self.connection_lost.emit(reason)

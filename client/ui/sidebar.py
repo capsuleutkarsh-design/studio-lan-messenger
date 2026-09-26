@@ -10,7 +10,7 @@ from common import protocol as P
 from common import theme as T
 from common.icons import icon
 from client import stickers
-from client.ui.widgets import ConvItem, IconButton, SectionLabel, fmt_last_seen, fmt_list_time, plain
+from client.ui.widgets import ConvItem, IconButton, SectionLabel, first_name, fmt_last_seen, fmt_list_time, plain
 
 
 class ItemList(QScrollArea):
@@ -172,7 +172,7 @@ class Sidebar(QFrame):
         if m["sender_id"] == self.store.my_id:
             return "You: " + text
         if conv.startswith("r:"):
-            return self.store.user_name(m["sender_id"]).split()[0] + ": " + text
+            return first_name(self.store.user_name(m["sender_id"]), "Someone") + ": " + text
         return text
 
     def _fill_item(self, item):

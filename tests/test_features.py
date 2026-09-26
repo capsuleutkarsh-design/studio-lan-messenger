@@ -30,8 +30,7 @@ class FeatureTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
         cls.core = c = ServerCore(cls.tmp)
-        c.config.update(tcp_port=PORT, discovery_port=PORT + 1, auto_department_rooms=False,
-                        auto_section_rooms=False)
+        c.config.update(tcp_port=PORT, discovery_port=PORT + 1)
         c.start()
         mk = lambda u, **kw: c.call(c.admin_create_user, must_change=False, username=u,  # noqa: E731
                                     password="Artist2026", display_name=u.title(), **kw)

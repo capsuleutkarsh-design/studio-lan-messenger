@@ -531,7 +531,9 @@ class SettingsDialog(Dialog):
             b.setFixedSize(28, 28)
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(key.capitalize())
+            b.setToolTip(T.ACCENT_NAMES.get(key, key.capitalize()))
+            if key == "quillo":              # the logo's two colours
+                color = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #13235a, stop:0.5 #13235a, stop:0.51 {color}, stop:1 {color})"
             b.setStyleSheet(f"QPushButton {{ background: {color}; border-radius: 14px; border: 2px solid {T.PANEL}; padding: 0; }}"
                             f"QPushButton:checked {{ border: 3px solid {T.TEXT}; }}")
             b.clicked.connect(lambda _=False, k=key: self._pick_accent(k))

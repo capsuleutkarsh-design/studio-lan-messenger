@@ -6,7 +6,7 @@ import time
 from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QDateTimeEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
+    QDateTimeEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QPlainTextEdit,
     QPushButton, QVBoxLayout,
 )
 
@@ -34,6 +34,17 @@ def presets():
     return out
 
 
+def weekday_picks(days=10):
+    """The next working days at 09:00 (from the day after tomorrow): 'Mon 29 Sep', ..."""
+    today = datetime.date.today()
+    out = []
+    for i in range(2, 2 + days):
+        d = today + datetime.timedelta(days=i)
+        if d.weekday() < 5:
+            out.append((f"{d:%a %d %b}", _at(d, 9)))
+    return out
+
+
 def fmt_due(ts):
     """'Today 18:00', 'Tomorrow 09:00', 'Mon 29 Sep 09:00'."""
     d = datetime.datetime.fromtimestamp(ts)
@@ -53,6 +64,9 @@ def when_menu(parent, title, on_pick, custom_title="Pick a date & time..."):
     m.setIcon(icon("clock", T.TEXT, 16))
     for label, ts in presets():
         m.addAction(label, lambda ts=ts: on_pick(ts))
+    later = m.addMenu("Another day, 09:00")
+    for label, ts in weekday_picks():
+        later.addAction(label, lambda ts=ts: on_pick(ts))
     m.addSeparator()
 
     def custom():
@@ -93,6 +107,16 @@ class TimeDialog(QDialog):
             b.clicked.connect(lambda _=False, ts=ts: self.edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(ts))))
             grid.addWidget(b, i // 2, i % 2)
         lay.addLayout(grid)
+        self.typed = QLineEdit()
+        self.typed.setPlaceholderText("Or type it: mon 9:30,  tomorrow 2pm,  in 2h")
+        self.typed.setMinimumHeight(36)
+        self.typed.addAction(icon("clock", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.typed.textChanged.connect(self._typed)
+        lay.addWidget(self.typed)
+        self.typed_hint = QLabel()
+        self.typed_hint.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; padding-left: 4px;")
+        self.typed_hint.hide()
+        lay.addWidget(self.typed_hint)
         self.edit = QDateTimeEdit(QDateTime.fromSecsSinceEpoch(int(initial or time.time() + 3600)))
         self.edit.setCalendarPopup(True)
         self.edit.setDisplayFormat("ddd dd MMM yyyy   HH:mm")
@@ -110,6 +134,18 @@ class TimeDialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         T.dark_title_bar(self)
+
+    def _typed(self, text):
+        from client.when import parse_when
+        ts = parse_when(text) if text.strip() else None
+        self.typed_hint.setVisible(bool(text.strip()))
+        if ts:
+            self.edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(ts)))
+            self.typed_hint.setText(f"✓  {fmt_due(ts)}")
+            self.typed_hint.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; padding-left: 4px;")
+        else:
+            self.typed_hint.setText("Not sure when that is - try 'fri 10:00' or 'in 3 days'")
+            self.typed_hint.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; padding-left: 4px;")
 
     def timestamp(self):
         return self.edit.dateTime().toSecsSinceEpoch()

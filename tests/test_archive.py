@@ -29,7 +29,7 @@ class ArchiveTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.core = c = ServerCore(self.tmp)
-        c.config.update(tcp_port=PORT, discovery_port=PORT + 1, auto_department_rooms=False, auto_section_rooms=False,
+        c.config.update(tcp_port=PORT, discovery_port=PORT + 1,
                         message_retention_days=90)
         c.start()
         mk = lambda u, n: c.call(c.admin_create_user, must_change=False, username=u,  # noqa: E731

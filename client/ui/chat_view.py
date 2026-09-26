@@ -20,7 +20,8 @@ from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
 from client.ui.widgets import (
-    Avatar, IconButton, esc, fmt_day, fmt_last_seen, linkify, open_link, open_path, plain, show_in_folder,
+    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_link, open_path, plain, rich_safe,
+    show_in_folder,
 )
 
 GROUP_SECONDS = 300
@@ -83,7 +84,7 @@ class BuzzLine(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 8, 0, 8)
         t = datetime.datetime.fromtimestamp(msg["ts"]).strftime("%H:%M")
-        pill = QLabel(f"⚡  {text}  ·  {t}")
+        pill = plain(QLabel(f"⚡  {text}  ·  {t}"))
         pill.setStyleSheet(f"color: {T.ACCENT}; font-weight: 700; font-size: 9pt; background: {T.ACCENT_SOFT};"
                            f" border: 1px solid {T.ACCENT_FOCUS}; border-radius: 12px; padding: 4px 14px;")
         lay.addStretch(1)
@@ -335,7 +336,7 @@ class SnippetCard(QFrame):
         self.preview = NUKE_PREVIEW_LINES if self.nuke else PREVIEW_LINES
         self.setObjectName("snippet")
         self.setStyleSheet(f"#snippet {{ background: {T.TINT}; border-radius: 14px; }}")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(220)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 8, 10)
         lay.setSpacing(6)
@@ -440,7 +441,8 @@ class ReactionBar(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             names = [("You" if u == store.my_id else store.user_name(u)) for u in r.get("users", [])]
             more = r["count"] - len(names)
-            b.setToolTip(", ".join(names) + (f" and {more} more" if more > 0 else "") + f" reacted {r['emoji']}")
+            b.setToolTip(rich_safe(", ".join(names) + (f" and {more} more" if more > 0 else "")
+                                   + f" reacted {r['emoji']}"))
             mine = r.get("mine")
             b.setStyleSheet(
                 f"QPushButton {{ font-family: 'Segoe UI Emoji', 'Segoe UI'; font-size: 9pt; font-weight: 600;"
@@ -496,7 +498,7 @@ class PollOption(QWidget):
         super().__init__()
         self.index, self.option, self.total, self.mine, self.multi = index, option, total, mine, multi
         self.setFixedHeight(40)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(200)
         self.setEnabled(enabled)
         if enabled:
             self.setCursor(Qt.PointingHandCursor)
@@ -624,7 +626,7 @@ class PollCard(QWidget):
         for o in poll["options"]:
             names = [("You" if u == store.my_id else store.user_name(u)) for u in o.get("voters", [])]
             lines.append(f"{o['text']}  —  {o['count']}\n    " + (", ".join(names) or "nobody"))
-        QMessageBox.information(self, "Poll votes", poll["question"] + "\n\n" + "\n\n".join(lines))
+        QMessageBox.information(self, "Poll votes", rich_safe(poll["question"] + "\n\n" + "\n\n".join(lines)))
 
 
 class MessageRow(QWidget):
@@ -1366,7 +1368,7 @@ class ChatView(QWidget):
         self.mlay = QVBoxLayout(self.container)
         self.mlay.setContentsMargins(24, 10, 24, 14)
         self.mlay.setSpacing(0)
-        self.loading = QLabel("Loading...")
+        self.loading = plain(QLabel("Loading..."))
         self.loading.setAlignment(Qt.AlignCenter)
         self.loading.setStyleSheet(f"color: {T.FAINT}; padding: 8px;")
         self.mlay.addWidget(self.loading)
@@ -1565,7 +1567,7 @@ class ChatView(QWidget):
                     sub += "  ·  Automatic room"
                 if room.get("topic"):
                     sub = f"{room['topic']}  ·  {sub}"
-                self.subtitle.setToolTip(", ".join(sorted(names)))
+                self.subtitle.setToolTip(rich_safe(", ".join(sorted(names))))
             else:
                 sub = ""
             self.offline_note.hide()
@@ -1603,7 +1605,7 @@ class ChatView(QWidget):
         now = time.time()
         typers = [uid for uid, exp in self.typing_users.items() if exp > now]
         if typers:
-            names = [esc(self.store.user_name(u).split()[0]) for u in typers]
+            names = [esc(first_name(self.store.user_name(u), "Someone")) for u in typers]
             text = (f"{names[0]} is typing..." if len(names) == 1 else f"{', '.join(names)} are typing...")
             self.subtitle.setText(f"<span style='color:{T.ACCENT}'>{text}</span>")
         else:
@@ -1643,7 +1645,7 @@ class ChatView(QWidget):
             return f"No messages in {self.store.title(self.conv)} yet.\nSay hello to the room 👋"
         if target == self.store.my_id:
             return "Your own space: notes, links and files for later.\nOnly you can see this chat."
-        first = self.store.user_name(target).split()[0] if self.store.user_name(target) else "them"
+        first = first_name(self.store.user_name(target))
         return f"No messages yet.\nSay hi to {first} 👋"
 
     def _append(self, m, prev):
@@ -2148,7 +2150,7 @@ class ChatView(QWidget):
         text = ("Delete this message for everyone?" if mine else
                 f"Delete this message from {self.store.user_name(msg['sender_id'])} for everyone? "
                 "(recorded in the audit log)")
-        if QMessageBox.question(self, "Delete message", text) == QMessageBox.Yes:
+        if QMessageBox.question(self, "Delete message", rich_safe(text)) == QMessageBox.Yes:
             self.ctx.conn.request("delete_message", lambda r: None if r.get("ok") else self.ctx.toast(
                 r.get("error", "Not deleted")), id=msg["id"])
 
@@ -2276,9 +2278,9 @@ class ChatView(QWidget):
             names = reply.get("names", {})
             read = sorted(names[str(u)] for u in reply["read"] if str(u) in names)
             unread = sorted(n for u, n in names.items() if int(u) not in reply["read"])
-            QMessageBox.information(self, "Seen by",
-                                    f"Seen by {len(read)} of {reply['total']}:\n" + ("\n".join(read) or "nobody yet")
-                                    + ("\n\nNot yet:\n" + "\n".join(unread) if unread else ""))
+            QMessageBox.information(self, "Seen by", rich_safe(
+                f"Seen by {len(read)} of {reply['total']}:\n" + ("\n".join(read) or "nobody yet")
+                + ("\n\nNot yet:\n" + "\n".join(unread) if unread else "")))
         self.ctx.conn.request("read_by", done, conv=self.conv, message_id=msg["id"])
 
     # ------------------------------------------------------ drag & drop

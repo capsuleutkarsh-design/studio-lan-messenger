@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.6.0-1d3a7a?style=for-the-badge"></a>
+  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.6.1-1d3a7a?style=for-the-badge"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Offline, LAN only" src="https://img.shields.io/badge/internet-not%20needed-0f1d4a?style=for-the-badge">
@@ -19,7 +19,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest release</b></a> ·
   <a href="docs/ADMIN.md"><b>Admin & IT guide</b></a> ·
-  <a href="docs/releases/v1.6.0.md"><b>What's new in 1.6.0</b></a>
+  <a href="docs/releases/v1.6.1.md"><b>What's new in 1.6.1</b></a>
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 ### 💬 Chat that fits a studio
 Direct chats and rooms, **department and section rooms** you switch on per department, reply, edit, delete, forward, pin,
 **@mentions**, read receipts and "seen by", **emoji reactions**, **polls** for the everyday
-"which dailies slot?" questions, **reminders**, **scheduled messages**, and **Buzz** to reach someone who is
+"which dailies slot?" questions, **reminders**, **scheduled messages** (type *mon 9:30* or *in 2h*), and **Buzz** to reach someone who is
 busy (it even pops a minimised app up on screen).
 
 </td>
@@ -49,9 +49,9 @@ folders** (image sequences are zipped and extracted in one click). Files reach p
 <td width="33%" valign="top">
 
 ### 🎬 Made for artists
-Paste a **Nuke script** and it becomes a code card with *Copy* and *Save as .nk*. Clickable
-`\\server\share` paths, view-only **screen sharing** with consent, and a **pipeline API** so the render farm
-can message you.
+Paste a **Nuke script** and it becomes a code card with *Copy* and *Save as .nk*. **Shot and path links**:
+`\\server\proj\FAL_030\comp`, `Z:/plates/...` or a Nuke `####` sequence opens in Explorer with one click.
+View-only **screen sharing** with consent, and a **pipeline API** so the render farm can message you.
 
 </td>
 </tr>
@@ -150,7 +150,7 @@ common/        shared: protocol, theme, icons, org views (cards / chart), versio
 assets/        app icon, logo (brand/ holds the master logo), icons, sticker packs
 build/         build script, Inno Setup scripts, service installer
 tools/         icon, banner and sticker generators
-tests/         integration tests against a real server (78 tests)
+tests/         integration tests against a real server (92 tests)
 docs/          admin guide, release notes, images
 ```
 
