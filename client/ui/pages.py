@@ -677,6 +677,8 @@ class DirectoryPage(QWidget):
         m.addAction(icon("attachment", T.TEXT, 16), "Send files...", lambda: self.ctx._send_files_to(conv))
         m.addAction(icon("screen", T.TEXT, 16), "Ask to see their screen...",
                     lambda: self.ctx.screens.invite(uid, "request"))
+        if getattr(self.store, "buzz_enabled", False):
+            m.addAction(icon("zap", T.TEXT, 16), "Buzz", lambda: self.ctx.buzz_conv(conv))
         self.ctx.add_manage_actions(m, uid)
         m.exec(pos)
 

@@ -18,6 +18,7 @@ from common.files import replace_file
 DEFAULTS = {
     "server_host": "",
     "server_port": TCP_PORT,
+    "server_name": "",           # shown on the sign-in screen instead of the address
     "username": "",
     "remember": False,
     "password_blob": "",

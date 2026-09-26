@@ -106,7 +106,7 @@ class Store(QObject):
     def title(self, conv):
         kind, target = P.parse_conv(conv)
         if kind == "u":
-            return self.user_name(target)
+            return "My space" if target == self.my_id else self.user_name(target)
         room = self.rooms.get(target)
         return room["name"] if room else "Room"
 
@@ -121,17 +121,23 @@ class Store(QObject):
         return conv in self.muted
 
     def mentions_me(self, msg) -> bool:
-        body = (msg.get("body") or "").lower()
-        name = (self.me.get("username") or "").lower()
-        if not name or "@" not in body:
+        """@me, @everyone, @here or my department/section - only in rooms (a direct chat is already to me)."""
+        from client import mentions
+        if not str(msg.get("conv", "")).startswith("r:") or "@" not in (msg.get("body") or ""):
             return False
-        i = body.find("@" + name)
-        while i >= 0:
-            end = i + 1 + len(name)
-            if end >= len(body) or not (body[end].isalnum() or body[end] in "._-"):
-                return True
-            i = body.find("@" + name, end)
-        return False
+        return mentions.mentions(msg["body"], self.me)
+
+    def mention_marker(self):
+        """Highlights @tokens in message HTML: people and groups in the accent colour, me as a chip."""
+        from client import mentions
+        from common import theme as T
+        known = {u["username"].lower() for u in self.users.values()} | set(mentions.GROUPS)
+        for u in list(self.users.values()) + [self.me]:
+            for key in ("department", "section"):
+                if u.get(key):
+                    known.add(mentions.group_token(u[key]).lower())
+        mine = mentions.my_tokens(self.me)
+        return lambda escaped: mentions.mark(escaped, known, mine, T.ACCENT, T.ACCENT_SOFT)
 
     def unread_announcements(self):
         return sum(1 for a in self.announcements if not a.get("read"))

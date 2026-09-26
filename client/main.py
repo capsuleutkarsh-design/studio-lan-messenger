@@ -85,6 +85,9 @@ class App(QObject):
             self.main = MainWindow(self.conn, self.store, self.transfers, self.config)
             self.main.logout_requested.connect(self.logout)
         self.store.load(boot)
+        if boot.get("server_name") and self.config.get("server_name") != boot["server_name"]:
+            self.config["server_name"] = boot["server_name"]
+            self.config.save()
         if first:
             # the window connected to logged_in during this very signal, so Qt won't call it this time
             self.main._on_logged_in(boot)

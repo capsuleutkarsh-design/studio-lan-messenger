@@ -93,7 +93,29 @@ class LoginWindow(QWidget):
         lay.addWidget(sub)
         lay.addSpacing(18)
 
-        lay.addWidget(self._caption("Server"))
+        # the server: normally just its name; the address field only after "Change" (or when none is found)
+        self.server_line = QWidget()
+        sl = QHBoxLayout(self.server_line)
+        sl.setContentsMargins(2, 0, 0, 0)
+        sl.setSpacing(8)
+        ic = QLabel()
+        ic.setPixmap(pixmap("server", T.MUTED, 16))
+        sl.addWidget(ic)
+        self.server_name = plain(QLabel("Looking for the server..."))
+        self.server_name.setStyleSheet(f"color: {T.MUTED};")
+        sl.addWidget(self.server_name, 1)
+        change = QPushButton("Change")
+        change.setCursor(Qt.PointingHandCursor)
+        change.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {T.ACCENT};"
+                             f" font-weight: 600; padding: 2px 4px; }} QPushButton:hover {{ text-decoration: underline; }}")
+        change.clicked.connect(lambda: self.show_server_box(True))
+        sl.addWidget(change)
+        lay.addWidget(self.server_line)
+        self.server_box = QWidget()
+        sbl = QVBoxLayout(self.server_box)
+        sbl.setContentsMargins(0, 0, 0, 0)
+        sbl.setSpacing(8)
+        sbl.addWidget(self._caption("Server"))
         srow = QHBoxLayout()
         srow.setSpacing(8)
         self.server = QComboBox()
@@ -104,7 +126,9 @@ class LoginWindow(QWidget):
         self.b_find = IconButton("refresh", "Search the network for servers", 42, 18, round_=False)
         self.b_find.clicked.connect(self.discover)
         srow.addWidget(self.b_find)
-        lay.addLayout(srow)
+        sbl.addLayout(srow)
+        lay.addWidget(self.server_box)
+        self.server_box.hide()
         lay.addSpacing(6)
 
         lay.addWidget(self._caption("Username"))
@@ -149,8 +173,11 @@ class LoginWindow(QWidget):
             w.returnPressed.connect(self.submit)
         self.server.lineEdit().returnPressed.connect(self.submit)
 
+        self.known_name = config.get("server_name", "") or ""
         if config["server_host"]:
             self.server.setEditText(self._fmt(config["server_host"], config["server_port"]))
+            self.server_name.setText(f"Server: {self.known_name or 'the one used last time'}")
+            self.server_name.setStyleSheet(f"color: {T.TEXT};")
         self.discovery = Discovery(self)
         self.discovery.found.connect(self._found)
         self.discovery.finished.connect(self._discovery_done)
@@ -181,6 +208,12 @@ class LoginWindow(QWidget):
             self.server.lineEdit().setPlaceholderText("searching the network...")
         self.discovery.start()
 
+    def show_server_box(self, show):
+        self.server_box.setVisible(show)
+        self.server_line.setVisible(not show)
+        if show:
+            self.server.setFocus()
+
     def _found(self, host, port, name):
         text = self._fmt(host, port)
         if self.server.findText(text) < 0:
@@ -188,12 +221,15 @@ class LoginWindow(QWidget):
             self.server.setItemData(self.server.count() - 1, name, Qt.ToolTipRole)
         if not self.server.currentText().strip():
             self.server.setEditText(text)
-            self.set_info(f"Found server “{name}”")
+        if self.server.currentText().strip() == text:
+            self.server_name.setText(f"Server: {name}")
+            self.server_name.setStyleSheet(f"color: {T.TEXT};")
 
     def _discovery_done(self):
         self.b_find.setEnabled(True)
         self.server.lineEdit().setPlaceholderText("server name or IP address")
         if not self.server.currentText().strip():
+            self.show_server_box(True)
             self.set_error("No server found automatically. Type the server's IP address.")
 
     # --------------------------------------------------------------- login
@@ -211,6 +247,7 @@ class LoginWindow(QWidget):
     def submit(self):
         host, port = self.parse_server()
         if not host:
+            self.show_server_box(True)
             self.set_error("Enter the server address.")
             return
         if not self.username.text().strip() or not self.password.text():
@@ -228,6 +265,8 @@ class LoginWindow(QWidget):
 
     def set_error(self, text):
         self.set_busy(False)
+        if "reach server" in text:              # the saved or found address did not answer: show it
+            self.show_server_box(True)
         self.status.setStyleSheet(f"color: {T.DANGER};")
         self.status.setText(text)
 

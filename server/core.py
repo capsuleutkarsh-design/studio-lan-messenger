@@ -1272,6 +1272,7 @@ class ServerCore(PlannerMixin):
 
     # ----------------------------------------------------------------- buzz
     BUZZ_GAP = 20            # seconds between two buzzes to the same person
+    ROOM_BUZZ_GAP = 60       # seconds between two buzzes to the same room (by anyone)
 
     def h_buzz(self, s, req):
         """Shake the other person's window and ring - also when they are on 'Do not disturb'."""
@@ -1281,14 +1282,20 @@ class ServerCore(PlannerMixin):
             kind, target = P.parse_conv(req.get("conv"))
         except ValueError as e:
             raise ClientError(str(e))
-        if kind != "u" or target == s.user_id:
-            raise ClientError("You can buzz one person at a time, in a direct chat")
+        if kind == "u" and target == s.user_id:
+            raise ClientError("You can't buzz yourself")
         times = self.__dict__.setdefault("_buzz_times", {})
-        wait = self.BUZZ_GAP - (time.time() - times.get((s.user_id, target), 0))
+        if kind == "r":                      # a whole room: everyone in it, at most once a minute per room
+            self._require_room(target, s.user_id)
+            key, gap, who = ("room", target), self.ROOM_BUZZ_GAP, "this room"
+        else:
+            key, gap, who = (s.user_id, target), self.BUZZ_GAP, "them"
+        wait = gap - (time.time() - times.get(key, 0))
         if wait > 0:
-            raise ClientError(f"You just buzzed them — wait {int(wait) + 1} s")
-        result = self._post(s, kind, target, direct_key(s.user_id, target), "", "buzz")
-        times[(s.user_id, target)] = time.time()
+            raise ClientError(f"{who.capitalize()} was just buzzed — wait {int(wait) + 1} s")
+        conv_key = P.room_conv(target) if kind == "r" else direct_key(s.user_id, target)
+        result = self._post(s, kind, target, conv_key, "", "buzz")
+        times[key] = time.time()
         return result
 
     # ------------------------------------------------------------ reactions
