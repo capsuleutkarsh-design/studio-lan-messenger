@@ -121,7 +121,11 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(rail)
         rl.setContentsMargins(0, 16, 0, 10)
         rl.setSpacing(2)
-        rl.addWidget(logo_widget(34), 0, Qt.AlignHCenter)
+        home_logo = logo_widget(34)
+        home_logo.setCursor(Qt.PointingHandCursor)
+        home_logo.setToolTip("Home")
+        home_logo.mousePressEvent = lambda _e: self.go_home()
+        rl.addWidget(home_logo, 0, Qt.AlignHCenter)
         rl.addSpacing(18)
         self.rail_group = QButtonGroup(self)
         self.rail = {}
@@ -129,7 +133,8 @@ class MainWindow(QMainWindow):
                                     ("rooms", "hash", "Rooms", "Chat rooms"),
                                     ("directory", "org", "Org", "Directory / org chart"),
                                     ("announcements", "megaphone", "News", "Announcements"),
-                                    ("transfers", "download", "Files", "File transfers")]:
+                                    ("transfers", "download", "Files", "File transfers"),
+                                    ("myspace", "edit", "Me", "My space — notes, to-dos and files only you can see")]:
             b = RailButton(ic, tip, label)
             b.clicked.connect(lambda _=False, k=key: self.rail_clicked(k))
             self.rail_group.addButton(b)
@@ -223,6 +228,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.show_search)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.focus_search)
         QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=lambda: self.set_compact(not self.compact))
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=lambda: self.chat.take_screenshot())
         self.chat.back.connect(lambda: self._compact_show("list"))
         self.rail["chats"].setChecked(True)
         self.sidebar.show_page("chats")
@@ -469,6 +475,9 @@ class MainWindow(QMainWindow):
 
     # ======================================================== navigation
     def rail_clicked(self, key):
+        if key == "myspace":
+            self.open_my_space()
+            return
         self.rail[key].setChecked(True)
         self._compact_show("list" if key in ("chats", "contacts", "rooms") else "content")
         if key in ("chats", "contacts", "rooms"):
@@ -566,6 +575,8 @@ class MainWindow(QMainWindow):
     def buzzed(self, msg):
         """Someone buzzed me: come to the front, open the chat, shake and ring - even on Do not disturb."""
         sender = self.store.user_name(msg["sender_id"])
+        if msg["conv"].startswith("r:"):
+            sender = f"{sender} in {self.store.title(msg['conv'])}"
         if not self.config["allow_buzz"]:
             self.notify(f"⚡ {sender} buzzed you", "Buzz", msg["conv"])
             return
@@ -704,7 +715,7 @@ class MainWindow(QMainWindow):
             self.set_status("online")
 
     # ============================================================= files
-    def send_file(self, conv, path):
+    def send_file(self, conv, path, caption=""):
         if os.path.isdir(path):
             self.send_folder(conv, path)
             return
@@ -714,7 +725,7 @@ class MainWindow(QMainWindow):
         if self.store.max_file_size and size > self.store.max_file_size:
             self.toast(f"“{os.path.basename(path)}” is too large (max {P.human_size(self.store.max_file_size)}).")
             return
-        self.transfers.upload(path, conv)
+        self.transfers.upload(path, conv, caption)
 
     def send_folder(self, conv, folder):
         """Pack a folder (e.g. an image sequence) into a zip in the background, then send it."""
@@ -810,6 +821,37 @@ class MainWindow(QMainWindow):
             self.conn.request("room_leave", lambda r: None if r.get("ok") else self.toast(r.get("error")),
                               room_id=room_id)
 
+    def buzz_conv(self, conv):
+        """Buzz a person or a whole room (from the chat header, the chat list or the people list)."""
+        if not self.conn.online:
+            self.toast("Not connected to the server")
+            return
+        if not getattr(self.store, "buzz_enabled", False):
+            self.toast("Buzz is switched off on this server")
+            return
+
+        def done(reply):
+            if reply.get("ok"):
+                self.store.add_message(reply["message"])
+                self.toast("⚡ Buzzed " + ("the room" if conv.startswith("r:") else self.store.title(conv)))
+            else:
+                self.toast(reply.get("error", "Not sent"))
+        self.conn.request("buzz", done, conv=conv)
+
+    def go_home(self):
+        """The logo: back to the Home screen from anywhere."""
+        self.rail["chats"].setChecked(True)
+        self.sidebar.show_page("chats")
+        self.sidebar.set_active(None)
+        self.stack.setCurrentWidget(self.home)
+        self._compact_show("content")
+        self.home.rebuild()
+
+    def open_my_space(self):
+        self.rail["chats"].setChecked(True)
+        self.sidebar.show_page("chats")
+        self.open_conv(P.direct_conv(self.store.my_id))
+
     def conv_menu(self, conv, pos):
         m = QMenu(self)
         kind, target = P.parse_conv(conv)
@@ -817,7 +859,12 @@ class MainWindow(QMainWindow):
         muted = self.store.is_muted(conv)
         m.addAction(icon("bell", T.TEXT, 16), "Unmute notifications" if muted else "Mute notifications",
                     lambda: self.set_muted(conv, not muted))
-        if kind == "u":
+        if getattr(self.store, "buzz_enabled", False) and not (kind == "u" and target == self.store.my_id):
+            m.addAction(icon("zap", T.TEXT, 16), "Buzz the room" if kind == "r" else "Buzz",
+                        lambda: self.buzz_conv(conv))
+        if kind == "u" and target == self.store.my_id:
+            pass
+        elif kind == "u":
             m.addAction(icon("attachment", T.TEXT, 16), "Send files...", lambda: self._send_files_to(conv))
             if self.store.perm("create_rooms"):
                 m.addAction(icon("hash", T.TEXT, 16), "Create room with this person",

@@ -182,7 +182,10 @@ class Sidebar(QFrame):
         c = s.convs.get(conv)
         unread = c.unread if c else 0
         when = fmt_list_time(c.last_ts) if c and c.last else ""
-        if kind == "u":
+        if kind == "u" and target == s.my_id and self.page == "chats":      # My space
+            item.set_data("My space", self._preview(conv) if c and c.last else "Notes, to-dos and files for yourself",
+                          when, 0, s.me.get("status", "online"))
+        elif kind == "u":
             u = s.users.get(target, {})
             status = u.get("status", "offline")
             if self.page == "contacts":
@@ -226,6 +229,11 @@ class Sidebar(QFrame):
                 convs = [c for c in convs if c.conv.startswith("u:" if self.filter == "people" else "r:")]
             convs.sort(key=lambda c: c.last_ts, reverse=True)
             n = 0
+            mine = P.direct_conv(s.my_id) if s.my_id else None
+            convs = [c for c in convs if c.conv != mine]
+            if mine and self.filter in ("all", "people") and self._query_match("My space", "notes", "me"):
+                lst.add(self._make_item(mine))              # always at the top, even while empty
+                n += 1
             for c in convs:
                 if self._query_match(s.title(c.conv)):
                     lst.add(self._make_item(c.conv))

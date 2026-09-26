@@ -700,7 +700,8 @@ class MessageRow(QWidget):
             elif msg.get("body") and is_snippet(msg["body"]):
                 b.addWidget(SnippetCard(ctx, msg["body"]))
             elif msg.get("body"):
-                self.text = QLabel(linkify(msg["body"]))
+                self.text = QLabel(linkify(msg["body"], ctx.store.mention_marker()
+                                           if msg["conv"].startswith("r:") and "@" in msg["body"] else None))
                 self.text.setWordWrap(True)
                 self.text.setTextFormat(Qt.RichText)
                 self.text.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
@@ -941,18 +942,20 @@ class MentionPopup(QListWidget):
                            f" QListWidget::item:selected {{ background: {T.ACCENT_SOFT}; }}")
         self.itemClicked.connect(lambda it: self.picked.emit(it.data(Qt.UserRole)))
 
-    def show_for(self, people, anchor: QWidget):
+    def show_for(self, items, anchor: QWidget):
+        """items: (token, label, kind) - kind 'group' (everyone, here, a team) or 'person'."""
         self.clear()
-        for username, name in people[:8]:
-            it = QListWidgetItem(f"{name}   @{username}")
-            it.setData(Qt.UserRole, username)
+        for token, label, kind in items[:8]:
+            it = QListWidgetItem(icon("users" if kind == "group" else "user", T.ACCENT if kind == "group" else T.MUTED, 15),
+                                 f"@{token}   ·   {label}" if kind == "group" else f"{label}   @{token}")
+            it.setData(Qt.UserRole, token)
             self.addItem(it)
         if not self.count():
             self.hide()
             return
         self.setCurrentRow(0)
         h = min(8, self.count()) * 30 + 12
-        self.setFixedSize(300, h)
+        self.setFixedSize(340, h)
         pos = anchor.mapToGlobal(anchor.rect().topLeft())
         self.move(pos.x(), pos.y() - h - 4)
         self.show()
@@ -1405,6 +1408,8 @@ class ChatView(QWidget):
         self.b_sticker.clicked.connect(self.open_stickers)
         self.b_later = IconButton("clock", "Send later, or remind me", 36, 19)
         self.b_later.clicked.connect(self.later_menu)
+        self.b_shot = IconButton("image", "Screenshot — pick an area of the screen and send it (Ctrl+Shift+S)", 36, 19)
+        self.b_shot.clicked.connect(self.take_screenshot)
         self.sticker_picker = None
         self.input = MessageInput()
         self.input.send.connect(self.send_text)
@@ -1429,6 +1434,7 @@ class ChatView(QWidget):
         self.b_send.clicked.connect(self.send_text)
         cl.addWidget(self.b_attach, 0, Qt.AlignBottom)
         cl.addWidget(self.input, 1)
+        cl.addWidget(self.b_shot, 0, Qt.AlignBottom)
         cl.addWidget(self.b_emoji, 0, Qt.AlignBottom)
         cl.addWidget(self.b_sticker, 0, Qt.AlignBottom)
         cl.addWidget(self.b_later, 0, Qt.AlignBottom)
@@ -1556,7 +1562,10 @@ class ChatView(QWidget):
         self.b_members.setVisible(is_room)
         self.b_screen.setVisible(not is_room and target != self.store.my_id and not self.compact)
         self.b_search.setVisible(not self.compact)
-        self.b_buzz.setVisible(not is_room and target != self.store.my_id and getattr(self.store, "buzz_enabled", False))
+        self.b_buzz.setVisible(target != self.store.my_id and getattr(self.store, "buzz_enabled", False)
+                               if not is_room else getattr(self.store, "buzz_enabled", False))
+        self.b_buzz.setToolTip("Buzz the whole room — everyone's window shakes and rings (once a minute)"
+                               if is_room else "Buzz — shake their window and ring, even if they are busy")
         if is_room:
             room = self.store.rooms.get(target)
             self.avatar.set(title, self.conv, room=True)
@@ -1574,7 +1583,7 @@ class ChatView(QWidget):
         elif target == self.store.my_id:
             me = self.store.me
             self.avatar.set(title, title, status=me.get("status", "online"), uid=target)
-            sub = "Your notes  ·  only you can see this chat"
+            sub = "Your personal space: notes, to-dos, links and files  ·  only you can see it"
             self.subtitle.setToolTip("")
             self.offline_note.hide()
         else:
@@ -1659,8 +1668,10 @@ class ChatView(QWidget):
             w = SystemLine(m)
         elif m["kind"] == "buzz":
             mine = m["sender_id"] == self.store.my_id
-            w = BuzzLine(m, f"You buzzed {self.store.title(self.conv)}" if mine
-                         else f"{self.store.user_name(m['sender_id'])} buzzed you")
+            room_buzz = self.conv.startswith("r:")
+            w = BuzzLine(m, ("You buzzed the room" if room_buzz else f"You buzzed {self.store.title(self.conv)}")
+                         if mine else f"{self.store.user_name(m['sender_id'])} buzzed "
+                                      + ("the room" if room_buzz else "you"))
         else:
             grouped = (prev and not new_day and prev["sender_id"] == m["sender_id"]
                        and prev["kind"] not in ("system", "buzz")
@@ -1873,6 +1884,28 @@ class ChatView(QWidget):
             for p in paths:
                 self.ctx.send_file(self.conv, p)
 
+    def take_screenshot(self):
+        """Hide, let the person pick an area of any screen, then preview and send it to this chat."""
+        if not self.conv or getattr(self, "_snipper", None):
+            return
+        from client.ui.snip import ScreenshotDialog, Snipper
+        conv = self.conv
+        self._snipper = Snipper(self.window())
+
+        def done(image):
+            self._snipper = None
+            if image.isNull() or not self.store.conv_exists(conv):
+                return
+            dlg = ScreenshotDialog(self.window(), image, self.store.title(conv))
+            if dlg.exec():
+                path = dlg.save()
+                if path:
+                    self.ctx.send_file(conv, path, dlg.caption.text().strip())
+                else:
+                    self.ctx.toast("Could not save the screenshot")
+        self._snipper.done.connect(done)
+        self._snipper.start()
+
     def _popup_pos(self, button, popup):
         """Open a popup above a composer button, kept inside the window."""
         g = button.mapToGlobal(button.rect().topRight())
@@ -1899,6 +1932,7 @@ class ChatView(QWidget):
         m = QMenu(self)
         m.addAction(icon("attachment", T.TEXT, 16), "Send files...", self.pick_files)
         m.addAction(icon("folder", T.TEXT, 16), "Send a folder (zipped)...", self.pick_folder)
+        m.addAction(icon("image", T.TEXT, 16), "Take a screenshot...   Ctrl+Shift+S", self.take_screenshot)
         m.addSeparator()
         m.addAction(icon("chart", T.TEXT, 16), "Create a poll...", self.create_poll)
         g = self.b_attach.mapToGlobal(self.b_attach.rect().topLeft())
@@ -1929,16 +1963,9 @@ class ChatView(QWidget):
 
     # -------------------------------------------------------------- buzz
     def buzz(self):
-        if not self.conv or not self.ctx.conn.online:
-            return
-
-        def done(reply):
-            if reply.get("ok"):
-                self.store.add_message(reply["message"])
-            else:
-                self.ctx.toast(reply.get("error", "Not sent"))
-        self.ctx.conn.request("buzz", done, conv=self.conv)
-        self._stick_bottom = True
+        if self.conv:
+            self._stick_bottom = True
+            self.ctx.buzz_conv(self.conv)
 
     # ------------------------------------------ send later / reminders
     def later_menu(self):
@@ -2230,14 +2257,12 @@ class ChatView(QWidget):
         if q is None:
             self.mention_popup.hide()
             return
+        from client import mentions
         room = self.store.rooms.get(P.parse_conv(self.conv)[1], {})
-        people = []
-        for uid in room.get("members", []):
-            u = self.store.users.get(uid)
-            if u and (q.lower() in u["username"].lower() or q.lower() in u["name"].lower()):
-                people.append((u["username"], u["name"]))
-        people.sort(key=lambda p: p[1].lower())
-        self.mention_popup.show_for(people, self.composer)
+        members = [self.store.me if uid == self.store.my_id else self.store.users.get(uid)
+                   for uid in room.get("members", [])]
+        self.mention_popup.show_for(mentions.suggestions(q, [u for u in members if u], self.store.my_id),
+                                    self.composer)
 
     def _pick_mention(self, username):
         self.input.complete_mention(username)

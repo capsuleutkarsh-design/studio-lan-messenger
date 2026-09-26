@@ -228,7 +228,14 @@ class FeatureTest(unittest.TestCase):
         self.assertFalse(again["ok"])                               # one buzz per 20 s per person
         self.assertIn("wait", again["error"])
         room = a.request("create_room", name="Buzz room", members=[self.b])["room_id"]
-        self.assertFalse(a.request("buzz", conv=f"r:{room}")["ok"])  # never a whole room
+        r = a.request("buzz", conv=f"r:{room}")                     # the whole room (since 1.6.3)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(b.wait_for("message")["message"]["conv"], f"r:{room}")
+        self.assertFalse(b.request("buzz", conv=f"r:{room}")["ok"])  # a room: once a minute, by anyone
+        outsider = Client("cat")
+        self.assertFalse(outsider.request("buzz", conv=f"r:{room}")["ok"])   # members only
+        outsider.close()
+        self.assertFalse(a.request("buzz", conv=f"u:{self.a}")["ok"])       # not yourself
         self.assertFalse(a.request("edit", id=got["id"], text="x")["ok"])
         self.core.config.update(buzz_enabled=False)
         self.assertFalse(b.request("buzz", conv=f"u:{self.a}")["ok"])

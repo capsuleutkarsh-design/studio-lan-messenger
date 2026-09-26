@@ -89,12 +89,15 @@ def breakable(text):
     return _LONG_WORD.sub(split, text)
 
 
-def linkify(text):
-    """Escape text and turn URLs, UNC paths (\\\\server\\share) and drive paths into links."""
+def linkify(text, mark=None):
+    """Escape text and turn URLs, UNC paths (\\\\server\\share) and drive paths into links.
+
+    mark: optional function applied to the escaped plain text between links (e.g. @mention highlights)."""
+    mark = mark or (lambda escaped: escaped)
     out = []
     pos = 0
     for m in _LINK_RE.finditer(text):
-        out.append(html.escape(breakable(text[pos:m.start()])))
+        out.append(mark(html.escape(breakable(text[pos:m.start()]))))
         if m.group("quoted"):
             target, rest, shown = m.group("quoted"), "", m.group(0)
         else:
@@ -108,7 +111,7 @@ def linkify(text):
         out.append(f'<a href="{html.escape(href, quote=True)}" style="color:{T.ACCENT}; text-decoration:none">'
                    f'{html.escape(breakable(shown))}</a>{html.escape(rest)}')
         pos = m.end()
-    out.append(html.escape(breakable(text[pos:])))
+    out.append(mark(html.escape(breakable(text[pos:]))))
     return "".join(out).replace("\n", "<br>")
 
 
