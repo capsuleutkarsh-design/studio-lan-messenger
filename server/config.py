@@ -33,6 +33,10 @@ DEFAULTS = {
     "backup_dir": "",                # empty = <data dir>/backups
     "backup_hour": 2,                # daily, at this hour (0-23)
     "backup_keep": 14,               # number of daily backups kept
+    # safe copy of accounts, chats, settings and certificate in the central folder (server/safecopy.py)
+    "safe_copy_enabled": True,
+    "safe_copy_dir": "",             # empty = <shared files folder>/Quillo server data (when that is elsewhere)
+    "safe_copy_minutes": 5,
     # readable chat backup + how long messages stay in the app (older ones live only in the chat logs)
     "chat_log_enabled": True,        # append each day's messages to text files every night
     "chat_log_dir": "",              # empty = <backup folder>/Chat logs

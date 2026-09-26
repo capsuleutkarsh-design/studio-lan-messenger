@@ -91,7 +91,7 @@ Name: "{autodesktop}\Quillo Server console"; Filename: "{app}\{#ExeName}"; Tasks
 [Registry]
 ; where the data lives (the server reads DataDir; the others pre-fill this page next time)
 ; HKA = HKLM when installed for all users, HKCU when installed just for me
-Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "DataDir";    ValueData: "{code:GetDataDir}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "DataDir";    ValueData: "{code:GetDataDir}"
 Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "StorageDir"; ValueData: "{code:GetStorageDir}"
 Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "BackupDir";  ValueData: "{code:GetBackupDir}"
 Root: HKA; Subkey: "{#RegKey}"; ValueType: string; ValueName: "LogDir";     ValueData: "{code:GetLogDir}"
@@ -126,7 +126,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 [Code]
 var
   PathsPage: TInputDirWizardPage;
-  DataDirValue, UninstallData: String;
+  DataDirValue, UninstallData, RestoreFrom: String;
   Upgrading: Boolean;
   OldDefaults: array[0..2] of String;
 
@@ -300,14 +300,14 @@ begin
 end;
 
 { A folder setting from the existing server's config.json (written by Python's json: "key": "C:\\x") }
-function ConfigPath(Key, Default: String): String;
+function ConfigPathIn(Folder, Key, Default: String): String;
 var
   S: AnsiString;
   Text: String;
   P: Integer;
 begin
   Result := Default;
-  if not LoadStringFromFile(AddBackslash(DataDirValue) + 'config.json', S) then Exit;
+  if not LoadStringFromFile(AddBackslash(Folder) + 'config.json', S) then Exit;
   Text := UTF8Decode(S);                    { the server writes config.json as UTF-8 (folder names as typed) }
   P := Pos('"' + Key + '": "', Text);
   if P = 0 then Exit;
@@ -317,6 +317,87 @@ begin
   Text := Copy(Text, 1, P - 1);
   StringChangeEx(Text, '\\', '\', True);
   Result := Text;
+end;
+
+function ConfigPath(Key, Default: String): String;
+begin
+  Result := ConfigPathIn(DataDirValue, Key, Default);
+end;
+
+{ "users": 80 / "server_name": "Studio" from the safe copy's about.json (written by Python's json) }
+function AboutValue(Text, Key: String): String;
+var
+  P: Integer;
+begin
+  Result := '';
+  P := Pos('"' + Key + '": ', Text);
+  if P = 0 then Exit;
+  Text := Copy(Text, P + Length(Key) + 4, 200);
+  if Copy(Text, 1, 1) = '"' then
+  begin
+    Text := Copy(Text, 2, 200);
+    Result := Copy(Text, 1, Pos('"', Text) - 1);
+  end
+  else
+  begin
+    P := Pos(',', Text);
+    if P = 0 then P := Pos(#10, Text);
+    if P > 0 then Result := Trim(Copy(Text, 1, P - 1));
+  end;
+end;
+
+{ fresh install: a safe copy of an earlier server in the chosen shared-files folder? offer to bring it back }
+procedure OfferRestore;
+var
+  Folder, Old: String;
+  S: AnsiString;
+  Text: String;
+begin
+  RestoreFrom := '';
+  if Upgrading or FileExists(AddBackslash(StripSlash(PathsPage.Values[0])) + 'messenger.db') then Exit;
+  Folder := AddBackslash(StripSlash(PathsPage.Values[1])) + 'Quillo server data';
+  if not (FileExists(Folder + '\about.json') and FileExists(Folder + '\messenger.db')) then Exit;
+  Text := '';
+  if LoadStringFromFile(Folder + '\about.json', S) then
+    Text := UTF8Decode(S);
+  if MsgBox('Quillo data from an earlier server was found:' + #13#10 + Folder + #13#10 + #13#10 +
+            'Server: ' + AboutValue(Text, 'server_name') + #13#10 +
+            'People: ' + AboutValue(Text, 'users') + #13#10 +
+            'From PC: ' + AboutValue(Text, 'pc') + ',  version ' + AboutValue(Text, 'version') + #13#10 + #13#10 +
+            'Restore it? Every account, chat, room, calendar item and setting comes back, and the PCs keep ' +
+            'trusting the server.' + #13#10 + 'Choose "No" to start with an empty server.',
+            mbConfirmation, MB_YESNO) = IDYES then
+  begin
+    RestoreFrom := Folder;
+    { the backup and log folders the old server used, unless changed on this page }
+    Old := ConfigPathIn(Folder, 'backup_dir', '');
+    if (Old <> '') and (CompareText(StripSlash(PathsPage.Values[2]), OldDefaults[1]) = 0) then
+      PathsPage.Values[2] := Old;
+    Old := ConfigPathIn(Folder, 'log_dir', '');
+    if (Old <> '') and (CompareText(StripSlash(PathsPage.Values[3]), OldDefaults[2]) = 0) then
+      PathsPage.Values[3] := Old;
+  end;
+end;
+
+{ runs before the [Run] entries start the server, so the restored database is the one it opens }
+procedure DoRestore;
+var
+  Code: Integer;
+  S: AnsiString;
+begin
+  if RestoreFrom = '' then Exit;
+  WizardForm.StatusLabel.Caption := 'Restoring the server data...';
+  if not Exec(ExpandConstant('{app}\{#ExeName}'),
+              '--data="' + GetDataDir('') + '" --restore="' + RestoreFrom + '" --storage="' + GetStorageDir('') +
+              '" --backups="' + GetBackupDir('') + '" --logs="' + GetLogDir('') + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+  begin
+    S := '';
+    LoadStringFromFile(AddBackslash(GetDataDir('')) + 'restore-failed.txt', S);
+    MsgBox('The server data could not be restored:' + #13#10 + UTF8Decode(S) + #13#10 + #13#10 +
+           'The server starts empty. The safe copy is untouched in' + #13#10 + RestoreFrom + #13#10 +
+           'You can also restore a daily backup (see the admin guide).', mbError, MB_OK);
+  end;
 end;
 
 procedure InitializeWizard;
@@ -472,6 +553,7 @@ begin
             CheckFolder('Backups', 2, False) and
             CheckFolder('Server log', 3, False);
   if not Result then Exit;
+  OfferRestore;
   HasShare := IsUNC(PathsPage.Values[1]) or IsUNC(PathsPage.Values[2]) or IsUNC(PathsPage.Values[3]);
   if HasShare and WizardIsTaskSelected('service') then
     MsgBox('A network share is used.' + #13#10 + #13#10 +
@@ -485,7 +567,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) and not Upgrading then
+  begin
     DataDirValue := GetDataDir('');
+    DoRestore;
+  end;
   if (CurStep = ssPostInstall) and (not IsAdminInstallMode) and (not WizardSilent) then
     MsgBox('One more step, done by Windows:' + #13#10 + #13#10 +
            'The first time the server starts, Windows Firewall may ask whether Quillo Server may use the ' +
@@ -517,9 +602,13 @@ begin
     if DirExists(UninstallData) and (not UninstallSilent) then
       if MsgBox('Do you also want to DELETE all server data?' + #13#10 + #13#10 +
                 'This removes every account, message and the settings in:' + #13#10 + UninstallData + #13#10 +
-                '(shared files and backups kept in other folders are not touched)' + #13#10 + #13#10 +
-                'Choose "No" to keep the data (recommended if you reinstall or upgrade later).',
+                '(shared files, backups and the safe copy kept in other folders are not touched)' + #13#10 + #13#10 +
+                'Choose "No" to keep the data (recommended if you reinstall or upgrade later): the next ' +
+                'install finds it again.',
                 mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+      begin
         DelTree(UninstallData, True, True, True);
+        RegDeleteKeyIncludingSubkeys(HKA, '{#RegKey}');    { kept otherwise: a reinstall finds the data }
+      end;
   end;
 end;
