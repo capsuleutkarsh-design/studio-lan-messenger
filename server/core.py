@@ -25,6 +25,7 @@ import uuid
 from common import protocol as P
 from common.files import replace_file
 from server import archive
+from server.calendar import CalendarMixin
 from server.planner import PlannerMixin
 from server.config import ServerConfig
 from server.db import ANNOUNCE_LEVELS, Database, check_label, clean_label, direct_key
@@ -117,7 +118,7 @@ def safe_filename(name: str) -> str:
     return name[:200] or "file"
 
 
-class ServerCore(PlannerMixin):
+class ServerCore(PlannerMixin, CalendarMixin):
     def __init__(self, data_dir: str):
         self.config = ServerConfig(data_dir)
         self.db: Database | None = None
@@ -173,6 +174,7 @@ class ServerCore(PlannerMixin):
             "set_name": self.h_set_name,
             "update_check": self.h_update_check,
             **{op: getattr(self, f"h_{op}") for op in self.PLANNER_HANDLERS},
+            **{op: getattr(self, f"h_{op}") for op in self.CALENDAR_HANDLERS},
         }
 
     # ============================================================ lifecycle
@@ -231,6 +233,7 @@ class ServerCore(PlannerMixin):
             uid = self.db.create_user("admin", "admin", "Administrator", is_admin=True, can_broadcast=True)
             self.db.set_must_change(uid, True)
             log.warning("Created default account admin / admin - it must be changed at first sign-in")
+        self.calendar_setup()
         port = int(self.config["tcp_port"])
         # large backlog: after a server restart every client reconnects within a few seconds
         ssl_ctx = None
@@ -666,6 +669,7 @@ class ServerCore(PlannerMixin):
             "department": row["department"], "section": row["section"], "title": row["title"],
             **static,
             "status": self.visible_status(uid), "status_msg": row["status_msg"],
+            "on_leave": self.on_leave_today(uid),
             "status_emoji": row["status_emoji"], "avatar": row["avatar_ver"],
             "birthday": (row["birthday"] or "")[-5:], "joined_on": row["joined_on"] or "",
             "is_admin": bool(row["is_admin"]), "last_seen": row["last_seen"],
@@ -936,6 +940,7 @@ class ServerCore(PlannerMixin):
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
             "file_retention_days": float(self.config["file_retention_days"] or 0),
             **self.planner_boot(uid),
+            **self.calendar_boot(uid),
             "buzz_enabled": bool(self.config["buzz_enabled"]),
             "allow_name_change": bool(self.config["allow_name_change"]),
         }
@@ -1855,6 +1860,22 @@ class ServerCore(PlannerMixin):
                 versions[s.version or "older than 1.6.2"] = versions.get(s.version or "older than 1.6.2", 0) + 1
         return {"folder": self.updates_dir, "latest": self.update_info(), "versions": versions}
 
+    # ---- holidays from the console
+    def admin_holidays(self, year):
+        return self.holiday_list(int(year))
+
+    def admin_holiday_save(self, hid, day, name, observed=True):
+        return self.holiday_save(hid, day, name, observed)
+
+    def admin_holiday_delete(self, hid):
+        self.holiday_delete(hid)
+
+    def admin_holiday_observe(self, ids, observed):
+        self.holiday_observe(ids, observed)
+
+    def admin_holiday_add_year(self, year):
+        return self.holiday_add_year(year)
+
     def admin_check_updates(self):
         """After a new installer was put in the updates folder: tell signed-in clients now, not in a minute."""
         self._check_updates()
@@ -1917,7 +1938,8 @@ class ServerCore(PlannerMixin):
                  "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
-                 "admin_check_updates", "admin_import_users"}
+                 "admin_check_updates", "admin_import_users", "admin_holidays", "admin_holiday_save",
+                 "admin_holiday_delete", "admin_holiday_observe", "admin_holiday_add_year"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
