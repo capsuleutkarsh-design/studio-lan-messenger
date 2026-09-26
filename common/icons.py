@@ -21,6 +21,7 @@ _OUTLINE = {
              '<path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.3c2.1.7 3.5 2.6 3.5 5.7"/>',
     "megaphone": '<path d="M3 10v4a1 1 0 0 0 1 1h3l7 4.5v-15L7 9H4a1 1 0 0 0-1 1z"/>'
                  '<path d="M17.5 9a4 4 0 0 1 0 6"/><path d="M20 6.5a8 8 0 0 1 0 11"/>',
+    "copy": '<rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/>',
     "folder": '<path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2.2 2.5h7.3A2.5 2.5 0 0 1 21 9v8.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
     "download": '<path d="M12 4v11"/><path d="M7 10.5l5 5 5-5"/><path d="M5 20h14"/>',
     "upload": '<path d="M12 16V5"/><path d="M7 9.5l5-5 5 5"/><path d="M5 20h14"/>',

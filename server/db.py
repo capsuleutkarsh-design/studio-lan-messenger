@@ -190,6 +190,7 @@ MIGRATIONS = [
     ("users", "role_id", "INTEGER"),
     ("users", "manager_id", "INTEGER"),
     ("rooms", "auto_key", "TEXT"),
+    ("rooms", "file_retention_days", "REAL"),          # NULL = the server default, 0 = keep forever
     ("announcements", "target_kind", "TEXT NOT NULL DEFAULT 'all'"),
     ("announcements", "target_value", "TEXT NOT NULL DEFAULT ''"),
     ("users", "must_change_pw", "INTEGER NOT NULL DEFAULT 0"),
@@ -256,6 +257,7 @@ def direct_key(a: int, b: int) -> str:
 
 class Database:
     def __init__(self, path: str):
+        self.path = path
         self.con = sqlite3.connect(path, check_same_thread=False)
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA journal_mode=WAL")
@@ -413,12 +415,16 @@ class Database:
         return self._all("SELECT * FROM audit ORDER BY id DESC LIMIT ?", limit)
 
     def backup_to(self, path: str):
-        """Consistent copy of the live database (safe while the server runs)."""
+        """Consistent copy of the live database (safe while the server runs).
+
+        Uses its own connection, so it can run in a worker thread while the server keeps serving chats."""
+        src = sqlite3.connect(self.path, check_same_thread=False)
         dst = sqlite3.connect(path)
         try:
-            self.con.backup(dst)
+            src.backup(dst, pages=4096)
         finally:
             dst.close()
+            src.close()
 
     def delete_user(self, user_id: int):
         # Soft delete: messages keep pointing at the row, the name is freed.
@@ -984,8 +990,48 @@ class Database:
             " AND NOT EXISTS (SELECT 1 FROM file_downloads d WHERE d.file_id=f.id AND d.user_id<>f.uploader_id)",
             older_than)
 
-    def expired_files(self, older_than: float):
-        return self._all("SELECT * FROM files WHERE purged=0 AND created_at<?", older_than)
+    def expired_files(self, now: float, default_days: float):
+        """Shared files past the file retention of every chat they were posted in.
+
+        A room can override the server default (rooms.file_retention_days); 0 means keep forever."""
+        return self._all(
+            "SELECT f.* FROM files f WHERE f.purged=0 AND f.complete=1"
+            " AND EXISTS (SELECT 1 FROM messages m WHERE m.file_id=f.id)"
+            " AND NOT EXISTS (SELECT 1 FROM messages m LEFT JOIN rooms r ON r.id=m.room_id WHERE m.file_id=f.id"
+            "   AND (COALESCE(r.file_retention_days, ?) <= 0"
+            "        OR f.created_at >= ? - COALESCE(r.file_retention_days, ?) * 86400))",
+            default_days, now, default_days)
+
+    def files_older_than(self, cutoff: float):
+        return self._all("SELECT * FROM files WHERE purged=0 AND complete=1 AND created_at<?", cutoff)
+
+    def set_room_retention(self, room_id: int, days):
+        self._exec("UPDATE rooms SET file_retention_days=? WHERE id=? AND deleted=0", days, room_id)
+
+    def storage_report(self, limit=25):
+        """Who and which chats use the file storage (stored, not yet deleted files)."""
+        live = "f.complete=1 AND f.purged=0"
+        by_user = self._all(
+            "SELECT u.id, u.display_name AS name, u.username, COUNT(f.id) AS files, COALESCE(SUM(f.size),0) AS bytes"
+            f" FROM files f JOIN users u ON u.id=f.uploader_id WHERE {live}"
+            " GROUP BY u.id ORDER BY bytes DESC")
+        by_room = self._all(
+            "SELECT r.id, r.name, r.file_retention_days AS retention, COUNT(DISTINCT f.id) AS files,"
+            " COALESCE(SUM(f.size),0) AS bytes FROM rooms r JOIN messages m ON m.room_id=r.id"
+            f" JOIN files f ON f.id=m.file_id WHERE {live} AND r.deleted=0 GROUP BY r.id ORDER BY bytes DESC")
+        direct = self._one(
+            "SELECT COUNT(DISTINCT f.id), COALESCE(SUM(f.size),0) FROM messages m JOIN files f ON f.id=m.file_id"
+            f" WHERE {live} AND m.room_id IS NULL")
+        largest = self._all(
+            "SELECT f.id, f.name, f.size, f.created_at, u.display_name AS sender,"
+            " (SELECT COALESCE(r.name, '') FROM messages m LEFT JOIN rooms r ON r.id=m.room_id"
+            "  WHERE m.file_id=f.id LIMIT 1) AS room,"
+            " (SELECT COUNT(*) FROM file_downloads d WHERE d.file_id=f.id AND d.user_id<>f.uploader_id) AS downloads"
+            f" FROM files f LEFT JOIN users u ON u.id=f.uploader_id WHERE {live} ORDER BY f.size DESC LIMIT ?", limit)
+        oldest = self._one(f"SELECT MIN(created_at) FROM files f WHERE {live}")[0]
+        return {"by_user": [dict(r) for r in by_user], "by_room": [dict(r) for r in by_room],
+                "direct": {"files": direct[0], "bytes": direct[1]},
+                "largest": [dict(r) for r in largest], "oldest": oldest}
 
     def orphan_files(self, older_than: float):
         """Stored files no message points to any more (message deleted, or moved out by retention)."""

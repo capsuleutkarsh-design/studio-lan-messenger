@@ -99,9 +99,17 @@ class App(QObject):
                 self.main.show_normal()
         self.minimized = False
 
-    def on_login_failed(self, error):
-        if self.main and self.main.isVisible():
+    def _drop_account_ui(self):
+        """The signed-in account is gone (kicked, or a reconnect was refused): close everything of it."""
+        for t in list(self.transfers.transfers):
+            t.cancel()
+        if self.main:
             self.main.hide()
+            self.main.signed_out()
+
+    def on_login_failed(self, error):
+        if self.main and self.main.store.me:
+            self._drop_account_ui()
         if "Invalid username or password" in error:
             self.config.set_password(None)
             self.config.save()
@@ -139,8 +147,7 @@ class App(QObject):
             self.login.set_error("Not connected: the server's identity could not be confirmed.")
 
     def on_kicked(self, reason):
-        if self.main:
-            self.main.hide()
+        self._drop_account_ui()
         self.login.show()
         self.login.set_error(reason)
 
@@ -230,7 +237,19 @@ def main():
             controller.main.quitting = True
         app.quit()
     app.commitDataRequest.connect(session_ending)
-    server.newConnection.connect(lambda: (server.nextPendingConnection(), controller.show_front()))
+    def another_launch():
+        """A second start of the app: bring this one forward - unless it was the silent autostart one."""
+        sock = server.nextPendingConnection()
+        if sock is None:
+            return
+
+        def read():
+            if b"show" in bytes(sock.readAll()):
+                controller.show_front()
+        sock.readyRead.connect(read)
+        if sock.bytesAvailable():
+            read()
+    server.newConnection.connect(another_launch)
 
     # quitting from the login window (never logged in)
     def login_closed(event):

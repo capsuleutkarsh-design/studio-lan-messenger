@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
-    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from common import theme as T
@@ -97,6 +98,21 @@ def cell(text, data=None, color=None):
     if color:
         it.setForeground(QColor(color))
     return it
+
+
+def safe_text(text):
+    """Names typed by users, for message boxes (which would otherwise render '<b>...' as formatting)."""
+    import html
+    return "<qt>" + html.escape(str(text), quote=False).replace("\n", "<br>") + "</qt>"
+
+
+def keep_files_text(days, default_days):
+    """'Server default (3 days)', 'Forever', '30 days'."""
+    def n(d):
+        return "forever" if not d else f"{d:g} day{'s' if d != 1 else ''}"
+    if days is None:
+        return f"Server default ({n(default_days)})"
+    return n(days).capitalize()
 
 
 def fmt_time(ts):
@@ -769,15 +785,19 @@ class RoomsPage(Page):
         add.clicked.connect(lambda: self.edit_room(None))
         bar.addWidget(add)
         self.lay.addLayout(bar)
-        self.table = make_table(["Room", "Type", "Topic", "Members"])
+        self.table = make_table(["Room", "Type", "Keep shared files", "Topic", "Members"])
         self.table.doubleClicked.connect(lambda: self.edit_room(self.selected()))
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
         e = btn("Edit", "edit")
         e.clicked.connect(lambda: self.edit_room(self.selected()))
+        k = btn("Keep files...", "clock")
+        k.setToolTip("How long this room's shared files stay on the server")
+        k.clicked.connect(lambda: self.keep_files(self.selected()))
         d = btn("Delete", "trash", danger=True)
         d.clicked.connect(self.delete_room)
         row.addWidget(e)
+        row.addWidget(k)
         row.addWidget(d)
         row.addStretch(1)
         self.lay.addLayout(row)
@@ -788,14 +808,18 @@ class RoomsPage(Page):
             return
         self.rooms = self.win.api.call("admin_rooms")
         names = {u["id"]: u["display_name"] for u in self.win.api.call("admin_users")}
+        self.default_days = float(self.win.api.call("admin_config").get("file_retention_days") or 0)
         self.table.setRowCount(len(self.rooms))
         for r, room in enumerate(self.rooms):
             self.table.setItem(r, 0, cell(room["name"], room["id"]))
             self.table.setItem(r, 1, cell("Automatic" if room["auto"] else "Manual",
                                           color=T.ACCENT if room["auto"] else T.MUTED))
-            self.table.setItem(r, 2, cell(room["topic"]))
+            days = room.get("file_retention_days")
+            self.table.setItem(r, 2, cell(keep_files_text(days, self.default_days),
+                                          color=T.MUTED if days is None else None))
+            self.table.setItem(r, 3, cell(room["topic"]))
             member_names = ", ".join(sorted(names.get(m, "?") for m in room["members"]))
-            self.table.setItem(r, 3, cell(f"{len(room['members'])}  —  {member_names}"))
+            self.table.setItem(r, 4, cell(f"{len(room['members'])}  —  {member_names}"))
 
     def selected(self):
         items = self.table.selectedItems()
@@ -820,6 +844,51 @@ class RoomsPage(Page):
                 QMessageBox.warning(self, "Cannot save room", str(e))
         self.refresh()
 
+    def keep_files(self, room):
+        if not room:
+            QMessageBox.information(self, "Keep files", "Select a room first.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keep shared files")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(10)
+        head = QLabel(room["name"])
+        head.setTextFormat(Qt.PlainText)
+        head.setStyleSheet("font-size: 12pt; font-weight: 600;")
+        lay.addWidget(head)
+        note = QLabel("Files shared in this room are deleted from the server after this time. The messages stay; "
+                      "the file shows as expired. Direct chats and other rooms follow the server default.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {T.MUTED};")
+        lay.addWidget(note)
+        choice = QComboBox()
+        choice.addItem(keep_files_text(None, self.default_days), "default")
+        choice.addItem("Forever (never delete)", "forever")
+        choice.addItem("A number of days", "days")
+        days = QSpinBox()
+        days.setRange(1, 3650)
+        days.setSuffix(" days")
+        current = room.get("file_retention_days")
+        choice.setCurrentIndex(0 if current is None else 1 if current == 0 else 2)
+        days.setValue(int(current) if current else 90)
+        days.setEnabled(choice.currentData() == "days")
+        choice.currentIndexChanged.connect(lambda _i: days.setEnabled(choice.currentData() == "days"))
+        lay.addWidget(choice)
+        lay.addWidget(days)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if not dlg.exec():
+            return
+        value = {"default": None, "forever": 0}.get(choice.currentData(), days.value())
+        try:
+            self.win.api.call("admin_set_room_retention", room["id"], value)
+        except ValueError as e:
+            QMessageBox.warning(self, "Keep files", str(e))
+        self.refresh()
+
     def delete_room(self):
         room = self.selected()
         if room and room["auto"]:
@@ -828,7 +897,7 @@ class RoomsPage(Page):
                                     "becomes a normal room that you can delete here.")
             return
         if room and QMessageBox.question(self, "Delete room",
-                                         f"Delete room '{room['name']}'?") == QMessageBox.Yes:
+                                         safe_text(f"Delete room '{room['name']}'?")) == QMessageBox.Yes:
             self.win.api.call("admin_delete_room", room["id"])
             self.refresh()
 
@@ -1317,6 +1386,100 @@ class _DailyChart(QWidget):
 
 
 # ================================================================ updates
+class StoragePage(Page):
+    """Where the file storage goes: per person, per chat, the largest files - and a clean-up."""
+
+    def __init__(self, win):
+        super().__init__("Storage", "Shared files kept on the server. Old files are deleted automatically "
+                                    "(Settings > Files); a room can keep its files longer or shorter (Rooms > "
+                                    "Keep files). The messages stay - the file shows as expired.")
+        self.win = win
+        grid = QGridLayout()
+        grid.setSpacing(16)
+        self.cards = {}
+        for i, (key, title, ic) in enumerate((("used", "Storage used", "folder"), ("files", "Files stored", "file"),
+                                              ("free", "Free on the disk", "server"),
+                                              ("oldest", "Oldest file", "clock"))):
+            self.cards[key] = StatCard(title, ic)
+            grid.addWidget(self.cards[key], 0, i)
+        self.lay.addLayout(grid)
+        self.policy = QLabel()
+        self.policy.setWordWrap(True)
+        self.policy.setStyleSheet(f"color: {T.MUTED};")
+        self.lay.addWidget(self.policy)
+        tabs = QTabWidget()
+        self.by_user = make_table(["Person", "Files", "Size"])
+        self.by_room = make_table(["Chat", "Keep files", "Files", "Size"])
+        self.largest = make_table(["File", "Size", "Sent by", "Where", "Date", "Downloads"])
+        for table, title in ((self.by_user, "By person"), (self.by_room, "By chat"),
+                             (self.largest, "Largest files")):
+            tabs.addTab(table, title)
+        self.lay.addWidget(tabs, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Delete every file older than"))
+        self.days = QSpinBox()
+        self.days.setRange(1, 3650)
+        self.days.setValue(30)
+        self.days.setSuffix(" days")
+        row.addWidget(self.days)
+        clean = btn("Clean up now", "trash", danger=True)
+        clean.clicked.connect(self.clean_up)
+        row.addWidget(clean)
+        row.addStretch(1)
+        self.lay.addLayout(row)
+
+    def refresh(self):
+        if not self.win.api.running:
+            return
+        s = self.win.api.call("admin_storage")
+        self.cards["used"].value.setText(human_size(s["total_bytes"]))
+        self.cards["files"].value.setText(f"{s['total_files']:,}")
+        disk = s.get("disk")
+        self.cards["free"].value.setText(f"{human_size(disk['free'])}" if disk else "-")
+        self.cards["free"].setToolTip(f"of {human_size(disk['total'])} on the disk with {s['storage_dir']}"
+                                      if disk else s["storage_dir"])
+        self.cards["oldest"].value.setText(
+            datetime.datetime.fromtimestamp(s["oldest"]).strftime("%d %b") if s.get("oldest") else "-")
+        default = s["default_days"]
+        text = (f"Files are deleted automatically after {default:g} days" if default else
+                "Files are kept until you delete them (no automatic clean-up)")
+        if s.get("unclaimed_days"):
+            text += f"; files nobody downloaded after {s['unclaimed_days']:g} days"
+        self.policy.setText(text + ".")
+        self._fill(self.by_user, [(u["name"] or u["username"], f"{u['files']:,}", human_size(u["bytes"]))
+                                  for u in s["by_user"]])
+        rows = [(r["name"], keep_files_text(r["retention"], default), r["files"], r["bytes"]) for r in s["by_room"]]
+        if s["direct"]["files"]:
+            rows.append(("Direct chats", keep_files_text(None, default), s["direct"]["files"], s["direct"]["bytes"]))
+        rows.sort(key=lambda r: -r[3])
+        self._fill(self.by_room, [(n, k, f"{f:,}", human_size(b)) for n, k, f, b in rows])
+        self._fill(self.largest, [(f["name"], human_size(f["size"]), f["sender"] or "?", f["room"] or "Direct chat",
+                                   fmt_time(f["created_at"]), f["downloads"]) for f in s["largest"]])
+
+    @staticmethod
+    def _fill(table, rows):
+        table.setRowCount(len(rows))
+        for r, values in enumerate(rows):
+            for c, v in enumerate(values):
+                table.setItem(r, c, cell(v))
+
+    def clean_up(self):
+        days = self.days.value()
+        if QMessageBox.question(self, "Clean up files",
+                                f"Delete every shared file older than {days} days from the server now?\n\n"
+                                "The messages stay; the files show as expired and can't be downloaded any "
+                                "more. This cannot be undone.") != QMessageBox.Yes:
+            return
+        try:
+            r = self.win.api.call("admin_cleanup_files", days)
+        except ValueError as e:
+            QMessageBox.warning(self, "Clean up files", str(e))
+            return
+        QMessageBox.information(self, "Clean up files",
+                                f"Deleted {r['removed']} files and freed {human_size(r['bytes'])}.")
+        self.refresh()
+
+
 class UpdatesPage(Page):
     def __init__(self, win):
         super().__init__("Client updates", "Publish a new client version: build it (build\\build.bat), then copy "
@@ -1908,6 +2071,7 @@ class ServerWindow(QMainWindow):
             ("Chat review", "search", ReviewPage(self)),
             ("Audit log", "list", AuditPage(self)),
             ("Client updates", "download", UpdatesPage(self)),
+            ("Storage", "folder", StoragePage(self)),
             ("Settings", "settings", SettingsPage(self)),
             ("Server log", "file", self.log_page),
         ]
@@ -1927,7 +2091,7 @@ class ServerWindow(QMainWindow):
         groups = [("Overview", ("Dashboard", "Online now", "Reports")),
                   ("People", ("Users", "Departments", "Designations", "Org chart")),
                   ("Messaging", ("Rooms", "Announcement", "Chat review")),
-                  ("System", ("Settings", "Client updates", "Audit log", "Server log"))]
+                  ("System", ("Settings", "Storage", "Client updates", "Audit log", "Server log"))]
         index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
         order = [t for _g, titles in groups for t in titles if t in index]
         order += [t for t, _ic, _p in self.pages if t not in order]        # anything new still shows up

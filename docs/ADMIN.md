@@ -171,6 +171,15 @@ Console → **Settings**:
 | *Keep messages in the app for* | 90 days | Older messages leave the live database (the app stays fast) — **only after** they are in the chat backup. *Forever* keeps everything. |
 | *Delete shared files after* | 3 days (new installs) | Files are removed from the server's file storage; the file card tells people "available until …". Point *File storage folder* at a separate (temp) drive if you like. Upgraded servers keep their old value — change it here. |
 | *Delete files nobody downloaded after* | never | Extra clean-up for forgotten uploads. |
+
+**Per room:** Console → **Rooms** → *Keep files...* lets one room keep its shared files longer or shorter than the
+setting above — e.g. *Forever* for a plates room, *30 days* for dailies. Direct chats always follow the server
+setting. A file posted in several chats stays as long as the longest of them keeps it.
+
+**Storage page:** Console → **Storage** shows how much space the shared files use, the free space on that disk,
+and the space per person, per chat and the largest files. *Clean up now* deletes every file older than the number
+of days you choose, straight away (the messages stay; the files show as expired). Every clean-up is in the audit
+log.
 | *Allow Buzz* | on | Lets people buzz one person (shake + ring, even on Do not disturb). One buzz per 20 s per person; users can opt out in their Settings. |
 
 Reminders and scheduled messages are kept on the server, so they fire (and scheduled messages are sent) even when

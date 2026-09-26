@@ -308,7 +308,7 @@ var
 begin
   Result := Default;
   if not LoadStringFromFile(AddBackslash(DataDirValue) + 'config.json', S) then Exit;
-  Text := String(S);
+  Text := UTF8Decode(S);                    { the server writes config.json as UTF-8 (folder names as typed) }
   P := Pos('"' + Key + '": "', Text);
   if P = 0 then Exit;
   Text := Copy(Text, P + Length(Key) + 5, 1000);

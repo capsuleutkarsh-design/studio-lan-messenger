@@ -31,8 +31,11 @@ FESTIVALS = {
                       glow=["#e5484d", "#1f8a4c"], gold="#f2c14e"),
 }
 FESTIVAL = None
-ACCENTS = {"violet": "#8b7bff", "blue": "#4c9aff", "teal": "#1fc7a8", "lime": "#bdff00",
+# "quillo" is the logo's teal; with the dark theme it also turns the surfaces navy (see QUILLO_NAVY)
+ACCENTS = {"quillo": "#3cc8b4", "violet": "#8b7bff", "blue": "#4c9aff", "teal": "#1fc7a8", "lime": "#bdff00",
            "orange": "#ff8a3d", "pink": "#ff5c9a"}
+ACCENT_NAMES = {"quillo": "Quillo (navy & teal)"}
+DEFAULT_ACCENT = "quillo"
 
 _PALETTES = {
     "midnight": dict(
@@ -66,6 +69,14 @@ _PALETTES = {
         INPUT_FOCUS_BG="#0e0e0f", TINT="rgba(0,0,0,0.25)", TOOLTIP="#0b0b0c", SCROLL="#3a3c3f",
         SCROLL_HOVER="#55585c", DANGER="#ff4d6d", WARN_BG="#5a2a00", WARN_TEXT="#ffd2a6"),
 }
+
+# Midnight with the Quillo accent: the logo's deep navy instead of blue-grey
+QUILLO_NAVY = dict(
+    RAIL="#081030", BG="#0b1433", PANEL="#101b40", SURFACE="#17244f", SURFACE_HOVER="#20305f",
+    BORDER="#1d2b58", MUTED="#9ea9c8", FAINT="#67739a", BUBBLE_OTHER="#17244f", INPUT_FOCUS_BG="#0d173a",
+    TOOLTIP="#050a1f", SCROLL="#27376a", SCROLL_HOVER="#3a4c86")
+# Light with the Quillo accent: a navy tint in the rail and buttons, like the logo on white
+QUILLO_LIGHT = dict(RAIL="#e6ebf5", SURFACE="#edf1f8", SURFACE_HOVER="#e0e7f3", BORDER="#dce3ef")
 
 # the current colours - set by apply() from a palette plus the accent
 DARK = True
@@ -161,9 +172,11 @@ def apply(theme="midnight", accent=None, festivals=False):
     theme = theme if theme in _PALETTES else "midnight"
     FESTIVAL = FESTIVALS.get(theme)
     if accent not in ACCENTS:
-        accent = "lime" if theme == "classic" else "violet"
+        accent = "lime" if theme == "classic" else DEFAULT_ACCENT
     THEME, ACCENT_NAME = theme, accent
-    pal = _PALETTES[theme]
+    pal = dict(_PALETTES[theme])
+    if accent == "quillo" and not FESTIVAL:
+        pal.update(QUILLO_NAVY if theme == "midnight" else QUILLO_LIGHT if theme == "light" else {})
     globals().update(pal)
     acc = FESTIVAL["accent"] if FESTIVAL else ACCENTS[accent]
     if not pal["DARK"] and luminance(acc) > 0.55:

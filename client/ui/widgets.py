@@ -5,7 +5,7 @@ import html
 import os
 import re
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QRect, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolButton, QWidget
 
@@ -23,6 +23,17 @@ def plain(label):
 def esc(text) -> str:
     """Escape user text that is placed inside a rich-text label."""
     return html.escape(str(text or ""), quote=False)
+
+
+def rich_safe(text) -> str:
+    """User text for places where Qt guesses the format (tooltips, message boxes, input dialogs):
+    a room called '<img src=...>' must show as those characters, not as an image."""
+    return "<qt>" + html.escape(str(text or ""), quote=False).replace("\n", "<br>") + "</qt>"
+
+
+def first_name(name, fallback="them") -> str:
+    parts = str(name or "").split()
+    return parts[0] if parts else fallback
 
 
 def fmt_list_time(ts):
@@ -58,7 +69,13 @@ def fmt_last_seen(ts):
     return f"Last seen {fmt_list_time(ts).lower() if fmt_list_time(ts) == 'Yesterday' else fmt_list_time(ts)}"
 
 
-_LINK_RE = re.compile(r'(https?://[^\s<>"]+|www\.[^\s<>"]+|\\\\[^\s<>"|?*]+(?:\\[^\s<>"|?*]+)*|[A-Za-z]:\\[^\s<>"|?*]+)')
+# web links, and studio paths: \\server\share\..., //server/share/... (Nuke), X:\... or X:/...;
+# a path with spaces works when it is in "double quotes"
+_PATH = r'(?:\\\\[\w.$-]+|//[\w.$-]+|(?<![\w/])[A-Za-z]:)[\\/][^\s<>"|?*]*'
+_LINK_RE = re.compile(r'"(?P<quoted>(?:\\\\|//|[A-Za-z]:[\\/])[^"<>|?*\n]+)"'
+                      r'|(?P<url>https?://[^\s<>"]+|www\.[^\s<>"]+)'
+                      r'|(?<![\w:/\\])(?P<path>' + _PATH + ')')
+PATH_SCHEME = "studio-path:"
 
 
 _LONG_WORD = re.compile(r"\S{30,}")
@@ -78,23 +95,101 @@ def linkify(text):
     pos = 0
     for m in _LINK_RE.finditer(text):
         out.append(html.escape(breakable(text[pos:m.start()])))
-        target = m.group(0).rstrip(".,;:)")
-        rest = m.group(0)[len(target):]
-        if target.startswith("www."):
-            href = "http://" + target
-        elif target.startswith(("http://", "https://")):
-            href = target
+        if m.group("quoted"):
+            target, rest, shown = m.group("quoted"), "", m.group(0)
         else:
-            href = QUrl.fromLocalFile(target).toString()
+            target = m.group(0).rstrip(".,;:)!'")
+            rest, shown = m.group(0)[len(target):], target
+        if m.group("url"):
+            href = "http://" + target if target.startswith("www.") else target
+        else:                                # a studio path: opened through the path menu, never executed
+            href = PATH_SCHEME + QUrl.toPercentEncoding(target).data().decode()
+            shown = "📁 " + shown
         out.append(f'<a href="{html.escape(href, quote=True)}" style="color:{T.ACCENT}; text-decoration:none">'
-                   f'{html.escape(breakable(target))}</a>{html.escape(rest)}')
+                   f'{html.escape(breakable(shown))}</a>{html.escape(rest)}')
         pos = m.end()
     out.append(html.escape(breakable(text[pos:])))
     return "".join(out).replace("\n", "<br>")
 
 
 def open_link(url):
+    if url.startswith(PATH_SCHEME):
+        path_menu(QUrl.fromPercentEncoding(url[len(PATH_SCHEME):].encode()))
+        return
     QDesktopServices.openUrl(QUrl(url))
+
+
+# ------------------------------------------------------------------ studio paths
+_SEQUENCE = re.compile(r"(#+|@+|%0?\d*d|\$F\d?)", re.I)     # frame placeholders: ####, %04d, @@@, $F4
+_RUNNABLE = {".exe", ".bat", ".cmd", ".com", ".msi", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".scr", ".lnk", ".reg"}
+
+
+def windows_path(path):
+    """'//srv/proj/FAL_030/comp' or 'Z:/proj/x' -> the Windows form Explorer understands."""
+    p = path.strip().replace("/", "\\")
+    return p.rstrip("\\") if len(p) > 3 else p
+
+
+def path_target(path):
+    """(what to open, is it a frame sequence) - a sequence path opens the folder holding the frames."""
+    p = windows_path(path)
+    head, name = os.path.split(p)
+    if _SEQUENCE.search(name):
+        return head, True
+    return p, False
+
+
+def path_menu(path, parent=None):
+    """Clicking a path in a chat: open it in Explorer, open the file, or copy the path."""
+    from PySide6.QtGui import QCursor, QGuiApplication
+    from PySide6.QtWidgets import QMenu
+    from common.icons import icon
+    target, sequence = path_target(path)
+    ext = os.path.splitext(target)[1].lower()
+    looks_like_file = bool(ext) and not sequence
+    m = QMenu(parent)
+    m.addAction(icon("folder", T.TEXT, 16), "Show frames in Explorer" if sequence else
+                ("Show in Explorer" if looks_like_file else "Open folder"), lambda: _reveal(target, looks_like_file))
+    if looks_like_file and ext not in _RUNNABLE:
+        m.addAction(icon("open", T.TEXT, 16), "Open file", lambda: _check_then(target, open_path))
+    m.addSeparator()
+    m.addAction(icon("copy", T.TEXT, 16), "Copy path", lambda: QGuiApplication.clipboard().setText(windows_path(path)))
+    m.exec(QCursor.pos())
+
+
+def _reveal(target, is_file):
+    def go(p):
+        if os.path.isdir(p):
+            open_path(p)
+        else:
+            show_in_folder(p)
+    _check_then(target, go, allow_parent=True)
+
+
+def _check_then(target, action, allow_parent=False):
+    """Network paths can take seconds to answer: look them up off the UI thread, then act (or say why not)."""
+    import threading
+    from PySide6.QtCore import QTimer
+
+    def look():
+        found = target if os.path.exists(target) else None
+        if not found and allow_parent and os.path.isdir(os.path.dirname(target)):
+            found = os.path.dirname(target)       # the shot folder exists, the version not yet: open the folder
+        QTimer.singleShot(0, _receiver, lambda: action(found) if found else _unreachable(target))
+    threading.Thread(target=look, daemon=True).start()
+
+
+def _unreachable(target):
+    from PySide6.QtGui import QCursor
+    from PySide6.QtWidgets import QToolTip
+    QToolTip.showText(QCursor.pos(), rich_safe(f"Can't reach {target}\nfrom this PC (not there, or no access)."))
+
+
+class _Receiver(QObject):
+    """Lives on the UI thread, so worker threads can hand results back with QTimer.singleShot."""
+
+
+_receiver = _Receiver()
 
 
 def open_path(path):

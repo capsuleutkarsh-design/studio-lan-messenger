@@ -22,7 +22,7 @@ from client.ui.dialogs import (
 from client.ui.pages import AnnouncementsPage, DirectoryPage, HomePage, TransfersPage
 from client.ui.sidebar import Sidebar
 from client import stickers
-from client.ui.widgets import MeButton, RailButton, plain
+from client.ui.widgets import MeButton, RailButton, first_name, plain, rich_safe
 
 
 def idle_seconds() -> float:
@@ -354,6 +354,10 @@ class MainWindow(QMainWindow):
                 self.chat.open(self.chat.conv)
             else:
                 self.stack.setCurrentWidget(self.home)
+        elif self.chat.conv:                # the cached messages were dropped: reload when the chat is shown
+            self.chat_stale = self.store.conv_exists(self.chat.conv)
+            if not self.chat_stale:
+                self.chat.conv = None
         if boot.get("review_notice"):
             QTimer.singleShot(500, self._review_notice)
         if boot.get("must_change_password"):
@@ -445,6 +449,9 @@ class MainWindow(QMainWindow):
         if key in ("chats", "contacts", "rooms"):
             self.sidebar.show_page(key)
             if self.stack.currentWidget() in (self.announcements, self.transfers_page, self.directory):
+                if self.chat.conv and getattr(self, "chat_stale", False):
+                    self.chat_stale = False
+                    self.chat.open(self.chat.conv)
                 self.stack.setCurrentWidget(self.chat if self.chat.conv else self.home)
         elif key == "directory":
             self.stack.setCurrentWidget(self.directory)
@@ -640,7 +647,9 @@ class MainWindow(QMainWindow):
     def toast(self, text, ms=3500):
         self.toast_label.setText(text)
         self.toast_label.adjustSize()
-        self.toast_label.move((self.width() - self.toast_label.width()) // 2 + 150,
+        offset = 150 if self.width() > 700 else 0          # centred over the chat, not the list
+        x = (self.width() - self.toast_label.width()) // 2 + offset
+        self.toast_label.move(max(8, min(x, self.width() - self.toast_label.width() - 8)),
                               self.height() - self.toast_label.height() - 110)
         self.toast_label.raise_()
         self.toast_label.show()
@@ -741,6 +750,10 @@ class MainWindow(QMainWindow):
                                               os.path.join(self.config["download_dir"],
                                                            os.path.basename(info["name"].replace("\\", "/"))))
         if path:
+            try:                             # a half-finished download of another file with this name
+                os.remove(path + ".part")
+            except OSError:
+                pass
             self.transfers.download(info, path, conv)
 
     # ============================================================= rooms
@@ -767,7 +780,7 @@ class MainWindow(QMainWindow):
 
     def leave_room(self, room_id):
         room = self.store.rooms.get(room_id)
-        if room and QMessageBox.question(self, "Leave room", f"Leave “{room['name']}”?") == QMessageBox.Yes:
+        if room and QMessageBox.question(self, "Leave room", rich_safe(f"Leave “{room['name']}”?")) == QMessageBox.Yes:
             self.conn.request("room_leave", lambda r: None if r.get("ok") else self.toast(r.get("error")),
                               room_id=room_id)
 
@@ -914,14 +927,15 @@ class MainWindow(QMainWindow):
         if u.get("is_admin") and not self.store.me.get("is_admin"):
             return
         menu.addSeparator()
-        menu.addAction(icon("key", T.TEXT, 16), f"Reset {u['name'].split()[0]}'s password...",
+        menu.addAction(icon("key", T.TEXT, 16), f"Reset {first_name(u['name'])}'s password...",
                        lambda: self.reset_user_password(uid))
         menu.addAction(icon("power", T.DANGER, 16), "Disable account...", lambda: self.disable_user(uid))
 
     def reset_user_password(self, uid):
         from PySide6.QtWidgets import QInputDialog, QLineEdit
         name = self.store.user_name(uid)
-        pw, ok = QInputDialog.getText(self, "Reset password", f"New password for {name}:", QLineEdit.Password)
+        pw, ok = QInputDialog.getText(self, "Reset password", rich_safe(f"New password for {name}:"),
+                                      QLineEdit.Password)
         if ok and pw:
             self.conn.request("manage_user", lambda r: QMessageBox.information(
                 self, "Reset password", "Password changed." if r.get("ok") else r.get("error", "Failed")),
@@ -929,8 +943,9 @@ class MainWindow(QMainWindow):
 
     def disable_user(self, uid):
         name = self.store.user_name(uid)
-        if QMessageBox.question(self, "Disable account", f"Disable {name}'s account? They are signed out and "
-                                "cannot sign in until the admin enables it again.") == QMessageBox.Yes:
+        if QMessageBox.question(self, "Disable account", rich_safe(
+                f"Disable {name}'s account? They are signed out and "
+                "cannot sign in until the admin enables it again.")) == QMessageBox.Yes:
             self.conn.request("manage_user", lambda r: self.toast(
                 f"{name}'s account was disabled." if r.get("ok") else r.get("error", "Failed")),
                 user_id=uid, action="disable")

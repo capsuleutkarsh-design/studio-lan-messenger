@@ -350,7 +350,10 @@ class TransferManager(QObject):
             self.transfers.remove(t)
 
     def retry(self, t):
+        """Start the transfer again; None when an upload's file (or packed folder) is gone."""
         if t.kind == "upload":
+            if not os.path.isfile(t.path):
+                return None
             new = self.upload(t.path, t.conv, t.caption)
             if getattr(t, "temp_file", None):       # the packed folder's zip now belongs to the new try
                 new.temp_file, t.temp_file = t.temp_file, None

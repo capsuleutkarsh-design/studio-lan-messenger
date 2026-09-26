@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
 from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
-from client.ui.widgets import IconButton, esc, linkify, open_link, open_path, plain, show_in_folder
+from client.ui.widgets import (IconButton, esc, first_name, linkify, open_link, open_path, plain, rich_safe,
+                               show_in_folder)
 
 
 class PageHeader(QFrame):
@@ -71,7 +72,7 @@ def _panel(title, action_text=None, action=None):
     lay.setContentsMargins(18, 14, 18, 16)
     lay.setSpacing(8)
     head = QHBoxLayout()
-    t = QLabel(title.upper())
+    t = plain(QLabel(title.upper()))
     t.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;")
     head.addWidget(t, 1)
     if action_text:
@@ -231,7 +232,7 @@ class HomePage(QWidget):
         col.setSpacing(4)
         hour = datetime.datetime.now().hour
         part = "Good morning" if hour < 12 else "Good afternoon" if hour < 17 else "Good evening"
-        first = (me.get("name") or "").split()[0] if me.get("name") else ""
+        first = first_name(me.get("name"), "")
         hi = plain(QLabel(f"{part}, {first}"))
         hi.setWordWrap(True)
         hi.setStyleSheet("font-size: 21pt; font-weight: 800;")
@@ -352,7 +353,7 @@ class HomePage(QWidget):
             if m["sender_id"] == s.my_id:
                 text = "You: " + text
             elif kind == "r":
-                text = s.user_name(m["sender_id"]).split()[0] + ": " + text
+                text = first_name(s.user_name(m["sender_id"]), "Someone") + ": " + text
             if kind == "u":
                 u = s.users.get(target, {})
                 item.set_data(u.get("name", s.title(c.conv)), text, fmt_list_time(c.last_ts), c.unread,
@@ -438,15 +439,15 @@ class HomePage(QWidget):
         for i, u in enumerate(people[:15]):
             cell = _Clickable(lambda uid=u["id"]: self.ctx.open_conv(P.direct_conv(uid)), 12)
             cell.setFixedWidth(86)
-            cell.setToolTip(f"{u['name']}\n{s.status_text(u) or T.STATUS_LABELS.get(u.get('status', 'offline'))}"
-                            "\nClick to chat")
+            cell.setToolTip(rich_safe(f"{u['name']}\n{s.status_text(u) or T.STATUS_LABELS.get(u.get('status', 'offline'))}"
+                                      "\nClick to chat"))
             cl = QVBoxLayout(cell)
             cl.setContentsMargins(4, 8, 4, 6)
             cl.setSpacing(4)
             av = Avatar(44)
             av.set(u["name"], u["name"], status=u.get("status", "offline"), uid=u["id"], ring=T.PANEL)
             cl.addWidget(av, 0, Qt.AlignHCenter)
-            nm = QLabel(u["name"].split()[0])
+            nm = plain(QLabel(first_name(u["name"], "?")))
             nm.setAlignment(Qt.AlignCenter)
             nm.setMinimumWidth(1)
             nm.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -715,7 +716,13 @@ class TransferRow(QFrame):
         self.b_cancel = IconButton("close", "Cancel", 32, 16)
         self.b_cancel.clicked.connect(t.cancel)
         self.b_retry = IconButton("refresh", "Retry", 32, 18)
-        self.b_retry.clicked.connect(lambda: manager.retry(t))
+        def retry():
+            if manager.retry(t) is None:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "Retry", rich_safe(
+                    f"{t.name} is no longer where it was, so it cannot be sent again.\n"
+                    "Drop the file into the chat once more."))
+        self.b_retry.clicked.connect(retry)
         self.b_open = IconButton("open", "Open", 32, 18, T.ACCENT, T.ACCENT)
         self.b_open.clicked.connect(lambda: open_path(t.dest_path if t.kind == "download" else t.path))
         self.b_folder = IconButton("folder", "Show in folder", 32, 18)

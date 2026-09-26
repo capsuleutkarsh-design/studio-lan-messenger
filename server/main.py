@@ -7,6 +7,7 @@
 """
 
 import argparse
+import json
 import logging
 import logging.handlers
 import os
@@ -82,6 +83,12 @@ def configure(data_dir, args) -> int:
     for key, value in (("storage_dir", args.storage), ("backup_dir", args.backups), ("log_dir", args.logs)):
         if value is not None:
             value = value.strip().rstrip("\\/")
+            current = cfg[key] or ""
+            # setups before 1.6.1 read config.json as plain text, so a folder like "D:\\Pröjekt" came back as
+            # "D:\\Pr\\u00f6jekt": that is the folder already set, not a new one
+            legacy = json.dumps(current)[1:-1].replace("\\\\", "\\").rstrip("\\/")
+            if current and value != current.rstrip("\\/") and value == legacy:
+                value = current.rstrip("\\/")
             default = os.path.join(data_dir, {"storage_dir": "files", "backup_dir": "backups", "log_dir": ""}[key])
             values[key] = "" if not value or os.path.normcase(os.path.abspath(value)) == \
                 os.path.normcase(os.path.abspath(default).rstrip("\\/")) else value
