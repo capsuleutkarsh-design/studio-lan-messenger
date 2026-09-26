@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from common import protocol as P
 from common import theme as T
-from common.icons import icon
+from common.icons import add_show_password, icon
 from client import stickers
 from client import avatars
 from client.ui.widgets import Avatar, IconButton, esc, fmt_list_time, linkify, open_link, plain
@@ -463,6 +463,7 @@ class ChangePasswordDialog(Dialog):
         self.new2 = QLineEdit()
         for e in (self.old, self.new, self.new2):
             e.setEchoMode(QLineEdit.Password)
+            add_show_password(e)
         if reason and ctx.conn.password:
             self.old.setText(ctx.conn.password)        # they just typed it to sign in
         form.addRow("Current password", self.old)

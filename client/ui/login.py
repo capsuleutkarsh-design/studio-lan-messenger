@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from common import protocol as P
 from common import theme as T
-from common.icons import asset, icon, logo_widget, pixmap
+from common.icons import add_show_password, asset, icon, logo_widget, pixmap
 from client.network import Discovery
 from client.ui.widgets import IconButton, plain
 
@@ -118,6 +118,7 @@ class LoginWindow(QWidget):
         self.password.setEchoMode(QLineEdit.Password)
         self.password.setMinimumHeight(42)
         self.password.addAction(icon("key", T.FAINT, 16), QLineEdit.LeadingPosition)
+        add_show_password(self.password)
         lay.addWidget(self.password)
         lay.addSpacing(4)
         self.remember = QCheckBox("Keep me signed in")

@@ -37,6 +37,10 @@ _OUTLINE = {
     "trash": '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/>'
              '<path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/>',
     "key": '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M16 7l3 3"/><path d="M18.5 4.5l2 2"/>',
+    "eye": '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    "eye_off": '<path d="M9.9 5.2A10.5 10.5 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-2.6 3.4"/>'
+               '<path d="M6.6 6.6C3.8 8.5 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/>'
+               '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/>',
     "bell": '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>',
     "open": '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',
     "server": '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/>'
@@ -127,6 +131,21 @@ def _pixmap(name: str, color: str, size: int, scale: float) -> QPixmap:
     p.end()
     pm.setDevicePixelRatio(scale)
     return pm
+
+
+def add_show_password(edit):
+    """An eye button at the end of a password box: click to see what you typed, click again to hide it."""
+    from PySide6.QtWidgets import QLineEdit
+    action = edit.addAction(icon("eye", theme.MUTED, 16), QLineEdit.TrailingPosition)
+    action.setToolTip("Show password")
+
+    def toggle():
+        hidden = edit.echoMode() == QLineEdit.Password
+        edit.setEchoMode(QLineEdit.Normal if hidden else QLineEdit.Password)
+        action.setIcon(icon("eye_off" if hidden else "eye", theme.MUTED, 16))
+        action.setToolTip("Hide password" if hidden else "Show password")
+    action.triggered.connect(toggle)
+    return action
 
 
 def icon(name: str, color: str | None = None, size: int = 20, active_color: str | None = None) -> QIcon:
