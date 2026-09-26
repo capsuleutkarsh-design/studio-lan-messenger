@@ -1056,7 +1056,7 @@ class OnlinePage(Page):
     def __init__(self, win):
         super().__init__("Online now", "Connected client sessions. A user logged in on two PCs shows twice.")
         self.win = win
-        self.table = make_table(["User", "Username", "IP address", "Status", "Connected since"])
+        self.table = make_table(["User", "Username", "IP address", "Status", "Version", "Connected since"])
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
         k = btn("Disconnect user", "power", danger=True)
@@ -1077,7 +1077,8 @@ class OnlinePage(Page):
             self.table.setItem(r, 2, cell(s["ip"]))
             self.table.setItem(r, 3, cell("● " + T.STATUS_LABELS[s["status"]],
                                           color=T.STATUS_COLORS[s["status"]]))
-            self.table.setItem(r, 4, cell(fmt_time(s["since"])))
+            self.table.setItem(r, 4, cell(s.get("version") or "older", color=None if s.get("version") else T.MUTED))
+            self.table.setItem(r, 5, cell(fmt_time(s["since"])))
 
     def kick(self):
         items = self.table.selectedItems()
@@ -1482,11 +1483,11 @@ class StoragePage(Page):
 
 class UpdatesPage(Page):
     def __init__(self, win):
-        super().__init__("Client updates", "Publish a new client version: build it (build\\build.bat), then copy "
-                                           "Quillo-Client-Setup-x.y.z.exe into the updates folder below. "
-                                           "Signed-in clients are told within a minute and can install it "
-                                           "(Windows asks for an administrator password on PCs where the user "
-                                           "is not an admin). For silent roll-outs use your deployment tool.")
+        super().__init__("Updates", "Publish a new Quillo version to every PC: choose the "
+                                    "Quillo-Client-Setup-x.y.z.exe. Signed-in PCs are told straight away and "
+                                    "install it with one click (PCs installed \"just for me\" need no "
+                                    "administrator; others ask for one). For silent roll-outs use your "
+                                    "deployment tool.")
         self.win = win
         self.info = QLabel()
         self.info.setWordWrap(True)
@@ -1494,11 +1495,21 @@ class UpdatesPage(Page):
         self.info.setStyleSheet(f"background: {T.PANEL}; border-radius: 12px; padding: 16px;")
         self.lay.addWidget(self.info)
         row = QHBoxLayout()
+        self.publish_btn = btn("Publish client update...", "upload", primary=True)
+        self.publish_btn.clicked.connect(self.publish)
+        row.addWidget(self.publish_btn)
         self.open_btn = btn("Open updates folder", "folder")
         self.open_btn.clicked.connect(self.open_folder)
         row.addWidget(self.open_btn)
         row.addStretch(1)
+        self.server_btn = btn("Update this server...", "server")
+        self.server_btn.setToolTip("Run a new Quillo-Server-Setup on this PC (chats, files and settings are kept)")
+        self.server_btn.clicked.connect(self.update_server)
+        row.addWidget(self.server_btn)
         self.lay.addLayout(row)
+        self.versions = make_table(["Version", "PCs signed in now"])
+        self.versions.setMaximumHeight(260)
+        self.lay.addWidget(self.versions)
         self.lay.addStretch(1)
         self.folder = ""
 
@@ -1513,8 +1524,66 @@ class UpdatesPage(Page):
                  f"({latest['name']}, {human_size(latest['size'])})" if latest else
                  f"<span style='color:{T.MUTED}'>No client update in the folder.</span>")
         self.info.setText(f"Updates folder (on the server PC):<br><b>{self.folder}</b><br><br>{offer}<br>"
-                          f"<span style='color:{T.MUTED}'>This console is version {APP_VERSION}.</span>")
-        self.open_btn.setEnabled(not self.win.api.remote)
+                          f"<span style='color:{T.MUTED}'>This server and console are version {APP_VERSION}.</span>")
+        local = not self.win.api.remote or getattr(self.win.api, "host", "").lower() in (
+            "127.0.0.1", "localhost", "::1", socket.gethostname().lower())      # files live on the server PC
+        for b in (self.open_btn, self.publish_btn, self.server_btn):
+            b.setEnabled(local)
+            b.setToolTip("" if local else "Only on the server PC itself")
+        rows = sorted(u.get("versions", {}).items(), key=lambda kv: kv[0], reverse=True)
+        self.versions.setRowCount(len(rows))
+        newest = latest["version"] if latest else APP_VERSION
+        for r, (ver, count) in enumerate(rows):
+            behind = ver != newest
+            self.versions.setItem(r, 0, cell(ver + ("  (update available)" if behind and latest else ""),
+                                             color=T.DANGER if behind and latest else None))
+            self.versions.setItem(r, 1, cell(count))
+
+    def publish(self):
+        import os
+        import re
+        import shutil
+        path, _ = QFileDialog.getOpenFileName(self, "Choose the new client installer", "",
+                                              "Quillo client setup (*Client-Setup-*.exe)")
+        if not path:
+            return
+        name = os.path.basename(path)
+        if not re.fullmatch(r"(Quillo|LANMessenger)-Client-Setup-\d+(\.\d+)*\.exe", name, re.I):
+            QMessageBox.warning(self, "Publish update", "Choose a file named Quillo-Client-Setup-x.y.z.exe "
+                                                        "(from build\\output).")
+            return
+        os.makedirs(self.folder, exist_ok=True)
+        try:
+            shutil.copy2(path, os.path.join(self.folder, name))
+        except OSError as e:
+            QMessageBox.warning(self, "Publish update", f"Could not copy the installer: {e}\n\nWith the "
+                                "background service the updates folder is for administrators only - start the "
+                                "console with 'Run as administrator', or copy the file there yourself.")
+            return
+        info = self.win.api.call("admin_check_updates")
+        QMessageBox.information(self, "Publish update",
+                                f"Version {info['version'] if info else '?'} is now offered to every PC." if info
+                                else "The file was copied, but it is not newer than what is offered already.")
+        self.refresh()
+
+    def update_server(self):
+        import os
+        import subprocess
+        path, _ = QFileDialog.getOpenFileName(self, "Choose the new server installer", "",
+                                              "Quillo server setup (*Server-Setup-*.exe)")
+        if not path:
+            return
+        if QMessageBox.question(self, "Update this server",
+                                f"Run {os.path.basename(path)} now?\n\nThe server stops for a minute while it "
+                                "is updated; people are reconnected by themselves. Chats, files and settings "
+                                "are kept. This console closes.") != QMessageBox.Yes:
+            return
+        try:
+            subprocess.Popen([path], close_fds=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Update this server", f"Could not start the installer: {e}")
+            return
+        self.win.quit_for_update()
 
     def open_folder(self):
         import os
@@ -1691,6 +1760,8 @@ class SettingsPage(Page):
         form.addRow("", self.review)
         self.buzz = QCheckBox("Allow Buzz (shakes the other person's window and rings, even when they are busy)")
         form.addRow("", self.buzz)
+        self.rename = QCheckBox("People can change their own display name (in their Profile)")
+        form.addRow("", self.rename)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1733,6 +1804,7 @@ class SettingsPage(Page):
         self.bk_keep.setValue(int(cfg["backup_keep"]))
         self.review.setChecked(bool(cfg["admin_review_enabled"]))
         self.buzz.setChecked(bool(cfg.get("buzz_enabled", True)))
+        self.rename.setChecked(bool(cfg.get("allow_name_change", True)))
         self.cl_enabled.setChecked(bool(cfg.get("chat_log_enabled", True)))
         self.cl_dir.setText(cfg.get("chat_log_dir", ""))
         self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
@@ -1813,7 +1885,8 @@ class SettingsPage(Page):
             api_enabled=self.api_enabled.isChecked(), api_port=self.api_port.value(),
             api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot",
             chat_log_enabled=self.cl_enabled.isChecked(), chat_log_dir=self.cl_dir.text().strip(),
-            message_retention_days=self.msg_days.value(), buzz_enabled=self.buzz.isChecked())
+            message_retention_days=self.msg_days.value(), buzz_enabled=self.buzz.isChecked(),
+            allow_name_change=self.rename.isChecked())
         if (values["message_retention_days"] and not values["chat_log_enabled"]
                 and QMessageBox.question(self, "Chat history",
                                          "The nightly chat backup is off, so messages older than "
@@ -2070,7 +2143,7 @@ class ServerWindow(QMainWindow):
             ("Reports", "chart", ReportsPage(self)),
             ("Chat review", "search", ReviewPage(self)),
             ("Audit log", "list", AuditPage(self)),
-            ("Client updates", "download", UpdatesPage(self)),
+            ("Updates", "download", UpdatesPage(self)),
             ("Storage", "folder", StoragePage(self)),
             ("Settings", "settings", SettingsPage(self)),
             ("Server log", "file", self.log_page),
@@ -2091,7 +2164,7 @@ class ServerWindow(QMainWindow):
         groups = [("Overview", ("Dashboard", "Online now", "Reports")),
                   ("People", ("Users", "Departments", "Designations", "Org chart")),
                   ("Messaging", ("Rooms", "Announcement", "Chat review")),
-                  ("System", ("Settings", "Storage", "Client updates", "Audit log", "Server log"))]
+                  ("System", ("Settings", "Storage", "Updates", "Audit log", "Server log"))]
         index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
         order = [t for _g, titles in groups for t in titles if t in index]
         order += [t for t, _ic, _p in self.pages if t not in order]        # anything new still shows up
@@ -2289,6 +2362,14 @@ class ServerWindow(QMainWindow):
         self.hide()
         self.tray.showMessage("Quillo Server", "The server keeps running in the background. "
                               "Right-click the tray icon to quit.", QSystemTrayIcon.Information, 3000)
+
+    def quit_for_update(self):
+        """A server installer was started: get out of its way (it replaces this program's files)."""
+        self.quitting = True
+        if not self.api.remote:
+            self.core.stop()
+        self.tray.hide()
+        QApplication.quit()
 
     def quit(self):
         if self.api.remote:

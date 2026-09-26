@@ -152,8 +152,9 @@ class Connection(QObject):
         self.pins_changed.emit()
 
     def _send_login(self):
+        from common.version import APP_VERSION
         self.sock.write(P.encode({"op": "login", "username": self.username, "password": self.password,
-                                  "status": self.status, "protocol": P.PROTOCOL_VERSION}))
+                                  "status": self.status, "protocol": P.PROTOCOL_VERSION, "version": APP_VERSION}))
 
     def _on_ready_read(self):
         chunk = bytes(self.sock.readAll())

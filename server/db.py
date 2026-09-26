@@ -221,6 +221,68 @@ DEFAULT_ROLES = [
     ("Junior Artist", 20, "none", 0, 0, 1, 0),
     ("Trainee", 10, "none", 0, 0, 1, 0),
 ]
+# VFX studio designations, added once to every server (new and upgraded); an admin can rename or delete them.
+# (name, level, announce, create_rooms, manage_users, see_all, always_visible)
+VFX_ROLES = [
+    ("Studio Head", 100, "all", 1, 0, 1, 1),
+    ("Executive Producer", 98, "all", 1, 0, 1, 1),
+    ("VFX Supervisor", 95, "all", 1, 0, 1, 1),
+    ("VFX Producer", 94, "all", 1, 0, 1, 1),
+    ("Associate VFX Supervisor", 92, "all", 1, 0, 1, 1),
+    ("DFX Supervisor", 90, "all", 1, 0, 1, 1),
+    ("CG Supervisor", 88, "department", 1, 0, 1, 1),
+    ("Compositing Supervisor", 85, "department", 1, 0, 1, 1),
+    ("FX Supervisor", 85, "department", 1, 0, 1, 1),
+    ("Lighting Supervisor", 85, "department", 1, 0, 1, 1),
+    ("Animation Supervisor", 85, "department", 1, 0, 1, 1),
+    ("Pipeline Supervisor", 85, "all", 1, 0, 1, 1),
+    ("Roto/Paint Supervisor", 82, "department", 1, 0, 1, 0),
+    ("Matchmove Supervisor", 82, "department", 1, 0, 1, 0),
+    ("DMP Supervisor", 82, "department", 1, 0, 1, 0),
+    ("Assets Supervisor", 82, "department", 1, 0, 1, 0),
+    ("Line Producer", 80, "all", 1, 0, 1, 1),
+    ("Production Manager", 78, "all", 1, 0, 1, 1),
+    ("Production Coordinator", 65, "department", 1, 0, 1, 1),
+    ("Production Assistant", 35, "none", 1, 0, 1, 0),
+    ("Compositing Lead", 60, "section", 1, 0, 1, 0),
+    ("FX Lead", 60, "section", 1, 0, 1, 0),
+    ("Lighting Lead", 60, "section", 1, 0, 1, 0),
+    ("Animation Lead", 60, "section", 1, 0, 1, 0),
+    ("Roto Lead", 60, "section", 1, 0, 1, 0),
+    ("Paint Lead", 60, "section", 1, 0, 1, 0),
+    ("Matchmove Lead", 60, "section", 1, 0, 1, 0),
+    ("Modeling Lead", 60, "section", 1, 0, 1, 0),
+    ("Texturing Lead", 60, "section", 1, 0, 1, 0),
+    ("Rigging Lead", 60, "section", 1, 0, 1, 0),
+    ("Layout Lead", 60, "section", 1, 0, 1, 0),
+    ("DMP Lead", 60, "section", 1, 0, 1, 0),
+    ("Pipeline TD", 50, "none", 1, 0, 1, 1),
+    ("Senior Compositor", 45, "none", 1, 0, 1, 0),
+    ("Compositor", 32, "none", 1, 0, 1, 0),
+    ("FX Artist", 32, "none", 1, 0, 1, 0),
+    ("FX TD", 35, "none", 1, 0, 1, 0),
+    ("Lighting Artist", 32, "none", 1, 0, 1, 0),
+    ("Lighting TD", 35, "none", 1, 0, 1, 0),
+    ("Look Dev Artist", 32, "none", 1, 0, 1, 0),
+    ("Animator", 32, "none", 1, 0, 1, 0),
+    ("CFX Artist", 32, "none", 1, 0, 1, 0),
+    ("Layout Artist", 32, "none", 1, 0, 1, 0),
+    ("Modeler", 32, "none", 1, 0, 1, 0),
+    ("Texture Artist", 32, "none", 1, 0, 1, 0),
+    ("Rigger", 32, "none", 1, 0, 1, 0),
+    ("Environment Artist", 32, "none", 1, 0, 1, 0),
+    ("Matte Painter", 32, "none", 1, 0, 1, 0),
+    ("Concept Artist", 32, "none", 1, 0, 1, 0),
+    ("Matchmove Artist", 30, "none", 1, 0, 1, 0),
+    ("Roto Artist", 28, "none", 0, 0, 1, 0),
+    ("Paint Artist", 28, "none", 0, 0, 1, 0),
+    ("Prep Artist", 28, "none", 0, 0, 1, 0),
+    ("Render Wrangler", 30, "none", 1, 0, 1, 1),
+    ("Data I/O", 30, "none", 1, 0, 1, 1),
+    ("Editor", 35, "none", 1, 0, 1, 0),
+    ("System Administrator", 75, "all", 1, 1, 1, 1),
+    ("Intern", 5, "none", 0, 0, 1, 0),
+]
 ROLE_FIELDS = ("name", "level", "announce", "create_rooms", "manage_users", "see_all", "always_visible")
 
 USER_FIELDS = ("username", "display_name", "department", "section", "title", "role_id", "manager_id",
@@ -277,6 +339,11 @@ class Database:
         if not self.con.execute("SELECT 1 FROM roles LIMIT 1").fetchone():
             self.con.executemany(f"INSERT INTO roles({', '.join(ROLE_FIELDS)}) VALUES(?,?,?,?,?,?,?)",
                                  DEFAULT_ROLES)
+        if not self.con.execute("SELECT 1 FROM meta WHERE key='vfx_roles'").fetchone():
+            # once per server: names that already exist (in any spelling) are left as the admin set them
+            self.con.executemany(f"INSERT OR IGNORE INTO roles({', '.join(ROLE_FIELDS)}) VALUES(?,?,?,?,?,?,?)",
+                                 VFX_ROLES)
+            self.con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('vfx_roles', '1')")
         if new_departments:
             self._seed_departments()
         self.con.commit()
@@ -777,6 +844,16 @@ class Database:
 
     def delete_room(self, room_id: int):
         self._exec("UPDATE rooms SET deleted=1 WHERE id=?", room_id)
+
+    def set_room_owner(self, room_id: int, user_id):
+        self._exec("UPDATE rooms SET owner_id=? WHERE id=?", user_id, room_id)
+
+    def longest_member(self, room_id: int):
+        """The member who has been in the room the longest (the next owner when the owner leaves)."""
+        row = self._one("SELECT m.user_id FROM room_members m JOIN users u ON u.id=m.user_id"
+                        " WHERE m.room_id=? AND u.deleted=0 AND u.disabled=0 ORDER BY m.joined_at, m.user_id LIMIT 1",
+                        room_id)
+        return row[0] if row else None
 
     def room_member_ids(self, room_id: int) -> list[int]:
         return [r[0] for r in self._all("SELECT user_id FROM room_members WHERE room_id=?", room_id)]

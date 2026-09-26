@@ -35,6 +35,7 @@ class PlannerMixin:
             raise ClientError("Pick a date and time")
         if due < time.time() - 60:
             raise ClientError("That time is in the past")
+        due = max(due, time.time())                  # "now" arrives a moment late over the network
         if due > time.time() + MAX_AHEAD:
             raise ClientError("Pick a time within the next year")
         return due
@@ -191,7 +192,7 @@ class PlannerMixin:
     # ------------------------------------------------------------ the clock
     async def _planner(self):
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)            # to the second: "send in 30 seconds" means 30 seconds
             try:
                 self.run_due()
             except Exception:  # noqa: BLE001 - the clock must keep ticking

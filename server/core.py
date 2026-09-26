@@ -27,7 +27,7 @@ from common.files import replace_file
 from server import archive
 from server.planner import PlannerMixin
 from server.config import ServerConfig
-from server.db import ANNOUNCE_LEVELS, Database, clean_label, direct_key
+from server.db import ANNOUNCE_LEVELS, Database, check_label, clean_label, direct_key
 from server.org import SECTION_SEP, Org, section_key
 
 log = logging.getLogger("server")
@@ -55,6 +55,7 @@ class Session:
         self.closed = False
         self.writer_task = None
         self.must_change = ""          # reason text while the user must change their password
+        self.version = ""              # the Quillo version on that PC (shown in the console)
 
     def send(self, obj):
         self.send_bytes(P.encode(obj))
@@ -169,6 +170,8 @@ class ServerCore(PlannerMixin):
             "close_poll": self.h_close_poll,
             "react": self.h_react,
             "buzz": self.h_buzz,
+            "set_name": self.h_set_name,
+            "update_check": self.h_update_check,
             **{op: getattr(self, f"h_{op}") for op in self.PLANNER_HANDLERS},
         }
 
@@ -485,6 +488,7 @@ class ServerCore(PlannerMixin):
         token = secrets.token_hex(16)
         session = Session(self, writer, uid, token, addr)
         session.must_change = must_change
+        session.version = str(msg.get("version") or "")[:20]
         session.writer_task = self.loop.create_task(session.writer_loop())
         self.tokens[token] = uid
         was_visible = self.visible_status(uid)
@@ -932,6 +936,7 @@ class ServerCore(PlannerMixin):
             "file_retention_days": float(self.config["file_retention_days"] or 0),
             **self.planner_boot(uid),
             "buzz_enabled": bool(self.config["buzz_enabled"]),
+            "allow_name_change": bool(self.config["allow_name_change"]),
         }
 
     def _user_name(self, uid):
@@ -1123,6 +1128,34 @@ class ServerCore(PlannerMixin):
     def _avatar_path(self, uid):
         return os.path.join(self.config.data_dir, "avatars", f"{int(uid)}.img")
 
+    def h_set_name(self, s, req):
+        """People can change their own display name (unless the admin switched that off)."""
+        if not self.config["allow_name_change"]:
+            raise ClientError("Your administrator manages display names - ask them to change it")
+        try:
+            name = check_label(" ".join(str(req.get("name") or "").split()), "Name")
+        except ValueError as e:
+            raise ClientError(str(e))
+        if len(name) < 2:
+            raise ClientError("Please enter your name")
+        row = self.db.get_user(s.user_id)
+        if name == row["display_name"]:
+            return {"name": name}
+        key = ("rename", s.user_id)                  # a name is not a status: a few changes a day at most
+        recent = [t for t in self.failed_logins.get(key, []) if time.time() - t < 3600]
+        if len(recent) >= 5:
+            raise ClientError("You changed your name a lot just now - try again later")
+        self.failed_logins[key] = recent + [time.time()]
+        self.db.update_user(s.user_id, display_name=name)
+        self.audit(row["username"], "changed own name", row["display_name"], name)
+        self.invalidate_org()
+        self.push_directory()
+        return {"name": name}
+
+    def h_update_check(self, s, req):
+        """'Check for updates' in the client: what the server offers right now (None = nothing)."""
+        return {"update": self.update_info()}
+
     def h_set_avatar(self, s, req):
         data = req.get("data")
         if data is None:
@@ -1306,6 +1339,15 @@ class ServerCore(PlannerMixin):
         removed = [int(u) for u in req.get("remove") or () if int(u) in before]
         if removed and not is_owner:
             raise ClientError("Only the room owner can remove members")
+        new_owner = req.get("owner")
+        if new_owner is not None:
+            new_owner = int(new_owner)
+            if not is_owner:
+                raise ClientError("Only the room owner can hand the room over")
+            if new_owner not in before or new_owner in removed:
+                raise ClientError("The new owner must be a member of the room")
+            self.db.set_room_owner(room_id, new_owner)
+            self._room_system_message(room_id, s.user_id, f"{self._user_name(new_owner)} is now the room owner")
         if added:
             self.db.add_room_members(room_id, added)
         for uid in removed:
@@ -1322,11 +1364,20 @@ class ServerCore(PlannerMixin):
         room_id = int(req.get("room_id") or 0)
         if self._require_room(room_id, s.user_id)["auto_key"]:
             raise ClientError("You can't leave an automatic department/section room")
+        room = self.db.get_room(room_id)
         self.db.remove_room_member(room_id, s.user_id)
         self.push_user(s.user_id, {"op": "room_removed", "room_id": room_id})
-        if self.db.room_member_ids(room_id):
-            self._push_room(room_id)
-            self._room_system_message(room_id, s.user_id, f"{self._user_name(s.user_id)} left the room")
+        if not self.db.room_member_ids(room_id):
+            self.db.delete_room(room_id)         # the last person left: nobody can see it any more
+            self.audit(self._user_name(s.user_id), "room closed", room["name"], "the last member left")
+            return
+        self._room_system_message(room_id, s.user_id, f"{self._user_name(s.user_id)} left the room")
+        if room["owner_id"] == s.user_id:
+            heir = self.db.longest_member(room_id)
+            self.db.set_room_owner(room_id, heir)
+            if heir:
+                self._room_system_message(room_id, s.user_id, f"{self._user_name(heir)} is now the room owner")
+        self._push_room(room_id)
 
     def h_change_password(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -1790,7 +1841,16 @@ class ServerCore(PlannerMixin):
 
     def admin_updates(self):
         os.makedirs(self.updates_dir, exist_ok=True)
-        return {"folder": self.updates_dir, "latest": self.update_info()}
+        versions = {}
+        for sessions in self.sessions.values():
+            for s in sessions:
+                versions[s.version or "older than 1.6.2"] = versions.get(s.version or "older than 1.6.2", 0) + 1
+        return {"folder": self.updates_dir, "latest": self.update_info(), "versions": versions}
+
+    def admin_check_updates(self):
+        """After a new installer was put in the updates folder: tell signed-in clients now, not in a minute."""
+        self._check_updates()
+        return self.update_info()
 
     # ---------------------------------------------------- pipeline bot
     BOT_USERNAME = "pipeline-bot"
@@ -1848,7 +1908,8 @@ class ServerCore(PlannerMixin):
                  "admin_announcements", "admin_announcement_reads", "admin_review_conversations",
                  "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
-                 "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention"}
+                 "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
+                 "admin_check_updates"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -2404,7 +2465,7 @@ class ServerCore(PlannerMixin):
             for s in sessions:
                 out.append({"user_id": uid, "username": row["username"], "name": row["display_name"],
                             "ip": s.addr[0] if s.addr else "?", "since": s.since,
-                            "status": self.chosen_status.get(uid, "online")})
+                            "status": self.chosen_status.get(uid, "online"), "version": s.version})
         return sorted(out, key=lambda d: d["name"].lower())
 
     def kick(self, uid, reason="Disconnected by the administrator"):

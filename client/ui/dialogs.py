@@ -17,7 +17,7 @@ from common import theme as T
 from common.icons import add_show_password, icon
 from client import stickers
 from client import avatars
-from client.ui.widgets import Avatar, IconButton, esc, fmt_list_time, linkify, open_link, plain
+from client.ui.widgets import Avatar, IconButton, esc, fmt_list_time, linkify, open_link, plain, rich_safe
 
 
 def _buttons(dialog, ok_text="Save", ok_enabled=True):
@@ -173,6 +173,11 @@ class RoomInfoDialog(Dialog):
             T.polish(rm, danger=True)
             rm.clicked.connect(self.remove)
             row.addWidget(rm)
+            owner = QPushButton("Make owner")
+            owner.setToolTip("Hand the room over to the selected member (they can then rename it and "
+                             "remove members)")
+            owner.clicked.connect(self.make_owner)
+            row.addWidget(owner)
         row.addStretch(1)
         if not self.auto:
             leave = QPushButton(" Leave room")
@@ -206,6 +211,19 @@ class RoomInfoDialog(Dialog):
         uids = [it.data(Qt.UserRole) for it in items if it.data(Qt.UserRole) != self.ctx.store.my_id]
         if uids:
             self._update(remove=uids)
+            self.accept()
+
+    def make_owner(self):
+        items = self.list.selectedItems()
+        uid = items[0].data(Qt.UserRole) if items else None
+        if not uid or uid == self.room["owner_id"]:
+            QMessageBox.information(self, "Make owner", "Select the member who should own the room.")
+            return
+        name = self.ctx.store.user_name(uid)
+        if QMessageBox.question(self, "Make owner", rich_safe(
+                f"Make {name} the owner of this room?\nThey can then rename it and remove members.")) \
+                == QMessageBox.Yes:
+            self._update(owner=uid)
             self.accept()
 
     def leave(self):
@@ -311,9 +329,23 @@ class ProfileDialog(Dialog):
         top.addWidget(self.avatar)
         col = QVBoxLayout()
         col.setSpacing(2)
-        name = plain(QLabel(me.get("name", "")))
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        self.name_label = name = plain(QLabel(me.get("name", "")))
         name.setStyleSheet("font-size: 14pt; font-weight: 800;")
-        col.addWidget(name)
+        name_row.addWidget(name)
+        if getattr(store, "allow_name_change", False):
+            rename = QPushButton()
+            rename.setIcon(icon("edit", T.MUTED, 15))
+            rename.setToolTip("Change my name")
+            rename.setFixedSize(28, 28)
+            rename.setCursor(Qt.PointingHandCursor)
+            rename.setStyleSheet(f"QPushButton {{ background: transparent; border: none; border-radius: 14px; }}"
+                                 f"QPushButton:hover {{ background: {T.SURFACE_HOVER}; }}")
+            rename.clicked.connect(self.change_name)
+            name_row.addWidget(rename)
+        name_row.addStretch(1)
+        col.addLayout(name_row)
         who = plain(QLabel(" · ".join(x for x in (f"@{me.get('username', '')}", store.designation_line(me)) if x)))
         T.polish(who, muted=True)
         col.addWidget(who)
@@ -378,6 +410,22 @@ class ProfileDialog(Dialog):
             form.addRow("", note)
         self.lay.addLayout(form)
         self.lay.addWidget(_buttons(self, "Save status"))
+
+    def change_name(self):
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+        current = self.ctx.store.me.get("name", "")
+        name, ok = QInputDialog.getText(self, "Change my name", "The name everyone sees:", QLineEdit.Normal, current)
+        name = " ".join((name or "").split())
+        if not ok or not name or name == current:
+            return
+
+        def done(reply):
+            if reply.get("ok"):
+                self.name_label.setText(reply["name"])
+                self.avatar.set(reply["name"], reply["name"], uid=self.ctx.store.my_id, ring=T.BG)
+            else:
+                QMessageBox.warning(self, "Change my name", reply.get("error", "Not changed"))
+        self.ctx.conn.request("set_name", done, name=name)
 
     # ------------------------------------------------------------ photo
     def change_photo(self):
@@ -597,7 +645,14 @@ class SettingsDialog(Dialog):
         pw = QPushButton(" Change password")
         pw.setIcon(icon("key", T.TEXT, 16))
         pw.clicked.connect(lambda: ChangePasswordDialog(ctx).exec())
-        self.lay.addWidget(pw, 0, Qt.AlignLeft)
+        upd = QPushButton(" Check for updates")
+        upd.setIcon(icon("refresh", T.TEXT, 16))
+        upd.clicked.connect(lambda: ctx.check_for_updates(self))
+        acct = QHBoxLayout()
+        acct.addWidget(pw)
+        acct.addWidget(upd)
+        acct.addStretch(1)
+        self.lay.addLayout(acct)
         self.lay.addWidget(_buttons(self))
 
     def _pick_accent(self, key):

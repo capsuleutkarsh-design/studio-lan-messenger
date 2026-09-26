@@ -196,6 +196,7 @@ class Store(QObject):
         self.max_file_size = boot.get("max_file_size", 0)
         self.file_retention_days = boot.get("file_retention_days", 0)
         self.buzz_enabled = boot.get("buzz_enabled", False)
+        self.allow_name_change = boot.get("allow_name_change", False)
         self.reminders = boot.get("reminders", [])
         self.scheduled = boot.get("scheduled", [])
         self.planner_changed.emit()

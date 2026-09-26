@@ -4,9 +4,9 @@ Frames are JPEG images (only sent when the screen changed), relayed by the serve
 encrypted connection, so chat and file transfers are not slowed down.
 """
 
-import hashlib
 import json
 import time
+import zlib
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
@@ -18,9 +18,21 @@ from common import protocol as P
 from common import theme as T
 from client.network import make_socket, peer_fingerprint
 
-FPS = 4
-MAX_WIDTH = 1920
-JPEG_QUALITY = 60
+# Frames are sent only when the screen changed. While things move: up to FPS frames a second at a
+# quality that follows the network (MOTION_*); once the picture has been still for SETTLE seconds one
+# sharp frame (SHARP_*) follows, so text and code are crisp. A full send queue lowers the quality
+# and skips frames, so chat, file transfers and ping on the LAN are not squeezed.
+FPS = 8
+MAX_WIDTH = 2560                 # 4K screens are scaled to this: text stays readable
+MOTION_START, MOTION_MIN, MOTION_MAX = 62, 38, 75
+SHARP_START, SHARP_MIN, SHARP_MAX = 86, 72, 92
+SHARP_BUDGET = 900 * 1024        # a sharp frame bigger than this lowers the next one (very dense screens)
+SETTLE = 0.35                    # seconds without change before the sharp frame
+BUSY_BYTES = 384 * 1024          # this much still waiting to go out: the network is busy
+KEEPALIVE = 3.0                  # resend the last frame this often even when nothing changes
+IDLE_INTERVAL = 350              # ms between looks at a screen that has been still for a while
+SMALL_CHANGE = 2                 # up to this many of 24 screen strips changed = typing, a caret, a clock
+SMALL_EVERY = 1.0                # small changes are sent (sharp) at most this often
 
 
 class _Relay(QObject):
@@ -165,8 +177,10 @@ class ViewerWindow(QWidget):
         self._render()
         now = time.time()
         if now - self.last > 1:
-            self.info.setText(f"{self.sharer_name}'s screen  ·  {pm.width()}×{pm.height()}  ·  view only")
-            self.last = now
+            fps = self.frames / (now - self.last)
+            self.info.setText(f"{self.sharer_name}'s screen  ·  {pm.width()}×{pm.height()}  ·  "
+                              f"{fps:.0f} fps  ·  view only")
+            self.last, self.frames = now, 0
 
     def _render(self):
         if not self.pixmap:
@@ -217,6 +231,12 @@ class ScreenShareManager(QObject):
         self.screen_index = 0
         self.last_hash = None
         self.last_sent = 0
+        self.last_frame = b""
+        self.changed_at = 0.0
+        self.sharp_sent = True
+        self.small_pending = False
+        self.quality = MOTION_START
+        self.sharp_q = SHARP_START
         self.rx = b""
         self.conn.event.connect(self._event)
 
@@ -309,23 +329,68 @@ class ScreenShareManager(QObject):
         if not self.relay or self.role != "sharer":
             return
         sock = self.relay.sock
-        if int(sock.bytesToWrite()) + int(sock.encryptedBytesToWrite()) > 1024 * 1024:
-            return                                   # network busy: skip this frame
+        backlog = int(sock.bytesToWrite()) + int(sock.encryptedBytesToWrite())
+        if backlog > BUSY_BYTES:                     # network busy: skip this frame and go easier
+            self.quality = max(MOTION_MIN, self.quality - 6)
+            return
+        if backlog == 0:                             # everything went out: we can afford a little more
+            self.quality = min(MOTION_MAX, self.quality + 1)
         screens = QGuiApplication.screens()
         screen = screens[min(self.screen_index, len(screens) - 1)]
         pm = screen.grabWindow(0)
         if pm.width() > MAX_WIDTH:
             pm = pm.scaledToWidth(MAX_WIDTH, Qt.SmoothTransformation)
+        now = time.time()
+        # cheap change test on the raw pixels (no JPEG encoding for a screen that did not change)
+        bands = self._bands(pm.toImage())
+        changed = (len(bands) if self.last_hash is None or len(self.last_hash) != len(bands)
+                   else sum(a != b for a, b in zip(bands, self.last_hash)))
+        if changed:
+            self.last_hash = bands
+        if changed > SMALL_CHANGE:                   # scrolling, playback, a window moved: smooth mode
+            self.changed_at, self.sharp_sent = now, False
+            self.timer.setInterval(int(1000 / FPS))
+            self._send(sock, self._jpeg(pm, self.quality), now)
+        elif changed or self.small_pending:          # typing, a caret, a clock: keep it sharp
+            if now - self.last_sent >= SMALL_EVERY:
+                self.small_pending = False
+                self._send(sock, self._sharp(pm) if self.sharp_sent else self._jpeg(pm, self.quality), now)
+            else:
+                self.small_pending = True
+        elif not self.sharp_sent and now - self.changed_at >= SETTLE:
+            self.sharp_sent = True                   # still for a moment: one crisp frame for reading
+            self._send(sock, self._sharp(pm), now)
+        elif now - self.last_sent >= KEEPALIVE and self.last_frame:
+            self._send(sock, self.last_frame, now)   # lets a viewer that just joined see the screen
+        if now - self.changed_at > 2 and self.timer.interval() != IDLE_INTERVAL:
+            self.timer.setInterval(IDLE_INTERVAL)    # a still screen: look less often (saves CPU)
+
+    @staticmethod
+    def _bands(image, count=24):
+        """A checksum per horizontal strip of the screen: how much changed, cheaply (no copy of the pixels)."""
+        bits = memoryview(image.constBits())
+        step = max(1, image.height() // count) * image.bytesPerLine()
+        return [zlib.crc32(bits[i:i + step]) for i in range(0, len(bits), step)]
+
+    def _sharp(self, pm):
+        """A crisp frame for reading; its quality follows how heavy such frames turn out on this screen."""
+        jpeg = self._jpeg(pm, self.sharp_q)
+        if len(jpeg) > SHARP_BUDGET:
+            self.sharp_q = max(SHARP_MIN, self.sharp_q - 4)
+        elif len(jpeg) < SHARP_BUDGET // 2:
+            self.sharp_q = min(SHARP_MAX, self.sharp_q + 2)
+        return jpeg
+
+    @staticmethod
+    def _jpeg(pm, quality):
         data = QByteArray()
         buf = QBuffer(data)
         buf.open(QIODevice.WriteOnly)
-        pm.save(buf, "JPG", JPEG_QUALITY)
-        jpeg = bytes(data)
-        digest = hashlib.md5(jpeg).digest()
-        now = time.time()
-        if digest == self.last_hash and now - self.last_sent < 3:
-            return                                   # nothing changed on screen
-        self.last_hash, self.last_sent = digest, now
+        pm.save(buf, "JPG", quality)
+        return bytes(data)
+
+    def _send(self, sock, jpeg, now):
+        self.last_frame, self.last_sent = jpeg, now
         sock.write(len(jpeg).to_bytes(4, "big") + jpeg)
 
     # ------------------------------------------------------------ viewer
@@ -365,3 +430,6 @@ class ScreenShareManager(QObject):
         self.role = None
         self.rx = b""
         self.last_hash = None
+        self.last_frame = b""
+        self.quality = MOTION_START
+        self.sharp_sent = True
