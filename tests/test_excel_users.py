@@ -60,6 +60,12 @@ class ExcelUsersTest(unittest.TestCase):
         self.assertEqual(ws.cell(row=X.FIRST_ROW, column=col["username"]).value, "akash")   # already listed
         self.assertEqual(ws.cell(row=X.FIRST_ROW, column=col["birthday"]).value, "26-09")
         self.assertTrue(ws.data_validations.dataValidation)                               # dropdowns
+        lists = wb["Lists"]
+        for dv in ws.data_validations.dataValidation:     # bare range (a leading '=' gives empty dropdowns)
+            self.assertFalse(dv.formula1.startswith("="), dv.formula1)
+        designations = [lists.cell(row=r, column=3).value for r in range(2, lists.max_row + 1)]
+        self.assertIn("Compositing Supervisor", designations)       # every designation, incl. ones made later
+        self.assertEqual(ws.cell(row=X.FIRST_ROW, column=1).border.left.color.rgb[-6:], X.LINE)   # visible lines
         # fill it in like a person would
         ws.cell(row=X.FIRST_ROW, column=col["designation"]).value = "Compositing Supervisor"   # change
         new = [("priya.n", "Priya Nair", "Compositing", "Roto", "Roto Artist", "akash", "1990-03-12", "E101"),

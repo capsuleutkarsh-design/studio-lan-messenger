@@ -10,7 +10,8 @@ import datetime
 NAVY = "13235A"
 TEAL = "2E9E90"
 MUTED = "6B7A99"
-LINE = "E1E7F0"
+LINE = "B7C3D9"          # soft blue-grey, but clearly visible cell lines
+HEAD_LINE = "7F93B8"
 
 # (key, header, width, group, note)
 COLUMNS = [
@@ -41,6 +42,7 @@ HEADER_ALIASES = {c[1].lower(): c[0] for c in COLUMNS} | {c[0]: c[0] for c in CO
     "name": "display_name", "full name": "display_name", "manager": "reports_to", "reports to (username)": "reports_to",
     "emp id": "employee_id", "employee code": "employee_id", "date of joining": "joined_on", "doj": "joined_on",
     "dob": "birthday", "date of birth": "birthday", "password": "password", "job title": "title"}
+COLUMNS_BY_KEY = [(c[0], c[1]) for c in COLUMNS]
 FIRST_ROW = 4          # title, group bands, headers, then people
 
 
@@ -50,6 +52,7 @@ def _styles():
     return {
         "fill": lambda c: PatternFill("solid", start_color=c, end_color=c),
         "border": Border(left=thin, right=thin, top=thin, bottom=thin),
+        "head_border": Border(left=thin, right=thin, top=thin, bottom=Side(style="medium", color=HEAD_LINE)),
         "font": lambda **k: Font(name="Segoe UI", color=k.pop("color", NAVY), **k),
         "align": lambda **k: Alignment(vertical="center", **k),
     }
@@ -101,7 +104,7 @@ def write_template(path, users, departments, roles):
         cell.font = st["font"](size=10, bold=True, color=NAVY)
         cell.fill = st["fill"](GROUPS[group][3])
         cell.alignment = st["align"](horizontal="left", indent=1)
-        cell.border = st["border"]
+        cell.border = st["head_border"]
         cell.comment = Comment(note, "Quillo")
         cell.comment.width, cell.comment.height = 260, 90
         ws.column_dimensions[get_column_letter(i)].width = width
@@ -154,9 +157,13 @@ def write_template(path, users, departments, roles):
         if not n:
             continue
         letter = get_column_letter([c[0] for c in COLUMNS].index(key) + 1)
-        dv = DataValidation(type="list", formula1=f"=Lists!${list_col}$2:${list_col}${n + 1}", allow_blank=True,
+        # no leading "=": the file format stores the bare range; with "=" some Excel versions (and WPS, Google
+        # Sheets) show the dropdown arrow with an empty list
+        dv = DataValidation(type="list", formula1=f"Lists!${list_col}$2:${list_col}${n + 1}", allow_blank=True,
                             showErrorMessage=key in ("designation",), errorTitle="Designation",
-                            error="Pick a designation from the list (add new ones on the Designations page).")
+                            error="Pick a designation from the list (add new ones on the Designations page).",
+                            showInputMessage=True, promptTitle=dict(COLUMNS_BY_KEY)[key],
+                            prompt="Pick from the list (the arrow on the right of the cell).")
         if key != "designation":
             dv.errorStyle = "information"              # a new department or section is allowed
         ws.add_data_validation(dv)

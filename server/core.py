@@ -24,7 +24,7 @@ import uuid
 
 from common import protocol as P
 from common.files import replace_file
-from server import archive
+from server import archive, safecopy
 from server.calendar import CalendarMixin
 from server.planner import PlannerMixin
 from server.config import ServerConfig
@@ -191,8 +191,38 @@ class ServerCore(PlannerMixin, CalendarMixin):
         self.thread = threading.Thread(target=self._run, name="server-loop", daemon=True)
         self.thread.start()
         self._ready.wait(15)
+        if not self._start_error and not getattr(self, "_watchdog", None):
+            self._watchdog = threading.Thread(target=self._watch_loop, name="server-watchdog", daemon=True)
+            self._watchdog.start()
         if self._start_error:
             raise self._start_error
+
+    STALL_SECONDS = 1.0
+
+    def _watch_loop(self):
+        """If the server gets stuck (every chat waits while it is), write down what it was doing - once per stall -
+        so a slow server names its own cause in the log."""
+        import traceback
+        while self.thread and self.thread.is_alive():
+            loop = self.loop
+            if not (loop and loop.is_running()):
+                time.sleep(1)
+                continue
+            beat = threading.Event()
+            asked = time.monotonic()
+            try:
+                loop.call_soon_threadsafe(beat.set)
+            except RuntimeError:            # the loop just closed
+                time.sleep(1)
+                continue
+            if not beat.wait(self.STALL_SECONDS):
+                frame = sys._current_frames().get(self.thread.ident)
+                where = "".join(traceback.format_stack(frame)[-8:]) if frame else "(unknown)"   # innermost
+                beat.wait(120)
+                log.warning("The server was stuck for %.1f s (chats waited meanwhile). It was busy here:\n%s",
+                            time.monotonic() - asked, where)
+            time.sleep(1)
+        self._watchdog = None
 
     def _run(self):
         self.loop = asyncio.new_event_loop()
@@ -308,6 +338,11 @@ class ServerCore(PlannerMixin, CalendarMixin):
         self.maintenance_task.cancel()
         self.planner_task.cancel()
         await asyncio.sleep(0.1)
+        try:                         # the last minutes before a stop / reinstall go into the safe copy too
+            if safecopy.folder(self.config) and self._safe_copy_mark() != getattr(self, "_safe_copied", None):
+                await asyncio.wait_for(self.safe_copy_async(), 120)
+        except Exception:  # noqa: BLE001 - never block a stop
+            log.exception("final safe copy failed")
         self.db.close()
         self.sessions.clear()
         self.started_at = None
@@ -328,7 +363,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
         async def runner():
             return fn(*args, **kwargs)
-        slow = fn in (self.backup_now, self.chat_backup_now)
+        slow = fn in (self.backup_now, self.chat_backup_now, self.safe_copy_now)
         return asyncio.run_coroutine_threadsafe(runner(), self.loop).result(900 if slow else 30)
 
     def _emit(self, event: str):
@@ -348,6 +383,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             if hourly:
                 self._prune_login_failures()
             steps = [("statuses", self.expire_statuses, lambda: True),
+                     ("safe copy", "safe copy", self._safe_copy_due),
                      ("backup", "backup", self._backup_due),
                      ("chat backup", None, lambda: archive.due(self.db, self.config)),
                      ("updates", self._check_updates, lambda: True),
@@ -359,6 +395,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
                             await self.chat_backup_async()
                         elif step == "backup":
                             await self.backup_async()
+                        elif step == "safe copy":
+                            await self.safe_copy_async()
                         else:
                             step()
                 except Exception:  # noqa: BLE001
@@ -1948,7 +1986,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
                  "admin_check_updates", "admin_import_users", "admin_holidays", "admin_holiday_save",
                  "admin_holiday_delete", "admin_holiday_observe", "admin_holiday_add_year",
-                 "admin_holidays_import"}
+                 "admin_holidays_import", "safe_copy_now"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -2440,7 +2478,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     def admin_config(self):
         cfg = self.config
-        return dict(cfg.values) | {"_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
+        return dict(cfg.values) | {"_safe_copy_dir": safecopy.folder(cfg),
+                                   "_data_dir": cfg.data_dir, "_storage_dir": cfg.storage_dir,
                                    "_backup_dir": cfg.backup_dir, "_db_path": cfg.db_path,
                                    "_log_dir": os.path.dirname(cfg.log_path),
                                    "_chat_log_dir": archive.log_dir(cfg)}
@@ -2464,7 +2503,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 "tls": bool(self.tls_fingerprint), "fingerprint": self.tls_fingerprint,
                 "discovery_error": getattr(self, "discovery_error", ""),
                 "storage_error": getattr(self, "storage_error", ""),
-                "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config)}
+                "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config),
+                "last_safe_copy": self.last_safe_copy, "safe_copy_dir": safecopy.folder(self.config)}
 
     def admin_log_tail(self, lines=400):
         try:
@@ -2475,6 +2515,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     # ---- backups
     last_backup = None       # {"time": ts, "path": ..., "ok": bool, "error": ...}
+    last_safe_copy = None    # {"time": ts, "folder": ..., "ok": bool, "size"/"error": ...}
 
     def _backup_plan(self):
         folder = self.config.backup_dir
@@ -2516,6 +2557,57 @@ class ServerCore(PlannerMixin, CalendarMixin):
         """Copy the database + settings into the backup folder and prune old copies (waits for it)."""
         folder, stamp, path, keep = self._backup_plan()
         return self._backup_done(self._backup_copy(folder, stamp, path, keep, self.config.path), folder)
+
+    # ---- safe copy of the server's own data in the central folder (server/safecopy.py)
+    def _safe_copy_mark(self):
+        try:
+            cfg_time = os.path.getmtime(self.config.path)
+        except OSError:
+            cfg_time = 0
+        return (self.db.con.total_changes, cfg_time)
+
+    def _safe_copy_due(self):
+        if not safecopy.folder(self.config):
+            return False
+        last = self.last_safe_copy
+        every = max(1, int(self.config["safe_copy_minutes"] or 5)) * 60
+        if last and time.time() - last["time"] < every - 5:
+            return False
+        return not (last and last["ok"]) or self._safe_copy_mark() != getattr(self, "_safe_copied", None)
+
+    def _safe_copy_info(self):
+        from common.version import APP_VERSION
+        return {"version": APP_VERSION, "server_name": self.config["server_name"],
+                "users": self.db.user_count(), "storage_dir": self.config.storage_dir}
+
+    def _safe_copy_done(self, result, mark):
+        failed_before = self.last_safe_copy and not self.last_safe_copy["ok"]
+        self.last_safe_copy = result
+        if result["ok"]:
+            self._safe_copied = mark
+            if failed_before:
+                log.info("Safe copy works again: %s", result["folder"])
+        elif not failed_before:            # say it once, not every few minutes
+            log.error("SAFE COPY FAILED (%s): %s", result["folder"], result["error"])
+            self.audit("server", "safe copy failed", result["folder"], result["error"])
+        return result
+
+    async def safe_copy_async(self):
+        target = safecopy.folder(self.config)
+        if not target:
+            return None
+        mark, info = self._safe_copy_mark(), self._safe_copy_info()
+        result = await self.loop.run_in_executor(None, safecopy.write, self.db, self.config, target, info)
+        return self._safe_copy_done(result, mark)
+
+    def safe_copy_now(self):
+        """'Copy now' in the console (waits for it)."""
+        target = safecopy.folder(self.config)
+        if not target:
+            raise ValueError("The safe copy is off, or the shared files are inside the data folder - choose a "
+                             "safe copy folder in Settings")
+        mark = self._safe_copy_mark()
+        return self._safe_copy_done(safecopy.write(self.db, self.config, target, self._safe_copy_info()), mark)
 
     async def backup_async(self):
         """The nightly backup: the copy runs in a worker thread, so chats never stall while it runs."""

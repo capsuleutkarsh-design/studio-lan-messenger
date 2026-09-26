@@ -96,6 +96,26 @@ def configure(data_dir, args) -> int:
     return 0
 
 
+def restore(data_dir, args) -> int:
+    """Called by the setup on a fresh install: bring back the safe copy from the central folder, then save the
+    folders chosen in the setup. Exit code 3 + restore-failed.txt in the data folder when it could not."""
+    from server import safecopy
+    note = os.path.join(data_dir, "restore-failed.txt")
+    try:
+        info = safecopy.restore(args.restore, data_dir)
+    except Exception as e:  # noqa: BLE001 - the setup shows this text
+        os.makedirs(data_dir, exist_ok=True)
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(str(e))
+        return 3
+    try:
+        os.remove(note)
+    except OSError:
+        pass
+    print(f"Restored {info.get('users', '?')} accounts from {args.restore}")
+    return configure(data_dir, args)
+
+
 def run_remote_console(host, port, note=""):
     """Console for a server that already runs (the Windows service, or on another PC)."""
     from PySide6.QtWidgets import QApplication
@@ -132,9 +152,14 @@ def main():
     ap.add_argument("--storage", help="with --configure: folder for shared files")
     ap.add_argument("--backups", help="with --configure: folder for database backups and chat logs")
     ap.add_argument("--logs", help="with --configure: folder for server.log")
+    ap.add_argument("--restore", metavar="FOLDER",
+                    help="(used by the setup) restore the safe copy in FOLDER into an empty data folder, then "
+                         "save the folders above")
     args = ap.parse_args()
     data_dir = os.path.abspath(args.data)
 
+    if args.restore:
+        sys.exit(restore(data_dir, args))
     if args.configure:
         sys.exit(configure(data_dir, args))
 

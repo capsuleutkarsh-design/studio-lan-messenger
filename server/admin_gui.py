@@ -2,6 +2,7 @@
 
 import csv
 import datetime
+import functools
 import logging
 import os
 import socket
@@ -92,6 +93,66 @@ def make_table(headers):
     return t
 
 
+def _row_key(table, row):
+    it = table.item(row, 0)
+    if it is None:
+        return None
+    data = it.data(Qt.UserRole)
+    return data if data is not None else it.text()
+
+
+def _begin_fill(table):
+    """Before a page rebuilds a table: remember the selected row and the scroll position, and stop the columns
+    from re-measuring themselves after every cell (with 'resize to contents' that made a refresh take
+    rows x cells work - seconds for a studio, every few seconds)."""
+    rows = table.selectionModel().selectedRows()
+    header = table.horizontalHeader()
+    state = (_row_key(table, rows[0].row()) if rows else None, table.verticalScrollBar().value(),
+             [header.sectionResizeMode(i) for i in range(header.count())], table.isSortingEnabled())
+    table.setUpdatesEnabled(False)
+    table.setSortingEnabled(False)
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    return state
+
+
+def _end_fill(table, state):
+    key, scroll, modes, sorting = state
+    header = table.horizontalHeader()
+    for i, mode in enumerate(modes[:header.count()]):
+        header.setSectionResizeMode(i, mode)                # measured once, now
+    table.setSortingEnabled(sorting)
+    if key is not None:
+        rows = table.selectionModel().selectedRows()
+        if not rows or _row_key(table, rows[0].row()) != key:
+            for r in range(table.rowCount()):
+                if _row_key(table, r) == key:
+                    table.selectRow(r)
+                    break
+    table.verticalScrollBar().setValue(scroll)
+    table.setUpdatesEnabled(True)
+
+
+def keeps_tables(refresh):
+    """Wraps a page's refresh: its tables fill in one go and keep the admin's place (selection, scroll)."""
+    @functools.wraps(refresh)
+    def wrapper(self, *args, **kwargs):
+        states = []
+        for table in self.findChildren(QTableWidget):
+            try:
+                states.append((table, _begin_fill(table)))
+            except RuntimeError:
+                pass
+        try:
+            return refresh(self, *args, **kwargs)
+        finally:
+            for table, state in states:
+                try:
+                    _end_fill(table, state)
+                except RuntimeError:        # the table was deleted meanwhile
+                    pass
+    return wrapper
+
+
 def cell(text, data=None, color=None):
     it = QTableWidgetItem(str(text))
     if data is not None:
@@ -123,6 +184,15 @@ def fmt_time(ts):
 
 
 class Page(QWidget):
+    # pages that show live numbers refresh every few seconds; the others when opened, when something changes,
+    # and once a minute
+    LIVE = False
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "refresh" in cls.__dict__:
+            cls.refresh = keeps_tables(cls.__dict__["refresh"])
+
     def __init__(self, title, subtitle=""):
         super().__init__()
         self.lay = QVBoxLayout(self)
@@ -168,6 +238,8 @@ class StatCard(QFrame):
 
 
 class DashboardPage(Page):
+    LIVE = True
+
     def __init__(self, win):
         super().__init__("Dashboard", "Install this server on one always-on PC. Clients on the LAN "
                                       "find it automatically, or can connect to one of the addresses below.")
@@ -256,11 +328,26 @@ class DashboardPage(Page):
             chat_backup = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(cb['time'])} ({cb['messages']} new)"
         else:
             chat_backup = f"<span style='color:{T.DANGER}'>Failed: {cb.get('error', '')}</span>"
+        sc = info.get("last_safe_copy")
+        if not info.get("safe_copy_dir"):
+            safe = f"<span style='color:{T.MUTED}'>Off - choose a folder in Settings</span>"
+        elif not sc:
+            safe = f"<span style='color:{T.MUTED}'>within 5 minutes</span>"
+        elif sc.get("ok"):
+            safe = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(sc['time'])}"
+        else:
+            safe = f"<span style='color:{T.DANGER}'>Failed {fmt_time(sc['time'])}: {sc.get('error', '')}</span>"
+        if running and sc and not sc.get("ok"):
+            warn.append(f"The safe copy in {sc.get('folder', '')} failed ({sc.get('error', '')}). Chat works; "
+                        "check the share - a reinstall could not bring the data back.")
+            self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
+            self.warnings.setVisible(True)
         encryption = (f"<span style='color:{T.ACCENT}'>On</span>" if info.get("tls") else
                       f"<span style='color:{T.DANGER}'>{'Off' if running else '—'}</span>")
         rows = [("Address", f"<b>{', '.join(info['ips'])}</b>"),
                 ("Ports", f"{info['tcp_port']} chat &amp; files &nbsp;·&nbsp; {info['discovery_port']} discovery"),
                 ("Encryption", encryption), ("Last backup", backup), ("Last chat backup", chat_backup),
+                ("Safe copy", safe),
                 ("Data folder", info["data_dir"]), ("File storage", info["storage_dir"])]
         if info.get("fingerprint"):
             rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.MUTED}'>"
@@ -1122,6 +1209,8 @@ class OrgPage(Page):
 
 # ================================================================= online
 class OnlinePage(Page):
+    LIVE = True
+
     def __init__(self, win):
         super().__init__("Online now", "Connected client sessions. A user logged in on two PCs shows twice.")
         self.win = win
@@ -1898,6 +1987,37 @@ class SettingsPage(Page):
         T.polish(hint, muted=True)
         form.addRow("", hint)
 
+        section("Safe copy (for reinstalls)")
+        self.sc_enabled = QCheckBox("Keep a copy of accounts, chats, settings and the certificate in a central "
+                                    "folder")
+        sc_row = QHBoxLayout()
+        self.sc_dir = QLineEdit()
+        self.sc_browse = btn("Browse", "folder")
+        self.sc_browse.clicked.connect(lambda: self._browse(self.sc_dir, "Safe copy folder"))
+        sc_row.addWidget(self.sc_dir, 1)
+        sc_row.addWidget(self.sc_browse)
+        self.sc_minutes = spin(1, 1440, " minutes")
+        sc_now = QHBoxLayout()
+        self.sc_now = btn("Copy now", "download")
+        self.sc_now.clicked.connect(self.safe_copy_now)
+        self.sc_status = QLabel()
+        self.sc_status.setWordWrap(True)
+        T.polish(self.sc_status, muted=True)
+        sc_now.addWidget(self.sc_now)
+        sc_now.addWidget(self.sc_status, 1)
+        form.addRow("", self.sc_enabled)
+        form.addRow("Safe copy folder", sc_row)
+        form.addRow("Update it every", self.sc_minutes)
+        form.addRow("", sc_now)
+        sc_hint = QLabel("Empty folder = 'Quillo server data' inside the shared files folder (when that is a "
+                         "network share or another disk). It is updated when something changed and when the "
+                         "server stops. On a new install, setup finds it there and offers to restore everything. "
+                         "It holds every chat and the password hashes: keep the share open to admins and the "
+                         "server only.")
+        sc_hint.setWordWrap(True)
+        T.polish(sc_hint, muted=True)
+        form.addRow("", sc_hint)
+
         section("Chat backup & history")
         self.cl_enabled = QCheckBox("Write a readable chat backup every night (text files, one per chat per month)")
         cl_row = QHBoxLayout()
@@ -1992,6 +2112,11 @@ class SettingsPage(Page):
         self.pw_weak.setChecked(bool(cfg.get("password_block_weak", False)))
         self.pw_force.setChecked(bool(cfg.get("force_password_change", False)))
         self.pw_age.setValue(int(cfg["password_max_age_days"]))
+        self.sc_enabled.setChecked(bool(cfg.get("safe_copy_enabled", True)))
+        self.sc_dir.setText(cfg.get("safe_copy_dir", ""))
+        self.sc_dir.setPlaceholderText(cfg.get("_safe_copy_dir") or "Off - the shared files are in the data "
+                                                                    "folder; choose a folder on another disk or share")
+        self.sc_minutes.setValue(int(cfg.get("safe_copy_minutes", 5)))
         self.bk_enabled.setChecked(bool(cfg["backup_enabled"]))
         self.bk_dir.setText(cfg["backup_dir"])
         self.bk_dir.setPlaceholderText(cfg["_backup_dir"])
@@ -2052,6 +2177,17 @@ class SettingsPage(Page):
         else:
             QMessageBox.warning(self, "Backup failed", (r or {}).get("error", "Unknown error"))
 
+    def safe_copy_now(self):
+        try:
+            r = self.win.api.call("safe_copy_now")
+        except (ValueError, ConnectionError) as e:
+            QMessageBox.warning(self, "Safe copy", str(e))
+            return
+        if r and r.get("ok"):
+            self.sc_status.setText(f"Saved in {r['folder']} ({human_size(r.get('size', 0))})")
+        else:
+            QMessageBox.warning(self, "Safe copy failed", (r or {}).get("error", "Unknown error"))
+
     def chat_backup_now(self):
         try:
             r = self.win.api.call("chat_backup_now")
@@ -2076,6 +2212,8 @@ class SettingsPage(Page):
             password_block_weak=self.pw_weak.isChecked(), force_password_change=self.pw_force.isChecked(),
             backup_enabled=self.bk_enabled.isChecked(), backup_dir=self.bk_dir.text().strip(),
             backup_hour=self.bk_hour.value(), backup_keep=self.bk_keep.value(),
+            safe_copy_enabled=self.sc_enabled.isChecked(), safe_copy_dir=self.sc_dir.text().strip(),
+            safe_copy_minutes=self.sc_minutes.value(),
             admin_review_enabled=self.review.isChecked(), unclaimed_file_days=self.unclaimed.value(),
             api_enabled=self.api_enabled.isChecked(), api_port=self.api_port.value(),
             api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot",
@@ -2429,8 +2567,9 @@ class ServerWindow(QMainWindow):
             self.keepalive.start()
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_current)
+        self.timer.timeout.connect(self._tick)
         self.timer.start(5000)
+        self._refreshed = 0.0
 
         self._make_tray()
         self.nav_group.button(0).setChecked(True)
@@ -2472,7 +2611,16 @@ class ServerWindow(QMainWindow):
             button.setChecked(True)
         self.refresh_current()
 
+    def _tick(self):
+        """Every 5 s: live pages refresh; the rest once a minute (they also refresh when opened or changed)."""
+        page = self.stack.currentWidget()
+        if getattr(page, "LIVE", False) or time.time() - self._refreshed >= 60:
+            self.refresh_current()
+        else:
+            self.update_state()
+
     def refresh_current(self):
+        self._refreshed = time.time()
         if self.isVisible():
             try:
                 self.stack.currentWidget().refresh()

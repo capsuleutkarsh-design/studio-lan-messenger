@@ -50,7 +50,16 @@ says so. Setup lists your mapped network drives by their network path, and *Brow
 On an upgrade the page shows the current folders (the database folder is fixed); folders can also be moved in
 console → *Settings*.
 In service mode the data folder is readable only by Administrators and SYSTEM. On uninstall setup asks whether
-to delete the data folder (files and backups kept elsewhere are never deleted).
+to delete the data folder (files and backups kept elsewhere are never deleted). If you keep it, the next install
+finds it again.
+
+**Safe copy for reinstalls.** When the shared files are on a share or another disk, the server keeps a copy of
+its own data in `<shared files>\Quillo server data`: the database (every account and chat), the settings, the
+certificate and profile photos. It is updated every 5 minutes when something changed, and when the server stops.
+On a **new install** (new PC, or after deleting the data), choose the same shared-files folder: setup finds the
+copy and offers to **restore everything**. The PCs keep trusting the server (same certificate). Folder and
+interval: console → *Settings → Safe copy*; the Dashboard shows when the last copy was made. The copy holds every
+chat and the password hashes: give only administrators and the server access to that share.
 
 ## 2. First-time setup
 
