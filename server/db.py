@@ -191,6 +191,9 @@ MIGRATIONS = [
     ("users", "manager_id", "INTEGER"),
     ("rooms", "auto_key", "TEXT"),
     ("rooms", "file_retention_days", "REAL"),          # NULL = the server default, 0 = keep forever
+    ("users", "birthday", "TEXT NOT NULL DEFAULT ''"),       # '--MM-DD' (ISO, no year) or 'YYYY-MM-DD'
+    ("users", "joined_on", "TEXT NOT NULL DEFAULT ''"),      # 'YYYY-MM-DD' (work anniversaries)
+    ("users", "employee_id", "TEXT NOT NULL DEFAULT ''"),
     ("announcements", "target_kind", "TEXT NOT NULL DEFAULT 'all'"),
     ("announcements", "target_value", "TEXT NOT NULL DEFAULT ''"),
     ("users", "must_change_pw", "INTEGER NOT NULL DEFAULT 0"),
@@ -286,7 +289,54 @@ VFX_ROLES = [
 ROLE_FIELDS = ("name", "level", "announce", "create_rooms", "manage_users", "see_all", "always_visible")
 
 USER_FIELDS = ("username", "display_name", "department", "section", "title", "role_id", "manager_id",
-               "is_admin", "can_broadcast", "disabled")
+               "is_admin", "can_broadcast", "disabled", "birthday", "joined_on", "employee_id")
+
+MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                      "nov", "dec"), 1)}
+
+
+def check_date(value, what, year_optional=False):
+    """A date typed by a person or read from Excel -> 'YYYY-MM-DD' (or 'MM-DD' when the year may be left out).
+
+    Accepts 2026-09-26, 26-09-2026, 26/09/2026, 26.09.2026, 26 Sep 2026, and without a year (birthdays)
+    26-09, 26/09, 26 Sep. Empty stays empty."""
+    import datetime
+    import re
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.split(" 00:00")[0].split("T")[0]
+    iso_no_year = re.fullmatch(r"--(\d{2})-(\d{2})", text)          # what we store for a birthday without a year
+    if iso_no_year:
+        text = f"{iso_no_year.group(2)}-{iso_no_year.group(1)}"
+    year = month = day = None
+    m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", text)
+    if m:
+        year, month, day = (int(x) for x in m.groups())
+    m = m or re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})(?:[-/.](\d{2,4}))?", text)
+    if m and day is None:
+        day, month = int(m.group(1)), int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else None
+    if day is None:
+        m = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3})[A-Za-z]*\.?(?:,?\s+(\d{4}))?", text)
+        if m and m.group(2).lower() in MONTHS:
+            day, month = int(m.group(1)), MONTHS[m.group(2).lower()]
+            year = int(m.group(3)) if m.group(3) else None
+    if day is None:
+        raise ValueError(f"{what} '{text}' is not a date - use DD-MM-YYYY")
+    if year is not None and year < 100:
+        year += 2000 if year < 50 else 1900
+    try:
+        datetime.date(year or 2000, month, day)          # 2000 is a leap year: 29-02 birthdays are fine
+    except ValueError:
+        raise ValueError(f"{what} '{text}' is not a real date")
+    if year is None:
+        if not year_optional:
+            raise ValueError(f"{what} needs a year - use DD-MM-YYYY")
+        return f"--{month:02d}-{day:02d}"
+    if not 1900 <= year <= 2100:
+        raise ValueError(f"{what} '{text}' has an odd year")
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def check_label(value: str, what: str) -> str:
@@ -415,7 +465,7 @@ class Database:
 
     def create_user(self, username, password, display_name="", department="", title="",
                     is_admin=False, can_broadcast=False, section="", role_id=None,
-                    manager_id=None) -> int:
+                    manager_id=None, **extra) -> int:
         username = check_label(username, "Username")
         if not username:
             raise ValueError("Username is required")
@@ -437,6 +487,9 @@ class Database:
             username, display_name.strip() or username, pw_hash, salt, department.strip(),
             section.strip(), title.strip(), role_id or None, manager_id or None, int(is_admin),
             int(can_broadcast), time.time())
+        extra = {k: v for k, v in extra.items() if k in ("birthday", "joined_on", "employee_id")}
+        if extra:
+            self.update_user(cur.lastrowid, **extra)
         return cur.lastrowid
 
     def update_user(self, user_id: int, **fields):
@@ -454,6 +507,15 @@ class Database:
         for key in ("role_id", "manager_id"):
             if key in fields:
                 fields[key] = fields[key] or None
+        if "birthday" in fields:
+            fields["birthday"] = check_date(fields["birthday"], "Birthday", year_optional=True)
+        if "joined_on" in fields:
+            fields["joined_on"] = check_date(fields["joined_on"], "Joining date")
+        if "employee_id" in fields:
+            fields["employee_id"] = check_label(str(fields["employee_id"] or ""), "Employee ID")
+            if fields["employee_id"] and self._one("SELECT id FROM users WHERE employee_id=? AND id<>? AND deleted=0",
+                                                   fields["employee_id"], user_id):
+                raise ValueError(f"Employee ID '{fields['employee_id']}' belongs to someone else")
         if not fields:
             return
         cols = ", ".join(f"{k}=?" for k in fields)
