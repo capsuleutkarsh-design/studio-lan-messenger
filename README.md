@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.7.0-1d3a7a?style=for-the-badge"></a>
+  <a href="../../actions/workflows/build.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/capsuleutkarsh-design/studio-lan-messenger/build.yml?branch=main&style=for-the-badge&label=tests"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Offline, LAN only" src="https://img.shields.io/badge/internet-not%20needed-0f1d4a?style=for-the-badge">
@@ -144,6 +145,12 @@ python -m venv .venv
 
 Build both installers (needs [Inno Setup 6](https://jrsoftware.org/isdl.php)): run `build\build.bat`, which writes
 `build\output\Quillo-*-Setup-x.y.z.exe`. The version number lives in `common\version.py`.
+
+**Releases are built on GitHub.** Every push runs all the tests on a fresh Windows machine
+([Actions](../../actions)). To release: raise `APP_VERSION` in `common\version.py`, add
+`docs\releases\vX.Y.Z.md`, commit, then `git tag vX.Y.Z` and `git push --tags`. GitHub tests, builds both
+installers and opens a **draft release** with them, the notes and this build's checksums - check it and press
+*Publish*.
 
 <details>
 <summary><b>Project layout</b></summary>
