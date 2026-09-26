@@ -3,6 +3,7 @@
 import csv
 import datetime
 import logging
+import os
 import socket
 import time
 
@@ -335,6 +336,19 @@ class UserDialog(QDialog):
         form.addRow("Designation", self.designation)
         form.addRow("Reports to", self.manager)
         form.addRow("Job title", self.title)
+
+        def date_text(value):                # stored '--MM-DD' / 'YYYY-MM-DD' -> shown '26-09' / '26-09-1990'
+            parts = [p for p in (value or "").split("-") if p]
+            return "-".join(reversed(parts))
+        self.employee_id = QLineEdit(user.get("employee_id", "") if user else "")
+        self.employee_id.setPlaceholderText("optional HR / payroll code")
+        self.birthday = QLineEdit(date_text(user.get("birthday", "")) if user else "")
+        self.birthday.setPlaceholderText("DD-MM or DD-MM-YYYY - everyone sees day and month")
+        self.joined = QLineEdit(date_text(user.get("joined_on", "")) if user else "")
+        self.joined.setPlaceholderText("DD-MM-YYYY - for work anniversaries")
+        form.addRow("Employee ID", self.employee_id)
+        form.addRow("Birthday", self.birthday)
+        form.addRow("Joining date", self.joined)
         form.addRow("Password", self.password)
         form.addRow("", self.is_admin)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -368,7 +382,8 @@ class UserDialog(QDialog):
                 "section": self.section.currentData() or "",
                 "role_id": self.designation.currentData(), "manager_id": self.manager.currentData(),
                 "title": self.title.text().strip(), "is_admin": int(self.is_admin.isChecked()),
-                "password": self.password.text()}
+                "password": self.password.text(), "employee_id": self.employee_id.text().strip(),
+                "birthday": self.birthday.text().strip(), "joined_on": self.joined.text().strip()}
 
 
 class UsersPage(Page):
@@ -383,11 +398,15 @@ class UsersPage(Page):
         bar.addWidget(self.search, 1)
         add = btn("Add user", "plus", primary=True)
         add.clicked.connect(self.add_user)
-        imp = btn("Import CSV", "upload")
-        imp.clicked.connect(self.import_csv)
-        imp.setToolTip("CSV columns: username, password, display_name, department, section,\n"
-                       "designation, reports_to (username of the lead/supervisor), title\n"
-                       "Departments and sections must already exist on the Departments page.")
+        tpl = btn("Excel template", "download")
+        tpl.setToolTip("An Excel file with everyone already in it, dropdowns for department, section,\n"
+                       "designation and reports to - fill it in, then Import.")
+        tpl.clicked.connect(self.export_excel)
+        bar.addWidget(tpl)
+        imp = btn("Import", "upload")
+        imp.setToolTip("Import the filled Excel (or a CSV): new usernames are created, existing people updated.\n"
+                       "You see what will change before anything is saved.")
+        imp.clicked.connect(self.import_file)
         bar.addWidget(imp)
         bar.addWidget(add)
         self.lay.addLayout(bar)
@@ -546,39 +565,89 @@ class UsersPage(Page):
             self.win.api.call("admin_delete_user", u["id"])
             self.refresh()
 
-    def import_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import users", "", "CSV files (*.csv)")
+    def export_excel(self):
+        from server import excel_users
+        path, _ = QFileDialog.getSaveFileName(self, "Save the people list", os.path.join(
+            os.path.expanduser("~"), "Desktop", f"Quillo people {datetime.date.today():%Y-%m-%d}.xlsx"),
+            "Excel workbook (*.xlsx)")
         if not path:
             return
-        created, errors = 0, []
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            rows = [{k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
-                    for row in csv.DictReader(f)]
         api = self.win.api
-        # pass 1: create everyone; pass 2: link "reports_to" (leads may appear later in the file)
-        for row in rows:
-            try:
-                api.call("admin_create_user",
-                          username=row.get("username", ""), password=row.get("password", ""),
-                          display_name=row.get("display_name", ""), department=row.get("department", ""),
-                          section=row.get("section", ""), designation=row.get("designation", ""),
-                          title=row.get("title", ""))
-                created += 1
-            except ValueError as e:
-                errors.append(f"{row.get('username', '?')}: {e}")
-        for row in rows:
-            if row.get("reports_to"):
-                user = api.call("admin_user_by_name", row.get("username", ""))
-                try:
-                    if user:
-                        api.call("admin_update_user", user["id"], reports_to=row["reports_to"])
-                except ValueError as e:
-                    errors.append(f"{row.get('username', '?')}: {e}")
+        try:
+            excel_users.write_template(path, api.call("admin_users"), api.call("admin_departments"),
+                                       api.call("admin_roles"))
+        except OSError as e:
+            QMessageBox.warning(self, "Excel template", f"Could not save the file: {e}\n\nIs it open in Excel?")
+            return
+        if QMessageBox.question(self, "Excel template", "Saved. Open it in Excel now?") == QMessageBox.Yes:
+            os.startfile(path)
+
+    def import_file(self):
+        from server import excel_users
+        path, _ = QFileDialog.getOpenFileName(self, "Import people", os.path.join(os.path.expanduser("~"), "Desktop"),
+                                              "People list (*.xlsx *.csv)")
+        if not path:
+            return
+        try:
+            rows = excel_users.read_rows(path)
+        except (OSError, ValueError, KeyError) as e:
+            QMessageBox.warning(self, "Import", f"Could not read {os.path.basename(path)}:\n{e}")
+            return
+        for r in rows:
+            r.pop("_row", None)
+        api = self.win.api
+        preview = api.call("admin_import_users", rows, dry_run=True)
+        lines = [f"<b>{len(preview['created'])}</b> new people,  <b>{len(preview['updated'])}</b> changed,  "
+                 f"{preview['unchanged']} unchanged."]
+        if preview["new_departments"]:
+            lines.append("New departments / sections: " + safe_text(", ".join(preview["new_departments"]))[4:-5])
+        if preview["created"]:
+            lines.append("New: " + safe_text(", ".join(preview["created"][:30])
+                                             + (" ..." if len(preview["created"]) > 30 else ""))[4:-5])
+        if preview["updated"]:
+            lines.append("Changed: " + safe_text(", ".join(preview["updated"][:30])
+                                                 + (" ..." if len(preview["updated"]) > 30 else ""))[4:-5])
+        if preview["errors"]:
+            lines.append(f"<span style='color:{T.DANGER}'>These rows will be skipped:</span><br>"
+                         + safe_text("\n".join(preview["errors"][:15]))[4:-5])
+        if not preview["created"] and not preview["updated"] and not preview["new_departments"]:
+            QMessageBox.information(self, "Import", "<qt>" + "<br><br>".join(lines) + "<br><br>Nothing to change.</qt>")
+            return
+        if QMessageBox.question(self, "Import people", "<qt>" + "<br><br>".join(lines) +
+                                "<br><br>Save these changes?</qt>") != QMessageBox.Yes:
+            return
+        result = api.call("admin_import_users", rows)
         self.refresh()
-        msg = f"Created {created} users."
-        if errors:
-            msg += "\n\nSkipped:\n" + "\n".join(errors[:20])
-        QMessageBox.information(self, "Import finished", msg)
+        msg = f"Created {len(result['created'])}, updated {len(result['updated'])}."
+        if result["errors"]:
+            msg += "\n\nSkipped:\n" + "\n".join(result["errors"][:20])
+        if result["passwords"]:
+            msg += (f"\n\n{len(result['passwords'])} new people got a random first password. "
+                    "Save the list now to hand them out (they change it at first sign-in).")
+            QMessageBox.information(self, "Import finished", msg)
+            self.save_passwords(result["passwords"])
+        else:
+            QMessageBox.information(self, "Import finished", msg)
+
+    def save_passwords(self, passwords):
+        from server import excel_users
+        while True:
+            path, _ = QFileDialog.getSaveFileName(self, "Save the first passwords", os.path.join(
+                os.path.expanduser("~"), "Desktop", f"Quillo first passwords {datetime.date.today():%Y-%m-%d}.xlsx"),
+                "Excel workbook (*.xlsx)")
+            if path:
+                try:
+                    excel_users.write_passwords(path, passwords, self.win.api.label)
+                    os.startfile(path)
+                    return
+                except OSError as e:
+                    QMessageBox.warning(self, "First passwords", f"Could not save: {e}")
+                    continue
+            text = "\n".join(f"{p['name']}\t{p['username']}\t{p['password']}" for p in passwords)
+            QApplication.clipboard().setText(text)
+            QMessageBox.information(self, "First passwords", "Not saved as a file - the list is on the clipboard "
+                                                             "now. Paste it somewhere safe.")
+            return
 
 
 # ============================================================ departments

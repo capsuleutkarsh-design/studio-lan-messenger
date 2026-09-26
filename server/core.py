@@ -667,6 +667,7 @@ class ServerCore(PlannerMixin):
             **static,
             "status": self.visible_status(uid), "status_msg": row["status_msg"],
             "status_emoji": row["status_emoji"], "avatar": row["avatar_ver"],
+            "birthday": (row["birthday"] or "")[-5:], "joined_on": row["joined_on"] or "",
             "is_admin": bool(row["is_admin"]), "last_seen": row["last_seen"],
         }
 
@@ -1916,7 +1917,7 @@ class ServerCore(PlannerMixin):
                  "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
-                 "admin_check_updates"}
+                 "admin_check_updates", "admin_import_users"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
@@ -2127,6 +2128,116 @@ class ServerCore(PlannerMixin):
         self.sync_auto_rooms()
         self.push_directory()
         self._emit("users")
+
+    IMPORT_FIELDS = ("display_name", "department", "section", "designation", "reports_to", "title",
+                     "birthday", "joined_on", "employee_id")
+
+    @staticmethod
+    def _new_password():
+        """A random first password that is easy to read out and type (no 0/O, 1/l/I)."""
+        import secrets
+        letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ"
+        return "".join(secrets.choice(letters) for _ in range(5)) + "-" + \
+            "".join(secrets.choice("23456789") for _ in range(4))
+
+    def admin_import_users(self, rows, dry_run=False):
+        """The Excel/CSV user list in one go: new usernames are created, existing ones updated.
+
+        Rows are dicts (username, display_name, department, section, designation, reports_to, title, password,
+        birthday, joined_on, employee_id). An empty cell keeps the current value; '-' clears it. Departments
+        and sections that don't exist yet are created. New people without a password get a random one
+        (returned in 'passwords') and must change it at first sign-in. dry_run: only report what would happen."""
+        report = {"created": [], "updated": [], "unchanged": 0, "errors": [], "passwords": [],
+                  "new_departments": []}
+        clean = []
+        for n, raw in enumerate(rows, 2):                     # Excel row numbers: row 1 is the header
+            row = {str(k).strip().lower(): ("" if v is None else str(v).strip()) for k, v in raw.items() if k}
+            if not any(row.values()):
+                continue
+            if not row.get("username"):
+                report["errors"].append(f"Row {n}: the username is empty")
+                continue
+            clean.append((n, row))
+        # departments and sections first (created in a dry run too, as a list only)
+        for n, row in clean:
+            dept, sect = row.get("department", ""), row.get("section", "")
+            if dept and dept != "-" and not self.db.find_department(dept):
+                report["new_departments"].append(dept)
+                if not dry_run:
+                    self.admin_save_department(name=dept)
+            if dept and dept != "-" and sect and sect != "-":
+                parent = self.db.find_department(dept)
+                if (not parent or not self.db.find_department(sect, parent["id"])) \
+                        and f"{dept} / {sect}" not in report["new_departments"]:
+                    report["new_departments"].append(f"{dept} / {sect}")
+                    if not dry_run and parent:
+                        self.admin_save_department(name=sect, parent_id=parent["id"])
+        report["new_departments"] = sorted(set(report["new_departments"]), key=str.lower)
+        # people: pass 1 without "reports to" (leads may come later in the sheet), pass 2 links them
+        for n, row in clean:
+            existing = self.db.get_user_by_name(row["username"])
+            fields = {}
+            for key in self.IMPORT_FIELDS:
+                if key == "reports_to" or key not in row or row[key] == "":
+                    continue
+                fields[key] = "" if row[key] == "-" else row[key]
+            try:
+                from server.db import check_date
+                if fields.get("birthday"):
+                    fields["birthday"] = check_date(fields["birthday"], "Birthday", year_optional=True)
+                if fields.get("joined_on"):
+                    fields["joined_on"] = check_date(fields["joined_on"], "Joining date")
+                # checked here as well, so the preview (dry run) already shows the rows that would fail
+                if fields.get("designation") and not self.db.get_role_by_name(fields["designation"]):
+                    raise ValueError(f"Unknown designation '{fields['designation']}'")
+                reports_to = row.get("reports_to", "")
+                if reports_to and reports_to != "-" and not self.db.get_user_by_name(reports_to) \
+                        and reports_to.lower() not in {r["username"].lower() for _n, r in clean}:
+                    raise ValueError(f"Unknown 'reports to' user '{reports_to}'")
+                if not existing:
+                    name = check_label(row["username"], "Username")
+                    if not name or any(ch.isspace() for ch in name):
+                        raise ValueError("The username can't be empty or contain spaces")
+                    if row.get("password"):
+                        self.check_password_rules(row["password"], name)
+                if existing:
+                    before = dict(existing)
+                    before["designation"] = (self.db.get_role(existing["role_id"]) or {"name": ""})["name"] \
+                        if existing["role_id"] else ""
+                    changed = {k: v for k, v in fields.items() if str(before.get(k) or "").lower() != v.lower()}
+                    if row.get("password"):
+                        changed["password"] = row["password"]
+                    if changed:
+                        if not dry_run:
+                            self.admin_update_user(existing["id"], **changed)
+                        report["updated"].append(row["username"])
+                    else:
+                        report["unchanged"] += 1
+                else:
+                    password = row.get("password") or self._new_password()
+                    if not dry_run:
+                        self.admin_create_user(must_change=True if not row.get("password") else None,
+                                               username=row["username"], password=password, **fields)
+                    report["created"].append(row["username"])
+                    if not row.get("password"):
+                        report["passwords"].append({"username": row["username"],
+                                                    "name": fields.get("display_name") or row["username"],
+                                                    "password": password})
+            except ValueError as e:
+                report["errors"].append(f"Row {n} ({row['username']}): {e}")
+        if not dry_run:
+            for n, row in clean:
+                if row.get("reports_to"):
+                    user = self.db.get_user_by_name(row["username"])
+                    try:
+                        if user:
+                            self.admin_update_user(user["id"], reports_to="" if row["reports_to"] == "-"
+                                                   else row["reports_to"])
+                    except ValueError as e:
+                        report["errors"].append(f"Row {n} ({row['username']}): {e}")
+            self.audit(None, "users imported", f"{len(report['created'])} created, {len(report['updated'])} updated",
+                       f"{len(report['errors'])} rows skipped")
+        return report
 
     def admin_create_user(self, must_change=None, **kw):
         kw = self._resolve_user_fields(None, dict(kw))
