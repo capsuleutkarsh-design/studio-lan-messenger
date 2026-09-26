@@ -585,19 +585,7 @@ class CalendarMixin:
             raise ClientError("No events found in that file")
         if target == "holidays":
             self._cal_holiday_guard(s)
-            added = 0
-            for e in events:
-                if not e["all_day"]:
-                    continue
-                day = e["start"].date()
-                while day < e["end"].date() and added < 2000:          # a holiday of several days
-                    cur = self.db._exec("INSERT OR IGNORE INTO holidays(day, name, kind, observed, confirm, source)"
-                                        " VALUES(?,?,'studio',1,0,'ics')", day.isoformat(), e["title"][:80])
-                    added += cur.rowcount
-                    day += datetime.timedelta(days=1)
-            self.audit(self._user_name(s.user_id), "holidays imported", f"{added} days from an .ics file")
-            self._cal_changed(None)
-            return {"added": added}
+            return {"added": self.holidays_import(events, self._user_name(s.user_id))}
         added = 0
         now = time.time()
         for e in events[:2000]:
@@ -608,6 +596,22 @@ class CalendarMixin:
             added += 1
         self._cal_changed({s.user_id})
         return {"added": added}
+
+    def holidays_import(self, events, actor=None):
+        """All-day events of an .ics file become studio holidays (ticked)."""
+        added = 0
+        for e in events:
+            if not e["all_day"]:
+                continue
+            day = e["start"].date()
+            while day < e["end"].date() and added < 2000:          # a holiday of several days
+                cur = self.db._exec("INSERT OR IGNORE INTO holidays(day, name, kind, observed, confirm, source)"
+                                    " VALUES(?,?,'studio',1,0,'ics')", day.isoformat(), e["title"][:80])
+                added += cur.rowcount
+                day += datetime.timedelta(days=1)
+        self.audit(actor, "holidays imported", f"{added} days from an .ics file")
+        self._cal_changed(None)
+        return added
 
     # ------------------------------------------------------------ reminders
     def calendar_boot(self, uid):

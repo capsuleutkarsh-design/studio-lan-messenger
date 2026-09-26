@@ -1876,6 +1876,14 @@ class ServerCore(PlannerMixin, CalendarMixin):
     def admin_holiday_add_year(self, year):
         return self.holiday_add_year(year)
 
+    def admin_holidays_import(self, text):
+        from common import ics
+        try:
+            events = ics.parse(str(text or ""))
+        except Exception:  # noqa: BLE001
+            raise ValueError("That doesn't look like an .ics calendar file")
+        return self.holidays_import(events)
+
     def admin_check_updates(self):
         """After a new installer was put in the updates folder: tell signed-in clients now, not in a minute."""
         self._check_updates()
@@ -1939,7 +1947,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
                  "admin_check_updates", "admin_import_users", "admin_holidays", "admin_holiday_save",
-                 "admin_holiday_delete", "admin_holiday_observe", "admin_holiday_add_year"}
+                 "admin_holiday_delete", "admin_holiday_observe", "admin_holiday_add_year",
+                 "admin_holidays_import"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)

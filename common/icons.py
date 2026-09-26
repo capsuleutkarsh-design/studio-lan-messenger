@@ -72,6 +72,9 @@ _OUTLINE = {
     "clock": '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M5 3.5L2.5 6M19 3.5L21.5 6"/>',
     "compact": '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     "back": '<path d="M15 5l-7 7 7 7"/>',
+    "next": '<path d="M9 5l7 7-7 7"/>',
+    "calendar": '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17"/><path d="M8 3v4"/>'
+                '<path d="M16 3v4"/><path d="M8 14h2"/><path d="M14 14h2"/><path d="M8 17h2"/>',
     "zap": '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
     "at": '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
 }

@@ -1456,6 +1456,132 @@ class _DailyChart(QWidget):
 
 
 # ================================================================ updates
+class HolidaysPage(Page):
+    """The studio holiday list: tick the days the studio is closed; add, change, import, more years."""
+
+    def __init__(self, win):
+        super().__init__("Holidays", "Ticked days are holidays on everyone's calendar. India's public and festival "
+                                     "holidays are listed up to 2035 - tick the ones your studio keeps. Festival "
+                                     "dates follow the lunar calendar: the ones marked 'check the date' may be a "
+                                     "day off from your almanac. HR can also change this list in the app.")
+        self.win = win
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("Year"))
+        self.year = QSpinBox()
+        self.year.setRange(2000, 2100)
+        self.year.setValue(datetime.date.today().year)
+        self.year.valueChanged.connect(self.refresh)
+        bar.addWidget(self.year)
+        bar.addStretch(1)
+        for text, ic, fn in (("Add a day", "plus", lambda: self.edit(None)), ("Import .ics", "upload", self.import_ics),
+                             ("Add India's list for a year", "dashboard", self.add_year)):
+            b = btn(text, ic, primary=text == "Add a day")
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+        self.lay.addLayout(bar)
+        self.table = make_table(["Studio closed", "Date", "Holiday", "Kind"])
+        self.table.itemChanged.connect(self._ticked)
+        self.table.doubleClicked.connect(lambda: self.edit(self.selected()))
+        self.lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        e = btn("Change...", "edit")
+        e.clicked.connect(lambda: self.edit(self.selected()))
+        d = btn("Delete", "trash", danger=True)
+        d.clicked.connect(self.delete)
+        row.addWidget(e)
+        row.addWidget(d)
+        row.addStretch(1)
+        self.lay.addLayout(row)
+        self.rows = []
+        self._loading = False
+
+    def refresh(self, *_):
+        if not self.win.api.running:
+            return
+        self.rows = self.win.api.call("admin_holidays", self.year.value())
+        self._loading = True
+        self.table.setRowCount(len(self.rows))
+        for r, h in enumerate(self.rows):
+            tick = QTableWidgetItem("")
+            tick.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            tick.setCheckState(Qt.Checked if h["observed"] else Qt.Unchecked)
+            tick.setData(Qt.UserRole, h["id"])
+            self.table.setItem(r, 0, tick)
+            day = datetime.date.fromisoformat(h["day"])
+            self.table.setItem(r, 1, cell(f"{day:%a %d %b %Y}"))
+            self.table.setItem(r, 2, cell(h["name"] + ("   · check the date" if h["confirm"] else ""),
+                                          color=T.WARN_TEXT if h["confirm"] and not T.DARK else None))
+            self.table.setItem(r, 3, cell({"national": "National", "festival": "Festival", "studio": "Studio",
+                                           "other": "Public"}.get(h["kind"], h["kind"]), color=T.MUTED))
+        self._loading = False
+
+    def selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        return self.rows[rows[0].row()] if rows else None
+
+    def _ticked(self, it):
+        if self._loading or it.column() != 0:
+            return
+        self.win.api.call("admin_holiday_observe", [it.data(Qt.UserRole)], it.checkState() == Qt.Checked)
+
+    def edit(self, h):
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QDateEdit
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Change holiday" if h else "Add a holiday")
+        form = QFormLayout(dlg)
+        day = QDateEdit()
+        d = datetime.date.fromisoformat(h["day"]) if h else datetime.date(self.year.value(), 1, 1)
+        day.setDate(QDate(d.year, d.month, d.day))
+        day.setCalendarPopup(True)
+        day.setDisplayFormat("ddd dd MMM yyyy")
+        name = QLineEdit(h["name"] if h else "")
+        name.setPlaceholderText("e.g. Studio anniversary")
+        form.addRow("Date", day)
+        form.addRow("Name", name)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        while dlg.exec():
+            q = day.date()
+            try:
+                self.win.api.call("admin_holiday_save", h["id"] if h else None,
+                                  datetime.date(q.year(), q.month(), q.day()).isoformat(), name.text(), True)
+                break
+            except ValueError as e:
+                QMessageBox.warning(self, "Holiday", str(e))
+        self.refresh()
+
+    def delete(self):
+        h = self.selected()
+        if h and QMessageBox.question(self, "Delete", safe_text(f"Delete {h['name']} ({h['day']})?")) == QMessageBox.Yes:
+            self.win.api.call("admin_holiday_delete", h["id"])
+            self.refresh()
+
+    def add_year(self):
+        year, ok = QInputDialog.getInt(self, "Add a year", "Add India's holiday list for the year:",
+                                       max(self.year.value() + 1, 2036), 2000, 2100)
+        if ok:
+            added = self.win.api.call("admin_holiday_add_year", year)
+            QMessageBox.information(self, "Holidays", f"Added {added} days for {year}. Tick the ones your studio keeps.")
+            self.year.setValue(year)
+
+    def import_ics(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import holidays (.ics)", "", "Calendar files (*.ics)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                text = f.read()
+            added = self.win.api.call("admin_holidays_import", text)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Import", str(e))
+            return
+        QMessageBox.information(self, "Import", f"Added {added} holidays (all ticked).")
+        self.refresh()
+
+
 class StoragePage(Page):
     """Where the file storage goes: per person, per chat, the largest files - and a clean-up."""
 
@@ -2207,6 +2333,7 @@ class ServerWindow(QMainWindow):
             ("Designations", "badge", RolesPage(self)),
             ("Org chart", "org", OrgPage(self)),
             ("Rooms", "hash", RoomsPage(self)),
+            ("Holidays", "clock", HolidaysPage(self)),
             ("Online now", "signal", OnlinePage(self)),
             ("Announcement", "megaphone", AnnouncePage(self)),
             ("Reports", "chart", ReportsPage(self)),
@@ -2232,7 +2359,7 @@ class ServerWindow(QMainWindow):
         nav_scroll.setWidget(nav_list)
         groups = [("Overview", ("Dashboard", "Online now", "Reports")),
                   ("People", ("Users", "Departments", "Designations", "Org chart")),
-                  ("Messaging", ("Rooms", "Announcement", "Chat review")),
+                  ("Messaging", ("Rooms", "Announcement", "Holidays", "Chat review")),
                   ("System", ("Settings", "Storage", "Updates", "Audit log", "Server log"))]
         index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
         order = [t for _g, titles in groups for t in titles if t in index]

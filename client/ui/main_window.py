@@ -1,8 +1,10 @@
 """Main client window: navigation rail, sidebar and content pages."""
 
 import ctypes
+import datetime
 import os
 import sys
+import time
 
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QShortcut
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
         for key, ic, label, tip in [("chats", "chat", "Chats", "Chats"), ("contacts", "users", "People", "People"),
                                     ("rooms", "hash", "Rooms", "Chat rooms"),
                                     ("directory", "org", "Org", "Directory / org chart"),
+                                    ("calendar", "calendar", "Calendar", "Calendar - meetings, holidays, deadlines, leave"),
                                     ("announcements", "megaphone", "News", "Announcements"),
                                     ("transfers", "download", "Files", "File transfers"),
                                     ("myspace", "edit", "Me", "My space — notes, to-dos and files only you can see")]:
@@ -191,7 +194,9 @@ class MainWindow(QMainWindow):
         self.announcements.compose.connect(lambda: ComposeAnnouncementDialog(self).exec())
         self.transfers_page = TransfersPage(transfers, store)
         self.directory = DirectoryPage(self)
-        for w in (self.home, self.chat, self.announcements, self.transfers_page, self.directory):
+        from client.ui.calendar_page import CalendarPage
+        self.calendar = CalendarPage(self)
+        for w in (self.home, self.chat, self.announcements, self.transfers_page, self.directory, self.calendar):
             self.stack.addWidget(w)
         body.addWidget(self.stack, 1)
 
@@ -215,6 +220,12 @@ class MainWindow(QMainWindow):
         store.users_changed.connect(self._check_open_conv)
         store.update_available.connect(self._on_update_available)
         store.reminder_fired.connect(self._show_reminder)
+        store.event_invite.connect(self._on_event_invite)
+        store.calendar_changed.connect(self._refresh_upcoming_soon)
+        self._meeting_timer = QTimer(self, interval=20_000, timeout=self._check_meetings)
+        self._meeting_timer.start()
+        self._upcoming_timer = QTimer(self, singleShot=True, interval=1500, timeout=self._refresh_upcoming)
+        self._reminded = set()
         self.reminder_cards = {}
         transfers.upload_done.connect(self._upload_done)
         transfers.added.connect(lambda _t: self._update_transfers_badge())
@@ -269,6 +280,8 @@ class MainWindow(QMainWindow):
         if target == "announcements":
             self.rail["announcements"].setChecked(True)
             self.rail_clicked("announcements")
+        elif target and target.startswith("calendar:"):
+            self.open_calendar(datetime.date.fromisoformat(target[9:]))
         elif target and self.store.conv_exists(target):
             self.open_conv(target)
         QTimer.singleShot(150, lambda: bring_to_front(self))    # Windows sometimes needs a second try
@@ -482,7 +495,7 @@ class MainWindow(QMainWindow):
         self._compact_show("list" if key in ("chats", "contacts", "rooms") else "content")
         if key in ("chats", "contacts", "rooms"):
             self.sidebar.show_page(key)
-            if self.stack.currentWidget() in (self.announcements, self.transfers_page, self.directory):
+            if self.stack.currentWidget() in (self.announcements, self.transfers_page, self.directory, self.calendar):
                 if self.chat.conv and getattr(self, "chat_stale", False):
                     self.chat_stale = False
                     self.chat.open(self.chat.conv)
@@ -495,6 +508,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1500, self.announcements.mark_all_read)
         elif key == "transfers":
             self.stack.setCurrentWidget(self.transfers_page)
+        elif key == "calendar":
+            self.calendar.set_room(None) if self.calendar.room_id else None
+            self.stack.setCurrentWidget(self.calendar)
 
     def open_conv(self, conv):
         if not self.store.conv_exists(conv):
@@ -502,7 +518,7 @@ class MainWindow(QMainWindow):
         if not self.isVisible():
             self.show_normal()
         if self.rail_group.checkedButton() in (self.rail["announcements"], self.rail["transfers"],
-                                               self.rail["directory"]):
+                                               self.rail["directory"], self.rail["calendar"]):
             self.rail["chats"].setChecked(True)
             self.sidebar.show_page("chats")
         self.sidebar.set_active(conv)
@@ -846,6 +862,66 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.home)
         self._compact_show("content")
         self.home.rebuild()
+
+    # ======================================================== calendar
+    def open_calendar(self, day=None, room_id=None, view=None):
+        """The calendar page (a room's own calendar when room_id is given), at a day."""
+        self.rail["calendar"].setChecked(True)
+        self._compact_show("content")
+        self.stack.setCurrentWidget(self.calendar)
+        if room_id is not None or self.calendar.room_id:
+            self.calendar.room_id = room_id
+            self.calendar.set_room(room_id)
+        if day:
+            self.calendar.go_to(day, view)
+
+    def _refresh_upcoming_soon(self):
+        self._upcoming_timer.start()
+
+    def _refresh_upcoming(self):
+        """The next two weeks for Home and the meeting reminders."""
+        if not self.conn.online:
+            return
+        today = datetime.date.today()
+
+        def done(reply):
+            if reply.get("ok"):
+                self.store.calendar = reply
+                self.home.schedule()
+        self.conn.request("cal_range", done, start=today.isoformat(),
+                          end=(today + datetime.timedelta(days=14)).isoformat())
+
+    def _check_meetings(self):
+        """Remind me a few minutes before a meeting (Settings: how many), once per meeting."""
+        minutes = int(self.config.get("meeting_reminder_min", 10) or 0)
+        data = self.store.calendar or {}
+        if not minutes or not data:
+            return
+        now = time.time()
+        if not hasattr(self, "_upcoming_fetched") or now - self._upcoming_fetched > 1800:
+            self._upcoming_fetched = now
+            self._refresh_upcoming()
+        for item in data.get("items", []):
+            if item["kind"] != "meeting" or item.get("my_rsvp") == "no" or item["all_day"]:
+                continue
+            key = item["id"]
+            if key in self._reminded or not (0 < item["start"] - now <= minutes * 60):
+                continue
+            self._reminded.add(key)
+            start = datetime.datetime.fromtimestamp(item["start"])
+            room = self.store.rooms.get(int(item["scope_ref"])) if item["scope"] == "room" else None
+            where = f"  ·  # {room['name']}" if room else (f"  ·  {item['location']}" if item.get("location") else "")
+            target = f"r:{room['id']}" if room else f"calendar:{start.date().isoformat()}"
+            self.last_notified_conv = target
+            self.tray.showMessage(f"📅 {item['title']} at {start:%H:%M}",
+                                  f"In {max(1, round((item['start'] - now) / 60))} minutes{where}", self.base_icon, 8000)
+            self.toast(f"📅 {item['title']} at {start:%H:%M}{where}", 6000)
+            if self.config["sounds"]:
+                play_sound()
+
+    def _on_event_invite(self, ev):
+        self.notify(f"📅 {ev.get('from', 'Someone')} invited you", f"{ev.get('title', '')} · {ev.get('when', '')}",
+                    "calendar:" + datetime.date.today().isoformat())
 
     def open_my_space(self):
         self.rail["chats"].setChecked(True)

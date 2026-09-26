@@ -1,6 +1,6 @@
 """Version and product information (used by the apps, the exe file properties and the installers)."""
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.7.0"
 AUTHOR = "Utkarsh Tripathi"
 PUBLISHER = AUTHOR
 PRODUCT_NAME = "Quillo"
