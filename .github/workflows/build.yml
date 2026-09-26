@@ -1,0 +1,127 @@
+# Every push: run all the tests on a fresh Windows machine.
+# A version tag (v1.7.1 ...): also build both installers and open a DRAFT release with them attached,
+# the notes from docs/releases/<tag>.md and the checksums of this build. You only press Publish.
+# "Run workflow" by hand (Actions tab): tests + installers as a download, no release.
+
+name: Tests and build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  QT_QPA_PLATFORM: offscreen
+  PYTHONUTF8: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Run the tests
+        run: python -m unittest discover -s . -p "test_*.py" -v
+
+  installers:
+    needs: tests
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Check the tag matches the version in the code
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import os, sys
+          sys.path.insert(0, ".")
+          from common.version import APP_VERSION
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if tag != APP_VERSION:
+              sys.exit(f"The tag says {tag} but common/version.py says {APP_VERSION} - fix one of them.")
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build the programs and installers
+        run: python build/build.py
+
+      - name: Checksums and release notes
+        shell: python
+        run: |
+          import glob, hashlib, os, re, sys
+          sys.path.insert(0, ".")
+          from common.version import APP_VERSION
+          files = sorted(glob.glob(f"build/output/*-{APP_VERSION}.exe"))
+          if len(files) != 2:
+              sys.exit(f"Expected 2 installers, found: {files}")
+          sums = {os.path.basename(f): hashlib.sha256(open(f, "rb").read()).hexdigest() for f in files}
+          notes_path = f"docs/releases/v{APP_VERSION}.md"
+          notes = open(notes_path, encoding="utf-8").read() if os.path.exists(notes_path) else f"# Quillo {APP_VERSION}\n"
+          lines = []
+          for line in notes.splitlines():
+              for name, digest in sums.items():                  # this build's checksum in the Downloads table
+                  if name in line:
+                      line = re.sub(r"`?[0-9a-f]{64}`?", f"`{digest}`", line)
+              lines.append(line)
+          notes = "\n".join(lines) + "\n"
+          if not all(d in notes for d in sums.values()):
+              notes += "\n## Checksums (SHA-256)\n" + "".join(f"- `{n}`: `{d}`\n" for n, d in sums.items())
+          open("build/output/release-notes.md", "w", encoding="utf-8").write(notes)
+          with open("build/output/SHA256SUMS.txt", "w", encoding="utf-8") as f:
+              f.writelines(f"{d}  {n}\n" for n, d in sums.items())
+          print(open("build/output/SHA256SUMS.txt").read())
+
+      - name: Keep the installers (download from this run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Quillo-installers
+          path: |
+            build/output/*.exe
+            build/output/SHA256SUMS.txt
+          retention-days: 14
+
+      - name: Open a draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          $files = Get-ChildItem build/output/*-$ver.exe | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" $files build/output/SHA256SUMS.txt `
+            --draft --title "Quillo $ver" --notes-file build/output/release-notes.md
