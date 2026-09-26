@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.6.1-1d3a7a?style=for-the-badge"></a>
+  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.6.2-1d3a7a?style=for-the-badge"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Offline, LAN only" src="https://img.shields.io/badge/internet-not%20needed-0f1d4a?style=for-the-badge">
@@ -19,7 +19,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest release</b></a> ·
   <a href="docs/ADMIN.md"><b>Admin & IT guide</b></a> ·
-  <a href="docs/releases/v1.6.1.md"><b>What's new in 1.6.1</b></a>
+  <a href="docs/releases/v1.6.2.md"><b>What's new in 1.6.2</b></a>
 </p>
 
 <p align="center">
@@ -150,7 +150,7 @@ common/        shared: protocol, theme, icons, org views (cards / chart), versio
 assets/        app icon, logo (brand/ holds the master logo), icons, sticker packs
 build/         build script, Inno Setup scripts, service installer
 tools/         icon, banner and sticker generators
-tests/         integration tests against a real server (92 tests)
+tests/         integration tests against a real server (97 tests)
 docs/          admin guide, release notes, images
 ```
 

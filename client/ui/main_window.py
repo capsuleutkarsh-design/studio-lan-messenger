@@ -25,6 +25,25 @@ from client import stickers
 from client.ui.widgets import MeButton, RailButton, first_name, plain, rich_safe
 
 
+def bring_to_front(window):
+    """Windows only lets the app that the user is using take the focus. A click on our notification is the
+    user asking for us, so step past that lock the documented way (a harmless Alt key event), then activate."""
+    if sys.platform != "win32" or not window.isVisible():
+        return
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(window.winId())
+        if user32.GetForegroundWindow() == hwnd:
+            return
+        user32.ShowWindow(hwnd, 9)                     # SW_RESTORE (also un-minimises)
+        user32.keybd_event(0x12, 0, 0, 0)              # Alt down ...
+        user32.keybd_event(0x12, 0, 2, 0)              # ... and up (KEYEVENTF_KEYUP)
+        user32.SetForegroundWindow(hwnd)
+        user32.BringWindowToTop(hwnd)
+    except (AttributeError, OSError):
+        pass
+
+
 def idle_seconds() -> float:
     if sys.platform != "win32":
         return 0
@@ -237,17 +256,23 @@ class MainWindow(QMainWindow):
                 self.show_normal()
 
     def _notification_clicked(self):
+        target = self.last_notified_conv
+        if self.compact and self.isVisible():
+            self._compact_show("content")
         self.show_normal()
-        if self.last_notified_conv == "announcements":
+        if target == "announcements":
+            self.rail["announcements"].setChecked(True)
             self.rail_clicked("announcements")
-        elif self.last_notified_conv and self.store.conv_exists(self.last_notified_conv):
-            self.open_conv(self.last_notified_conv)
+        elif target and self.store.conv_exists(target):
+            self.open_conv(target)
+        QTimer.singleShot(150, lambda: bring_to_front(self))    # Windows sometimes needs a second try
 
     def show_normal(self):
         self.show()
         self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
         self.raise_()
         self.activateWindow()
+        bring_to_front(self)
         T.dark_title_bar(self)
         if self.config["compact_mode"] and not self.compact:
             QTimer.singleShot(0, lambda: self.set_compact(True))
@@ -535,6 +560,7 @@ class MainWindow(QMainWindow):
         if sound and self.config["sounds"]:
             play_sound()
         if sound:
+            self.last_notified_conv = r.get("conv") or None       # clicking it opens that chat
             self.tray.showMessage("⏰ Reminder", r.get("text") or r.get("snippet", ""), self.base_icon, 5000)
 
     def buzzed(self, msg):
@@ -839,11 +865,17 @@ class MainWindow(QMainWindow):
         except (AttributeError, OSError):
             return False
 
+    @staticmethod
+    def _per_user_install():
+        """Installed "just for me" (under %LOCALAPPDATA%): updating needs no administrator."""
+        base = os.path.normcase(os.path.abspath(os.environ.get("LOCALAPPDATA", "") or "~"))
+        return os.path.normcase(os.path.abspath(sys.executable)).startswith(base + os.sep)
+
     def _on_update_available(self, info):
         if not info or not self._is_newer(info["version"]) or not getattr(sys, "frozen", False):
             return
         self.pending_update = info
-        if self._is_admin_user():
+        if self._is_admin_user() or self._per_user_install():
             self.update_label.setText(f"Quillo {info['version']} is available.")
             self.update_btn.show()
         else:
@@ -851,6 +883,24 @@ class MainWindow(QMainWindow):
                                       "please ask IT to update this PC.")
             self.update_btn.hide()
         self.update_bar.show()
+
+    def check_for_updates(self, parent=None):
+        """Settings > Check for updates: ask the server now and say what it offers."""
+        from common.version import APP_VERSION
+
+        def done(reply):
+            info = reply.get("update") if reply.get("ok") else None
+            if not reply.get("ok"):
+                QMessageBox.information(parent or self, "Updates", reply.get("error", "Not connected"))
+            elif info and self._is_newer(info["version"]):
+                self._on_update_available(info)
+                QMessageBox.information(parent or self, "Updates",
+                                        f"Quillo {info['version']} is available (this PC has {APP_VERSION}).\n"
+                                        + ("Use 'Update now' in the bar at the top of the window."
+                                           if self.update_btn.isVisible() else "Please ask IT to update this PC."))
+            else:
+                QMessageBox.information(parent or self, "Updates", f"Quillo {APP_VERSION} is up to date.")
+        self.conn.request("update_check", done)
 
     def install_update(self):
         info = self.pending_update
@@ -872,8 +922,12 @@ class MainWindow(QMainWindow):
                 return
             self.update_label.setText("Installing the update — Quillo restarts by itself...")
             # The installer closes this app (Restart Manager) and opens it again afterwards.
-            rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", dest,
-                                                     "/SILENT /SUPPRESSMSGBOXES /NORESTART", None, 1)
+            if self._per_user_install():         # same place, same mode: no administrator prompt
+                rc = ctypes.windll.shell32.ShellExecuteW(None, "open", dest,
+                                                         "/SILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER", None, 1)
+            else:
+                rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", dest,
+                                                         "/SILENT /SUPPRESSMSGBOXES /NORESTART", None, 1)
             if rc <= 32:
                 self.update_label.setText("The update was not started (administrator permission needed).")
                 self.update_btn.setEnabled(True)

@@ -40,6 +40,8 @@ DEFAULTS = {
     "message_retention_days": 90,    # 0 = keep every message in the app forever
     # "buzz": shake the other person's window, even when they are busy
     "buzz_enabled": True,
+    # people may change their own display name (Profile); admins can always change it in the console
+    "allow_name_change": True,
     # admins may open any conversation from the console (users are told at sign-in)
     "admin_review_enabled": True,
 }

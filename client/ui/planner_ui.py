@@ -6,8 +6,8 @@ import time
 from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QDateTimeEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QPlainTextEdit,
-    QPushButton, QVBoxLayout,
+    QComboBox, QDateTimeEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout,
 )
 
 from common import theme as T
@@ -24,7 +24,8 @@ def presets():
     """[(label, timestamp)] for quick picks, soonest first."""
     now = datetime.datetime.now()
     today, tomorrow = now.date(), now.date() + datetime.timedelta(days=1)
-    out = [("In 20 minutes", time.time() + 20 * 60), ("In 1 hour", time.time() + 3600),
+    out = [("In 1 minute", time.time() + 60), ("In 5 minutes", time.time() + 5 * 60),
+           ("In 20 minutes", time.time() + 20 * 60), ("In 1 hour", time.time() + 3600),
            ("In 3 hours", time.time() + 3 * 3600)]
     if now.hour < 17:
         out.append(("This evening, 18:00", _at(today, 18)))
@@ -50,7 +51,7 @@ def fmt_due(ts):
     d = datetime.datetime.fromtimestamp(ts)
     today = datetime.date.today()
     if d.date() == today:
-        return f"Today {d:%H:%M}"
+        return f"Today {d:%H:%M:%S}" if d.second else f"Today {d:%H:%M}"
     if d.date() == today + datetime.timedelta(days=1):
         return f"Tomorrow {d:%H:%M}"
     if d.date().year == today.year:
@@ -113,13 +114,33 @@ class TimeDialog(QDialog):
         self.typed.addAction(icon("clock", T.FAINT, 16), QLineEdit.LeadingPosition)
         self.typed.textChanged.connect(self._typed)
         lay.addWidget(self.typed)
+        # "in [ 30 ] [seconds v]" - any delay, to the second
+        after = QHBoxLayout()
+        after.setSpacing(6)
+        after.addWidget(QLabel("In"))
+        self.after_n = QSpinBox()
+        self.after_n.setRange(1, 9999)
+        self.after_n.setValue(30)
+        self.after_n.setMinimumHeight(34)
+        after.addWidget(self.after_n)
+        self.after_unit = QComboBox()
+        for label, secs in (("seconds", 1), ("minutes", 60), ("hours", 3600), ("days", 86400)):
+            self.after_unit.addItem(label, secs)
+        self.after_unit.setCurrentIndex(1)
+        self.after_unit.setMinimumHeight(34)
+        after.addWidget(self.after_unit)
+        use = QPushButton("Use")
+        use.clicked.connect(self._use_after)
+        after.addWidget(use)
+        after.addStretch(1)
+        lay.addLayout(after)
         self.typed_hint = QLabel()
         self.typed_hint.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; padding-left: 4px;")
         self.typed_hint.hide()
         lay.addWidget(self.typed_hint)
         self.edit = QDateTimeEdit(QDateTime.fromSecsSinceEpoch(int(initial or time.time() + 3600)))
         self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("ddd dd MMM yyyy   HH:mm")
+        self.edit.setDisplayFormat("ddd dd MMM yyyy   HH:mm:ss")
         self.edit.setMinimumDateTime(QDateTime.currentDateTime())
         self.edit.setMinimumHeight(36)
         lay.addWidget(self.edit)
@@ -135,6 +156,13 @@ class TimeDialog(QDialog):
         super().showEvent(e)
         T.dark_title_bar(self)
 
+    def _use_after(self):
+        ts = time.time() + self.after_n.value() * self.after_unit.currentData()
+        self.edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(round(ts))))
+        self.typed_hint.setText(f"✓  {fmt_due(ts)}")
+        self.typed_hint.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; padding-left: 4px;")
+        self.typed_hint.show()
+
     def _typed(self, text):
         from client.when import parse_when
         ts = parse_when(text) if text.strip() else None
@@ -148,7 +176,7 @@ class TimeDialog(QDialog):
             self.typed_hint.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; padding-left: 4px;")
 
     def timestamp(self):
-        return self.edit.dateTime().toSecsSinceEpoch()
+        return max(self.edit.dateTime().toSecsSinceEpoch(), time.time() + 1)
 
     def message(self):
         return self.text.toPlainText().strip() if self.text else ""

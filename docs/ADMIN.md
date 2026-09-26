@@ -75,7 +75,12 @@ can also connect to a server on another PC (admin / IT login).
 ## 3. Designations and permissions
 
 Every person has a **department**, a **section** (e.g. Compositing → Roto), a **designation** and a **Reports to**.
-Designations carry the permissions (console → *Designations*). Defaults:
+Designations carry the permissions (console → *Designations*). Since 1.6.2 every server also has a full VFX
+list - Studio Head, VFX Supervisor, VFX Producer, DFX / CG / Compositing / FX / Lighting / Animation / Roto-Paint /
+Matchmove / DMP supervisors, Line Producer, Production Manager and Coordinator, discipline leads, Compositor, FX
+Artist, Lighting TD, Animator, Modeler, Rigger, Matte Painter, Matchmove / Roto / Paint / Prep artists, Pipeline TD,
+Render Wrangler, Data I/O and more - with sensible permissions. Rename, change or delete any of them; deleted ones
+do not come back. The original defaults:
 
 | Designation | Announce to | Create rooms | Reset passwords / disable accounts | Always visible |
 |---|---|---|---|---|
@@ -127,10 +132,15 @@ IP in it.
 1. **Back up first**: console → **Settings → Back up now**.
 2. **Server first:** run the new server setup over the old one. Accounts, messages, files and settings are kept;
    the database updates itself on start.
-3. **Then the clients:** either run the new client setup on each PC (it closes and restarts a running client and
-   keeps everyone's settings), or copy `Quillo-Client-Setup-x.y.z.exe` into the server's `updates` folder
-   (console → *Client updates*). Signed-in users then see "version x.y.z is available"; people who are
-   administrators on their PC install it with one click, everyone else is told to ask IT.
+   On the server PC you can also use console → **Updates → Update this server...** and pick the new
+   `Quillo-Server-Setup-x.y.z.exe`: the console closes, the setup runs and people reconnect by themselves.
+3. **Then the clients:** console → **Updates → Publish client update...** and pick the new
+   `Quillo-Client-Setup-x.y.z.exe` (or copy it into the server's `updates` folder yourself). Signed-in PCs are
+   told straight away and show "version x.y.z is available". PCs where Quillo was installed *just for me* update
+   with one click and **no administrator**; PCs installed *for all users* ask for an administrator (or run the
+   setup with your deployment tool). People can also press *Settings → Check for updates*.
+   The **Updates** page lists which versions the signed-in PCs run, so you can see who is behind; *Online now*
+   shows it per person.
 
 ## 6. Running the server: service, data, backups
 

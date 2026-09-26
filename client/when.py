@@ -11,12 +11,13 @@ DAYS = {"mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1, "wed": 2, "wed
         "sun": 6, "sunday": 6}
 MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
                                       "dec"), 1)}
-UNITS = {"m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600,
+UNITS = {"s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600,
          "hour": 3600, "hours": 3600, "d": 86400, "day": 86400, "days": 86400, "w": 604800, "week": 604800,
          "weeks": 604800}
 DEFAULT_TIME = (9, 0)            # a day without a time means the start of the working day
 
-_TIME = re.compile(r"\b(?:at\s+)?(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\b|\b(noon|midday|evening|morning|tonight)\b")
+_TIME = re.compile(r"\b(?:at\s+)?(\d{1,2})(?:[:.](\d{2}))?(?::(\d{2}))?\s*(am|pm)?\b"
+                   r"|\b(noon|midday|evening|morning|tonight)\b")
 _IN = re.compile(r"^in\s+(\d+(?:\.\d+)?)\s*([a-z]+)$")
 _DATE_DM = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*(?:\s+(\d{4}))?\b")        # 28 sep [2026]
 _DATE_MD = re.compile(r"\b([a-z]{3})[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b")        # sep 28 [2026]
@@ -70,17 +71,17 @@ def parse_when(text, now=None):
     hm = None
     m = _TIME.search(rest)
     if m:
-        if m.group(4):
-            hm = _WORDS[m.group(4)]
+        if m.group(5):
+            hm = _WORDS[m.group(5)]
         else:
-            h, mi, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+            h, mi, sec, ampm = int(m.group(1)), int(m.group(2) or 0), int(m.group(3) or 0), m.group(4)
             if ampm == "pm" and h < 12:
                 h += 12
             elif ampm == "am" and h == 12:
                 h = 0
-            if h > 23 or mi > 59:
+            if h > 23 or mi > 59 or sec > 59:
                 return None
-            hm = (h, mi)
+            hm = (h, mi, sec)
         rest = rest.replace(m.group(0), " ")
     if re.sub(r"\b(at|on|next|this)\b", " ", rest).strip():
         return None                          # words we did not understand: better to say so than guess
