@@ -167,8 +167,11 @@ class Store(QObject):
 
     def designation_line(self, u):
         """'Lead · Compositing · Roto'"""
-        return " · ".join(x for x in (u.get("designation") or u.get("title"), u.get("department"),
-                                       u.get("section")) if x)
+        parts = []
+        for x in (u.get("designation") or u.get("title"), u.get("department"), u.get("section")):
+            if x and x.lower() not in (p.lower() for p in parts):
+                parts.append(x)
+        return " · ".join(parts)
 
     # ----------------------------------------------------------- bootstrap
     def reset(self):

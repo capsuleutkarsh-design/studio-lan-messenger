@@ -16,6 +16,40 @@ from server.core import ServerCore  # noqa: E402
 PORT = 15850
 
 
+def check_departments_page(test, win, api):
+    """The Departments page shows departments with their sections; ticking Chat room turns the room on."""
+    from PySide6.QtCore import Qt
+    from server.admin_gui import DepartmentsPage
+    page = next(p for _t, _i, p in win.pages if isinstance(p, DepartmentsPage))
+    page.refresh()
+    test.assertTrue(page.tree.isHidden())                      # empty state first
+    test.assertFalse(page.empty.isHidden())
+    comp = api.call("admin_save_department", None, "Compositing")
+    api.call("admin_save_department", None, "Roto", comp)
+    api.call("admin_create_user", must_change=False, username="roto1", password="Artist2026",
+             department="Compositing", section="Roto")
+    page.refresh()
+    test.assertEqual(page.tree.topLevelItemCount(), 1)
+    top = page.tree.topLevelItem(0)
+    test.assertEqual((top.text(0), top.text(1), top.childCount()), ("Compositing", "1", 1))
+    top.setCheckState(2, Qt.Checked)                           # what a click does
+    QApplication.processEvents()
+    test.assertTrue(next(d for d in api.call("admin_departments") if d["id"] == comp)["has_room"])
+    test.assertTrue(any(r["name"] == "Compositing" and r["auto"] for r in api.call("admin_rooms")))
+    page.refresh()
+    test.assertEqual(page.tree.topLevelItem(0).checkState(2), Qt.Checked)
+    # the user dialog only offers these departments, and sections of the chosen one
+    from server.admin_gui import UserDialog
+    users = api.call("admin_users")
+    user = next(u for u in users if u["username"] == "roto1")
+    dlg = UserDialog(win, user, users, [], api.call("admin_departments"))
+    test.assertFalse(dlg.department.isEditable())
+    test.assertEqual((dlg.values()["department"], dlg.values()["section"]), ("Compositing", "Roto"))
+    dlg.department.setCurrentIndex(0)                          # (none): no sections to pick
+    test.assertEqual((dlg.values()["department"], dlg.values()["section"], dlg.section.count()), ("", "", 1))
+    dlg.deleteLater()
+
+
 class ConsoleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -54,6 +88,11 @@ class ConsoleTest(unittest.TestCase):
         self.core.call(self.core.backup_now)
         self.refresh_all()
         self.core.last_chat_backup = {"time": 0, "ok": False, "error": "disk full", "folder": "x"}
+        self.refresh_all()
+
+    def test_departments_page(self):
+        self.core.start()
+        check_departments_page(self, self.win, self.win.api)
         self.refresh_all()
 
     def test_a_window_error_does_not_stop_the_server(self):
@@ -130,6 +169,12 @@ class RemoteConsoleTest(unittest.TestCase):
         for i in range(len(self.win.pages)):
             self.win.show_page(i)
         self.win.update_state()
+
+    def test_departments_page_over_the_network(self):
+        check_departments_page(self, self.win, self.api)
+        for title, _icon, page in self.win.pages:
+            with self.subTest(page=title):
+                page.refresh()
 
 
 if __name__ == "__main__":

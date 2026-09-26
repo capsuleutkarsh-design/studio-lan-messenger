@@ -175,6 +175,13 @@ CREATE TABLE IF NOT EXISTS reactions(
     created_at REAL NOT NULL,
     PRIMARY KEY(message_id, user_id, emoji)
 );
+CREATE TABLE IF NOT EXISTS departments(
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_id INTEGER NULL REFERENCES departments(id),
+    has_room INTEGER NOT NULL DEFAULT 0,
+    created_at REAL
+);
 """
 
 # Columns added after v1: (table, column, definition). Applied on startup if missing.
@@ -253,6 +260,8 @@ class Database:
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA synchronous=NORMAL")
+        new_departments = not self.con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='departments'").fetchone()
         self.con.executescript(SCHEMA)
         added = set()
         for table, column, definition in MIGRATIONS:
@@ -266,7 +275,56 @@ class Database:
         if not self.con.execute("SELECT 1 FROM roles LIMIT 1").fetchone():
             self.con.executemany(f"INSERT INTO roles({', '.join(ROLE_FIELDS)}) VALUES(?,?,?,?,?,?,?)",
                                  DEFAULT_ROLES)
+        if new_departments:
+            self._seed_departments()
         self.con.commit()
+
+    def _seed_departments(self):
+        """One-time move from free-text departments to the managed list.
+
+        The departments and sections people already have become entries (without a chat room), users' text is
+        set to one spelling per name, and the old automatic department/section rooms become normal rooms so
+        their history stays. Ticking "Chat room" later picks the old room up again (see released_room)."""
+        now = time.time()
+        depts, sects = {}, {}            # lower name -> id ; (dept id, lower section) -> id
+        rows = self.con.execute("SELECT id, department, section FROM users WHERE deleted=0 ORDER BY id").fetchall()
+        for uid, dept, sect in rows:
+            dept, sect = clean_label(dept) if dept.strip() else "", clean_label(sect) if sect.strip() else ""
+            if not dept:
+                continue
+            if dept.lower() not in depts:
+                depts[dept.lower()] = self.con.execute(
+                    "INSERT INTO departments(name, parent_id, has_room, created_at) VALUES(?,NULL,0,?)",
+                    (dept, now)).lastrowid
+            dept_id = depts[dept.lower()]
+            if sect and (dept_id, sect.lower()) not in sects:
+                sects[(dept_id, sect.lower())] = self.con.execute(
+                    "INSERT INTO departments(name, parent_id, has_room, created_at) VALUES(?,?,0,?)",
+                    (sect, dept_id, now)).lastrowid
+        names = {r[0]: r[1] for r in self.con.execute("SELECT id, name FROM departments")}
+        for uid, dept, sect in rows:            # one spelling per name ("comp" and "Comp" become the same)
+            dept_id = depts.get(clean_label(dept).lower()) if dept.strip() else None
+            new_dept = names[dept_id] if dept_id else ""
+            sect_id = sects.get((dept_id, clean_label(sect).lower())) if dept_id and sect.strip() else None
+            new_sect = names[sect_id] if sect_id else ""
+            if (new_dept, new_sect) != (dept, sect):
+                self.con.execute("UPDATE users SET department=?, section=? WHERE id=?", (new_dept, new_sect, uid))
+        # old automatic rooms: keep them (and their history) as normal rooms
+        old = self.con.execute("SELECT id, auto_key FROM rooms WHERE deleted=0 AND"
+                               " (auto_key LIKE 'dept:%' OR auto_key LIKE 'sect:%')").fetchall()
+        for room_id, key in old:
+            kind, _, value = key.partition(":")
+            new_id = None
+            if kind == "dept":
+                new_id = depts.get(value)
+            else:
+                d, _, s = value.partition("\x1f")
+                new_id = sects.get((depts.get(d), s))
+            if new_id:
+                key = f"{'dept' if kind == 'dept' else 'sect'}#{new_id}"
+                self.con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?,?)",
+                                 (f"released_room:{key}", str(room_id)))
+        self.con.execute("UPDATE rooms SET auto_key=NULL WHERE auto_key LIKE 'dept:%' OR auto_key LIKE 'sect:%'")
 
     def close(self):
         self.con.close()
@@ -408,6 +466,98 @@ class Database:
 
     def role_usage(self):
         return dict(self._all("SELECT role_id, COUNT(*) FROM users WHERE deleted=0 GROUP BY role_id"))
+
+    # ------------------------------------------------------------ departments
+    # A row without parent_id is a department; a row with one is a section of that department.
+    # Users keep the names as text (announcements, the org views and the client read them from there).
+    def list_departments(self):
+        return self._all("SELECT * FROM departments ORDER BY name COLLATE NOCASE")
+
+    def get_department(self, dept_id):
+        return self._one("SELECT * FROM departments WHERE id=?", dept_id) if dept_id else None
+
+    def find_department(self, name, parent_id=None):
+        """Case-insensitive lookup of a department (or of a section when parent_id is given)."""
+        name = (name or "").strip().lower()
+        for r in self._all("SELECT * FROM departments WHERE parent_id IS ?", parent_id):
+            if r["name"].lower() == name:
+                return r
+        return None
+
+    def _members_of(self, dept):
+        """Ids of (not deleted) users in a department or section row."""
+        if dept["parent_id"] is None:
+            name, section = dept["name"].lower(), None
+        else:
+            parent = self.get_department(dept["parent_id"])
+            name, section = (parent["name"].lower() if parent else None), dept["name"].lower()
+        return [r[0] for r in self._all("SELECT id, department, section FROM users WHERE deleted=0")
+                if r[1].strip().lower() == name and (section is None or r[2].strip().lower() == section)]
+
+    def department_usage(self) -> dict:
+        """{department id: number of people} (a department counts everyone in it, its sections included)."""
+        rows = self.list_departments()
+        people = {}
+        for r in self._all("SELECT department, section FROM users WHERE deleted=0"):
+            key = (r[0].strip().lower(), r[1].strip().lower())
+            people[key] = people.get(key, 0) + 1
+        names = {r["id"]: r["name"].lower() for r in rows}
+        out = {}
+        for r in rows:
+            if r["parent_id"] is None:
+                out[r["id"]] = sum(n for (d, _), n in people.items() if d == names[r["id"]])
+            else:
+                out[r["id"]] = people.get((names.get(r["parent_id"]), r["name"].lower()), 0)
+        return out
+
+    def _check_department_name(self, name, parent_id, dept_id=None):
+        what = "Section" if parent_id else "Department"
+        name = check_label(name, f"{what} name")
+        if not name:
+            raise ValueError(f"{what} name is required")
+        other = self.find_department(name, parent_id)
+        if other and other["id"] != dept_id:
+            raise ValueError(f"{what} '{other['name']}' already exists")
+        return name
+
+    def create_department(self, name, parent_id=None) -> int:
+        if parent_id is not None:
+            parent = self.get_department(parent_id)
+            if not parent or parent["parent_id"] is not None:
+                raise ValueError("Sections can only be added to a department")
+        name = self._check_department_name(name, parent_id)
+        return self._exec("INSERT INTO departments(name, parent_id, has_room, created_at) VALUES(?,?,0,?)",
+                          name, parent_id, time.time()).lastrowid
+
+    def rename_department(self, dept_id, name):
+        """Rename a department/section and every user's text with it. Returns the old name."""
+        dept = self.get_department(dept_id)
+        if not dept:
+            raise ValueError("Department not found")
+        name = self._check_department_name(name, dept["parent_id"], dept_id)
+        members = self._members_of(dept)
+        column = "department" if dept["parent_id"] is None else "section"
+        with self.con:
+            self.con.execute("UPDATE departments SET name=? WHERE id=?", (name, dept_id))
+            self.con.executemany(f"UPDATE users SET {column}=? WHERE id=?", [(name, uid) for uid in members])
+        return dept["name"]
+
+    def set_department_room(self, dept_id, has_room):
+        self._exec("UPDATE departments SET has_room=? WHERE id=?", int(bool(has_room)), dept_id)
+
+    def delete_department(self, dept_id):
+        """Delete a department (with its sections) or a section - only when nobody is in it."""
+        dept = self.get_department(dept_id)
+        if not dept:
+            raise ValueError("Department not found")
+        people = len(self._members_of(dept))
+        if people:
+            what = "department" if dept["parent_id"] is None else "section"
+            raise ValueError(f"{people} {'person is' if people == 1 else 'people are'} still in the {what} "
+                             f"'{dept['name']}'. Move them to another {what} on the Users page first.")
+        with self.con:
+            self.con.execute("DELETE FROM departments WHERE parent_id=?", (dept_id,))
+            self.con.execute("DELETE FROM departments WHERE id=?", (dept_id,))
 
     def set_status_msg(self, user_id: int, msg: str, emoji: str = "", until: float | None = None):
         self._exec("UPDATE users SET status_msg=?, status_emoji=?, status_until=? WHERE id=?",
@@ -594,6 +744,10 @@ class Database:
 
     def auto_rooms(self):
         return self._all("SELECT * FROM rooms WHERE deleted=0 AND auto_key IS NOT NULL")
+
+    def set_room_auto_key(self, room_id: int, auto_key):
+        """None turns an automatic room into a normal one (members and history stay)."""
+        self._exec("UPDATE rooms SET auto_key=? WHERE id=?", auto_key, room_id)
 
     def get_room(self, room_id: int):
         return self._one("SELECT * FROM rooms WHERE id=? AND deleted=0", room_id)

@@ -40,10 +40,9 @@ class SecurityTest(unittest.TestCase):
     def test_default_admin_must_change_password(self):
         a = Client("admin", "admin")
         self.assertEqual(a.login["op"], "login_ok")
-        self.assertTrue(a.login.get("must_change_password"))
+        self.assertTrue(a.login.get("must_change_password"))                               # everyone knows admin/admin
         self.assertFalse(a.request("send", conv=f"u:{self.artist}", text="hi")["ok"])      # blocked until changed
-        self.assertFalse(a.request("change_password", old="admin", new="admin123")["ok"])   # too easy
-        self.assertFalse(a.request("change_password", old="admin", new="abcdefgh")["ok"])   # no digit
+        self.assertFalse(a.request("change_password", old="admin", new="ADMIN")["ok"])     # not 'admin' again
         self.assertFalse(a.request("change_password", old="admin", new="ab1")["ok"])        # too short
         r = a.request("change_password", old="admin", new="Studio2026")
         self.assertTrue(r["ok"], r)
@@ -53,18 +52,52 @@ class SecurityTest(unittest.TestCase):
         self.assertFalse(b.login.get("must_change_password"))
         b.close()
 
-    def test_new_users_must_change_and_rules_apply(self):
+    def test_simple_passwords_by_default(self):
         c = self.core
         with self.assertRaises(ValueError):
-            c.call(c.admin_create_user, username="weak", password="1234")
-        c.call(c.admin_create_user, username="newbie", password="Welcome2026")
-        n = Client("newbie", "Welcome2026")
-        self.assertTrue(n.login.get("must_change_password"))
+            c.call(c.admin_create_user, username="short", password="abc")                 # 4 characters minimum
+        c.call(c.admin_create_user, username="easy", password="1234")                     # allowed now
+        n = Client("easy", "1234")
+        self.assertEqual(n.login["op"], "login_ok")
+        self.assertFalse(n.login.get("must_change_password"))                             # keeps the admin's password
         n.close()
+
+    def test_stricter_rules_when_switched_on(self):
+        c = self.core
+        c.config.update(password_require_mix=True, password_block_weak=True, force_password_change=True,
+                        min_password_length=6)
+        try:
+            for pw in ("123456", "abcdefgh", "strict1"):       # common / no digit / same as the username
+                with self.assertRaises(ValueError):
+                    c.call(c.admin_create_user, username="strict1" if pw == "strict1" else "strict", password=pw)
+            c.call(c.admin_create_user, username="newbie", password="Welcome2026")
+            n = Client("newbie", "Welcome2026")
+            self.assertTrue(n.login.get("must_change_password"))
+            n.close()
+        finally:
+            c.config.update(password_require_mix=False, password_block_weak=False, force_password_change=False,
+                            min_password_length=4)
+
+    def test_old_default_password_settings_are_relaxed_on_upgrade(self):
+        import json
+        import tempfile
+        from server.config import ServerConfig
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "config.json"), "w") as f:
+            json.dump({"min_password_length": 6, "password_require_mix": True}, f)
+        cfg = ServerConfig(d)
+        self.assertEqual(cfg["min_password_length"], 4)
+        self.assertIs(cfg["password_require_mix"], False)
+        with open(os.path.join(d, "config.json"), "w") as f:                          # an admin's own choice
+            json.dump({"min_password_length": 10, "password_require_mix": True, "settings_version": 2}, f)
+        cfg = ServerConfig(d)
+        self.assertEqual(cfg["min_password_length"], 10)
+        self.assertIs(cfg["password_require_mix"], True)
 
     def test_audit_log(self):
         c = self.core
         uid = c.call(c.admin_create_user, must_change=False, username="audited", password="Audit2026")
+        c.call(c.admin_save_department, None, "FX")
         c.call(c.admin_update_user, uid, department="FX")
         c.call(c.admin_update_user, uid, disabled=1)
         actions = [(e["action"], e["target"]) for e in c.call(c.admin_audit, "audited")]

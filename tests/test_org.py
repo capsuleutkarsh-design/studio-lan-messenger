@@ -31,6 +31,13 @@ class OrgTest(unittest.TestCase):
         cls.core = c = ServerCore(cls.tmp)
         c.config.update(tcp_port=PORT, discovery_port=PORT + 1)
         c.start()
+        # departments are managed on the Departments page; Compositing and its sections get a chat room
+        comp = c.call(c.admin_save_department, None, "Compositing")
+        c.call(c.admin_set_department_room, comp, True)
+        for sect in ("Roto", "Paint"):
+            c.call(c.admin_set_department_room, c.call(c.admin_save_department, None, sect, comp), True)
+        for dept in ("Lighting", "Admin"):
+            c.call(c.admin_save_department, None, dept)
 
         def mk(username, dept, section, designation, reports_to=""):
             return c.call(c.admin_create_user, must_change=False, username=username, password="Artist2026",
@@ -67,7 +74,9 @@ class OrgTest(unittest.TestCase):
         c = self.core
         roto = next(r for r in c.call(c.admin_rooms) if r["name"] == "Compositing · Roto")
         self.assertIn(self.paint, roto["members"])
-        self.assertFalse(any(r["name"] == "Compositing · Paint" for r in c.call(c.admin_rooms)))
+        paint = next(r for r in c.call(c.admin_rooms) if r["name"] == "Compositing · Paint")
+        self.assertNotIn(self.paint, paint["members"])          # a ticked room stays, even when empty
+        self.assertFalse(any(r["name"] == "Lighting" for r in c.call(c.admin_rooms)))   # not ticked: no room
         self.core.call(self.core.admin_update_user, self.paint, section="Paint")
         a.close()
 

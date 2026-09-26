@@ -76,7 +76,12 @@ def summary(msg):
     if msg.get("kind") == "poll":
         return f"📊 Poll: {msg.get('body', '')}"
     if msg.get("body"):
-        return msg["body"]
+        from client.ui.chat_view import is_nuke, is_snippet
+        body = msg["body"]
+        if msg.get("kind", "text") == "text" and is_snippet(body):
+            lines = body.count("\n") + 1
+            return f"📄 {'Nuke script' if is_nuke(body) else 'Long text'} · {lines:,} lines"
+        return body
     if msg.get("file"):
         return f"📎 {msg['file']['name']}"
     return ""

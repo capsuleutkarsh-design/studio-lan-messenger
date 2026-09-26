@@ -93,6 +93,20 @@ class HomeScreenTest(unittest.TestCase):
             self.ctl.main.home.rebuild()
             settle(self.app)
 
+    def test_home_fits_the_window(self):
+        """Nothing on the home page may be wider than the window (there is no sideways scrolling)."""
+        main, home = self.ctl.main, self.ctl.main.home
+        try:
+            for width in (1600, 1280, 1000, 820):
+                main.resize(width, 760)
+                settle(self.app, 0.4)
+                home.rebuild()
+                settle(self.app, 0.4)
+                need, have = home.col.minimumSizeHint().width(), home.area.viewport().width() - 64
+                self.assertLessEqual(need, have, f"home needs {need}px but has {have}px at window width {width}")
+        finally:
+            main.resize(1200, 700)
+
 
 if __name__ == "__main__":
     unittest.main()

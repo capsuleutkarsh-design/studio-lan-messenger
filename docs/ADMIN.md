@@ -57,14 +57,18 @@ can also connect to a server on another PC (admin / IT login).
 
 1. Sign in as **admin / admin**. You must choose a new password straight away.
 2. **Designations**: rename or add titles to match your studio (see below).
-3. **Users → Add user**, or **Import CSV** with the columns
+3. **Departments**: add your departments, and sections inside them (select a department → *Add section*).
+   Tick **Chat room** for each department or section that should have its own room (see below).
+4. **Users → Add user**, or **Import CSV** with the columns
    `username,password,display_name,department,section,designation,reports_to,title`
-   (`reports_to` = the lead's username; `designation` must match a name on the Designations page).
-   New users choose their own password at their first sign-in.
-4. **Settings**: backup folder (ideally another disk), password rules, file size and clean-up, pipeline API,
+   (`reports_to` = the lead's username; `designation` must match a name on the Designations page;
+   `department` / `section` must already exist on the Departments page).
+   People sign in with the password you give them (to make them pick their own at first sign-in,
+   tick it in Settings → Passwords).
+5. **Settings**: backup folder (ideally another disk), password rules, file size and clean-up, pipeline API,
    chat review.
-5. Department and section rooms appear by themselves. Use **Rooms → New room** for projects.
-6. **Org chart** shows who reports to whom; people without a lead appear under *Not in a reporting line*.
+6. Use **Rooms → New room** for projects.
+7. **Org chart** shows who reports to whom; people without a lead appear under *Not in a reporting line*.
 
 ## 3. Designations and permissions
 
@@ -82,8 +86,17 @@ Designations carry the permissions (console → *Designations*). Defaults:
 | Junior Artist, Trainee | — | | | |
 
 Anyone with people reporting to them can also announce to **My team**. A designation can be limited to
-"see only own department". Automatic rooms: one per department and per section (optionally "All Studio");
-membership follows each person's department and section.
+"see only own department".
+
+**Departments page.** You create the departments and sections; on the Users page each person is then
+picked from that list (no free typing). Nothing gets a room by itself: tick **Chat room** next to a department
+or section and its room appears, with members kept in step with people's department/section. Unticking it (or
+deleting the department) keeps the room and its history as a normal room — delete it on the Rooms page if it
+is not needed; ticking again continues the same room. Renaming a department or section renames it for
+everyone in it and renames its room. A department or section can only be deleted when nobody is in it
+(deleting a department also deletes its sections). The "All Studio" room is still a switch in Settings.
+When upgrading, the departments and sections people already had are added to the list (without chat rooms),
+and the old automatic rooms stay as normal rooms; ticking Chat room picks the old room up again.
 
 ## 4. Install the clients
 
@@ -95,8 +108,8 @@ VLAN. Add `/ALLUSERS` or `/CURRENTUSER` to a silent install to skip the question
 Silent install (GPO, PDQ Deploy, login script…):
 
 ```
-LANMessenger-Client-Setup-1.5.4.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
-LANMessenger-Client-Setup-1.5.4.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
+LANMessenger-Client-Setup-1.5.5.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /SERVER=192.168.1.10
+LANMessenger-Client-Setup-1.5.5.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS /MERGETASKS="autostart,!desktopicon"
 ```
 
 Per-user settings live in `%APPDATA%\LANMessenger\`, the photo and preview cache in `%LOCALAPPDATA%\LANMessenger\`,
@@ -210,8 +223,10 @@ The server setup allows the server program through Windows Firewall, which cover
 
 - **Encrypted connections (TLS).** The server makes its own certificate; each PC remembers the server's fingerprint
   (shown on the console Dashboard) and refuses to send a password to a different machine pretending to be the server.
-- **Passwords:** rules for length and letters + digits, common passwords refused, forced change at first sign-in and
-  after an admin reset, 60-second lock-out after 5 wrong passwords. Remembered passwords are encrypted with
+- **Passwords:** simple by default (at least 4 characters); the built-in admin/admin must be changed. Stricter
+  rules are switches in Settings → Passwords: minimum length, letters + digits, refuse easy passwords, make
+  people choose their own password at first sign-in and after a reset, expiry. Always on: a 60-second lock-out
+  after 5 wrong passwords. Remembered passwords are encrypted with
   Windows DPAPI.
 - **Audit log** of users, designations, rooms, settings, password resets, photo removals and chat reviews.
 - **Chat review** (for HR / policy cases): an administrator can read a user's conversations. Every review is logged,

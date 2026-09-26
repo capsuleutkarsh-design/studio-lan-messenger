@@ -60,10 +60,10 @@ class MemberPicker(QWidget):
         self.list.setMinimumHeight(260)
         users = sorted(store.users.values(), key=lambda u: (u["department"].lower(), u["name"].lower()))
         for u in users:
-            if u["id"] in exclude:
+            if u["id"] in exclude or u.get("username") == "admin":     # the built-in console account
                 continue
             line = store.designation_line(u)
-            it = QListWidgetItem(f"{u['name']}" + (f"   ·  {line}" if line else ""))
+            it = QListWidgetItem(f"{u['name']}" + (f"  ·  {line}" if line else ""))
             it.setData(Qt.UserRole, u["id"])
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if u["id"] in checked else Qt.Unchecked)
@@ -469,8 +469,8 @@ class ChangePasswordDialog(Dialog):
         form.addRow("New password", self.new)
         form.addRow("Repeat new password", self.new2)
         self.lay.addLayout(form)
-        rules = QLabel("Use at least 6 characters with letters and numbers. Avoid easy passwords like "
-                       "your name or 'password1'.")
+        rules = QLabel("Pick something you'll remember but others won't guess (your studio may ask for a "
+                       "minimum length).")
         rules.setWordWrap(True)
         T.polish(rules, muted=True)
         self.lay.addWidget(rules)
@@ -498,6 +498,14 @@ class ChangePasswordDialog(Dialog):
         self.ctx.conn.request("change_password", done, old=self.old.text(), new=self.new.text())
 
 
+def section(form, title, first=False):
+    """A small heading row that groups the settings below it."""
+    head = QLabel(title.upper())
+    head.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;"
+                       f" padding-top: {0 if first else 10}px;")
+    form.addRow(head)
+
+
 class SettingsDialog(Dialog):
     def __init__(self, ctx):
         super().__init__(ctx, "Settings", 520)
@@ -511,10 +519,8 @@ class SettingsDialog(Dialog):
         for key, label in T.THEMES.items():
             self.theme.addItem(label, key)
         self.theme.setCurrentIndex(max(0, self.theme.findData(cfg["theme"])))
-        form.addRow("Theme", self.theme)
         self.festivals = QCheckBox("Festival themes on the day: 15 August, 26 January, Christmas")
         self.festivals.setChecked(cfg["festival_themes"])
-        form.addRow("", self.festivals)
         swatches = QHBoxLayout()
         swatches.setSpacing(8)
         self.accent = cfg["accent"]
@@ -532,7 +538,6 @@ class SettingsDialog(Dialog):
             self.swatch_buttons[key] = b
         swatches.addStretch(1)
         self._pick_accent(self.accent)
-        form.addRow("Accent colour", swatches)
 
         row = QHBoxLayout()
         self.download_dir = QLineEdit(cfg["download_dir"])
@@ -540,7 +545,6 @@ class SettingsDialog(Dialog):
         browse.clicked.connect(self.browse)
         row.addWidget(self.download_dir, 1)
         row.addWidget(browse)
-        form.addRow("Download folder", row)
         self.notifications = QCheckBox("Show a notification for new messages")
         self.notifications.setChecked(cfg["notifications"])
         self.sounds = QCheckBox("Play a sound for new messages")
@@ -556,12 +560,21 @@ class SettingsDialog(Dialog):
         self.away.setSuffix(" minutes")
         self.away.setSpecialValueText("Never")
         self.away.setValue(int(cfg["auto_away_minutes"]))
+        section(form, "Appearance", first=True)
+        form.addRow("Theme", self.theme)
+        form.addRow("", self.festivals)
+        form.addRow("Accent colour", swatches)
+        section(form, "Notifications")
         form.addRow("", self.notifications)
         form.addRow("", self.sounds)
+        form.addRow("", self.allow_buzz)
+        section(form, "Files")
+        form.addRow("Download folder", row)
+        section(form, "Startup & presence")
         form.addRow("", self.close_to_tray)
         form.addRow("", self.autostart)
-        form.addRow("", self.allow_buzz)
         form.addRow("Set me Away after idle", self.away)
+        section(form, "Account & connection")
         self.lay.addLayout(form)
 
         secure = (f"<span style='color:{T.ACCENT}'>&#128274; Encrypted connection</span><br>"
