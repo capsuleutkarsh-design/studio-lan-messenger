@@ -44,12 +44,23 @@ def file_problems(folder=None):
         problems.append(f"{NOTICES_FILE} is missing")
     return problems
 
+def _readable(font):
+    """At least 7 pixels high. Qt measures the real font; without a font database (tests) use the declared size."""
+    from PySide6.QtGui import QFontInfo
+    size = QFontInfo(font).pixelSize()
+    if size <= 0:
+        size = font.pixelSize() if font.pixelSize() > 0 else font.pointSizeF() * 96 / 72
+    return size <= 0 or size >= 7
+
 
 def window_problems(window):
     """The window must carry the credit line, unchanged and not hidden."""
     from PySide6.QtWidgets import QLabel
     for label in window.findChildren(QLabel):
-        if label.text() == LICENSE_LINE and not label.isHidden() and label.font().pointSizeF() >= 6:
+        if label.text() != LICENSE_LINE or label.isHidden():
+            continue
+        label.ensurePolished()             # a style sheet may size the text in pixels, not points
+        if _readable(label.font()):
             return []
     return [f"the credit line is missing from the {window.windowTitle() or PRODUCT_NAME} window"]
 
