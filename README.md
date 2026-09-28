@@ -8,7 +8,7 @@
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Offline, LAN only" src="https://img.shields.io/badge/internet-not%20needed-0f1d4a?style=for-the-badge">
-  <a href="LICENSE"><img alt="Quillo Community License" src="https://img.shields.io/badge/license-Quillo%20Community-8fa8ff?style=for-the-badge"></a>
+  <a href="LICENSE.md"><img alt="UT Community Licence 2.0" src="https://img.shields.io/badge/licence-UT%20Community%202.0-8fa8ff?style=for-the-badge"></a>
 </p>
 
 <p align="center">
@@ -177,16 +177,18 @@ docs/          admin guide, release notes, images
 
 ## 📜 License
 
-Quillo is released under the **[Quillo Community License](LICENSE)** by **Utkarsh Tripathi**.
+Quillo is released under the **[UT Community Licence 2.0](LICENSE.md)** by **Utkarsh Tripathi**.
 
-- ✅ **Free** to download, install and use, at home or across a whole studio, and to share unmodified copies.
-- ✏️ **Changed it?** You're welcome to. Before using or sharing your version, [open an issue](../../issues/new) saying who you are and what you changed, and upload your source code here as a pull request (within 30 days), under the same license.
-- 🏷️ Keep the license and the small *Quillo Community License · © 2026 Utkarsh Tripathi* line at the bottom of the windows.
+- ✅ **Free** to download, install and use, at home or across a whole studio, also for paid work, and to share unmodified copies.
+- 🚫 **Not for sale.** Nobody may sell, rent or charge for Quillo or a changed copy of it.
+- ✏️ **Changed it?** You're welcome to. Keep the name as *Quillo (modified by …)* and send your changes here as a pull request within 30 days, under the same licence.
+- 🏷️ Keep the licence, the Credits screen and the small *Quillo · © 2026 Utkarsh Tripathi · UT Community Licence 2.0* line at the bottom of the windows. Quillo will not start without them.
 
-Because of the "tell the author and share it back" rule this is a source-available license, not an OSI open-source one. Bundled parts (Python, Qt/PySide6, OpenSSL, cryptography, Freepik stickers) keep their own licenses.
+This is a source-available licence, not an OSI open-source one. Copies up to 1.7.1 keep the Quillo Community License 1.0.
 
 ## 🙏 Credits
 
-Stickers designed by **Freepik** (free licence; credit shown in the sticker picker). They were cut from the
-original sheets with `tools\make_stickers.py`. The first version of the interface was inspired by the
-**PyBlackBox** demo by Wanderson M. Pimenta (MIT), kept today as the *Classic* theme.
+Quillo is built on Python, Qt / PySide6, cryptography, OpenSSL and openpyxl. Stickers designed by **Freepik**.
+The first version of the interface was inspired by the **PyBlackBox** demo by Wanderson M. Pimenta (MIT), kept
+today as the *Classic* theme. The full list is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and on the
+Credits screen in the app (click the line at the bottom of any window).

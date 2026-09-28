@@ -41,6 +41,22 @@ PROGRAMS = [
     ("LANMessengerServer", os.path.join("server", "main.py"), SERVER_PRODUCT_NAME),
 ]
 
+def plain_licence():
+    """LICENSE.md as plain text: no HTML tags or markdown marks (the setup's licence page shows raw text)."""
+    import re
+    with open(os.path.join(ROOT, "LICENSE.md"), encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"<br>", "\n", text)
+    text = re.sub(r"</?(div|sub)[^>]*>", "", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", lambda m: m.group(1) if m.group(1) in m.group(2) else
+                  f"{m.group(1)} ({m.group(2).removeprefix('mailto:')})", text)
+    text = re.sub(r"^#+\s*", "", text, flags=re.M)
+    text = re.sub(r"^>\s?", "", text, flags=re.M)
+    text = text.replace("**", "").replace("`", "")
+    text = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
 ISCC_CANDIDATES = [
     os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Inno Setup 6", "ISCC.exe"),
     os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Inno Setup 6", "ISCC.exe"),
@@ -102,7 +118,10 @@ def build_programs():
     shutil.copy(os.path.join(ROOT, "client_config.example.json"), os.path.join(DIST, "LANMessenger"))
     shutil.copy(os.path.join(ROOT, "firewall_setup.bat"), os.path.join(DIST, "LANMessengerServer"))
     for folder in ("LANMessenger", "LANMessengerServer"):          # the licence travels with the program
-        shutil.copy(os.path.join(ROOT, "LICENSE"), os.path.join(DIST, folder, "LICENSE.txt"))
+        for name in ("LICENSE.md", "THIRD_PARTY_NOTICES.md"):     # the apps check these at startup
+            shutil.copy(os.path.join(ROOT, name), os.path.join(DIST, folder, name))
+        with open(os.path.join(DIST, folder, "LICENSE.txt"), "w", encoding="utf-8-sig") as f:
+            f.write(plain_licence())                              # readable copy for the setup page and shortcut
     for name, _, _ in PROGRAMS:
         size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(os.path.join(DIST, name)) for f in fs)
         print(f"  {name}: {size / 1e6:.0f} MB")

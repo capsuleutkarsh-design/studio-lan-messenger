@@ -170,18 +170,19 @@ def icon(name: str, color: str | None = None, size: int = 20, active_color: str 
 
 
 def license_label(color=None, align=Qt.AlignRight, wrap=False):
-    """The very small licence line shown at the bottom of every window; click it to read the licence."""
-    from PySide6.QtCore import QUrl
-    from PySide6.QtGui import QDesktopServices
+    """The very small credit line shown at the bottom of every window (licence section 5: it must stay).
+    Click it for the Credits screen."""
     from PySide6.QtWidgets import QLabel
     from common import theme as T
-    from common.version import LICENSE_LINE, license_path
+    from common.licence import show_credits
+    from common.version import LICENSE_LINE
     lbl = QLabel(LICENSE_LINE)
     lbl.setTextFormat(Qt.PlainText)
     lbl.setWordWrap(wrap)
     lbl.setAlignment(align | Qt.AlignVCenter)
     lbl.setCursor(Qt.PointingHandCursor)
-    lbl.setToolTip("Free to download and use. Changed it? Tell the author and share it back - click to read the licence.")
+    lbl.setToolTip("Free to use, also for studio work. Not for sale. Changed it? Keep the name with "
+                   "\"(modified by ...)\" and send it back as a pull request. Click for credits and the licence.")
     lbl.setStyleSheet(f"color: {color or T.FAINT}; font-size: 7pt; background: transparent; padding: 2px 10px 3px 10px;")
-    lbl.mousePressEvent = lambda _e: QDesktopServices.openUrl(QUrl.fromLocalFile(license_path()))
+    lbl.mousePressEvent = lambda _e: show_credits(lbl.window())
     return lbl

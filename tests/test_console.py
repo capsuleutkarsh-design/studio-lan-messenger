@@ -76,6 +76,10 @@ class ConsoleTest(unittest.TestCase):
             with self.subTest(page=title):
                 page.refresh()          # an exception here fails the test (the real app would crash)
 
+    def test_console_carries_the_credit_line(self):
+        from common import licence
+        self.assertEqual(licence.window_problems(self.win), [])
+
     def test_pages_with_server_stopped(self):
         self.refresh_all()
 

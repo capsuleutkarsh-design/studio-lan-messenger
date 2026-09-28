@@ -5,18 +5,27 @@ AUTHOR = "Utkarsh Tripathi"
 PUBLISHER = AUTHOR
 PRODUCT_NAME = "Quillo"
 SERVER_PRODUCT_NAME = "Quillo Server"
-LICENSE_NAME = "Quillo Community License"
-LICENSE_LINE = f"{LICENSE_NAME}  ·  © 2026 {AUTHOR}"
+LICENSE_NAME = "UT Community Licence 2.0"
+# The credit line every window must show (licence section 5). common/licence.py checks it at startup.
+LICENSE_LINE = f"{PRODUCT_NAME}  ·  © 2026 {AUTHOR}  ·  {LICENSE_NAME}"
 REPOSITORY = "https://github.com/capsuleutkarsh-design/studio-lan-messenger"
 
 
-def license_path():
-    """The full licence text: LICENSE.txt next to the installed program, or LICENSE in the source folder."""
+def program_dir():
+    """The folder with the licence files: next to the installed program, or the source folder."""
     import os
     import sys
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "LICENSE.txt")
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "LICENSE")
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def license_path():
+    """The licence to open for reading: plain LICENSE.txt when installed, LICENSE.md in the source folder."""
+    import os
+    import sys
+    name = "LICENSE.txt" if getattr(sys, "frozen", False) else "LICENSE.md"
+    return os.path.join(program_dir(), name)
 
 
 # Internal names below keep the old "LANMessenger" spelling on purpose: installed copies, the installers

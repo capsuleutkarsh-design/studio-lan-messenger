@@ -52,6 +52,7 @@ NETWORK
    "Just for me" installs rely on Windows asking once (see step 1).
 
 LICENCE
-   Quillo Community License - (c) 2026 Utkarsh Tripathi.
-   Free to download and use. If you change it, tell the author and share
-   your changes back (see "Quillo licence" in the Start menu).
+   UT Community Licence 2.0 - (c) 2026 Utkarsh Tripathi.
+   Free to use, also for studio work. Not for sale. If you change it, keep
+   the name as "Quillo (modified by ...)" and send your changes back as a
+   pull request (see "Quillo licence" in the Start menu).

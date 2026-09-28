@@ -133,10 +133,15 @@ def run_remote_console(host, port, note=""):
     except OSError:
         log_file = ""
     crash.install("Quillo Server console", log_file)
+    from common import licence
+    if not licence.check_startup():
+        return 3
     dlg = ConsoleLoginDialog(host, port, note)
     if not dlg.exec():
         return 0
-    win = ServerWindow(dlg.api)  # noqa: F841 - keep the window alive
+    win = ServerWindow(dlg.api)  # keep the window alive
+    if not licence.check_window(win):
+        return 3
     return app.exec()
 
 
@@ -187,7 +192,13 @@ def main():
     from common import crash
     crash.install("Quillo Server", core.config.log_path)
 
+    from common import licence
     if args.headless:
+        problems = licence.file_problems()
+        if problems:
+            logging.error("Quillo Server will not start: its licence credits were removed or changed (%s). "
+                          "Reinstall it or restore the files from %s", "; ".join(problems), licence.REPOSITORY)
+            sys.exit(3)
         core.start()
         signal.signal(signal.SIGINT, lambda *_: (core.stop(), sys.exit(0)))
         while True:
@@ -203,7 +214,11 @@ def main():
     app.setApplicationName("Quillo Server")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
+    if not licence.check_startup():
+        sys.exit(3)
     win = ServerWindow(LocalApi(core), start_minimized=args.minimized)
+    if not licence.check_window(win):
+        sys.exit(3)
     try:
         core.start()
     except Exception as e:  # noqa: BLE001

@@ -76,6 +76,10 @@ class HomeScreenTest(unittest.TestCase):
             settle(self.app)
         return first, self.widgets()
 
+    def test_main_window_carries_the_credit_line(self):
+        from common import licence
+        self.assertEqual(licence.window_problems(self.ctl.main), [])
+
     def test_rebuild_does_not_pile_up_widgets(self):
         theme.FESTIVAL = None
         first, after = self.rebuild_many()

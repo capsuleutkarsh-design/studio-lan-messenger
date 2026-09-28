@@ -643,7 +643,7 @@ class SettingsDialog(Dialog):
         from common.version import APP_VERSION, LICENSE_LINE
         info = QLabel(f"Connected to <b>{esc(ctx.store.server_name)}</b> at {esc(ctx.conn.host)}:{ctx.conn.port}"
                       f" as <b>{esc(ctx.store.me.get('username', ''))}</b><br>{secure}{policy}"
-                      f"<br><span style='color:{T.FAINT}'>Quillo {APP_VERSION}  ·  {esc(LICENSE_LINE)}</span>")
+                      f"<br><span style='color:{T.FAINT}'>Version {APP_VERSION}  ·  {esc(LICENSE_LINE)}</span>")
         info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         T.polish(info, muted=True)
         self.lay.addWidget(info)
@@ -653,9 +653,14 @@ class SettingsDialog(Dialog):
         upd = QPushButton(" Check for updates")
         upd.setIcon(icon("refresh", T.TEXT, 16))
         upd.clicked.connect(lambda: ctx.check_for_updates(self))
+        credits = QPushButton(" Credits")
+        credits.setIcon(icon("info", T.TEXT, 16))
+        from common.licence import show_credits
+        credits.clicked.connect(lambda: show_credits(self))
         acct = QHBoxLayout()
         acct.addWidget(pw)
         acct.addWidget(upd)
+        acct.addWidget(credits)
         acct.addStretch(1)
         self.lay.addLayout(acct)
         self.lay.addWidget(_buttons(self))

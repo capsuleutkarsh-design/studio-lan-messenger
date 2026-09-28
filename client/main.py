@@ -83,6 +83,9 @@ class App(QObject):
         first = self.main is None
         if first:
             self.main = MainWindow(self.conn, self.store, self.transfers, self.config)
+            from common import licence
+            if not licence.enforce_window(self.main):
+                return
             self.main.logout_requested.connect(self.logout)
         self.store.load(boot)
         if boot.get("server_name") and self.config.get("server_name") != boot["server_name"]:
@@ -225,7 +228,12 @@ def main():
     server.listen(INSTANCE_KEY)
     app.instance_server = server
 
+    from common import licence
+    if not licence.check_startup():
+        return 3
     controller = App(minimized=args.minimized)
+    if not licence.check_window(controller.login):
+        return 3
     app.aboutToQuit.connect(controller.conn.logout)
     if sys.platform == "win32":
         # lets the installer close us during an update and start us again afterwards
