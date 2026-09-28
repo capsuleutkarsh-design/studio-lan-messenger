@@ -78,7 +78,7 @@ class PlannerTest(unittest.TestCase):
         a, b = Client("ann"), Client("ben")
         s1 = a.request("schedule_add", conv=f"u:{self.b}", text="Good morning! Dailies at 10", due_at=time.time() + 600)
         self.assertTrue(s1["ok"], s1)
-        s2 = a.request("schedule_add", conv=f"u:{self.b}", sticker="moods/07.webp", due_at=time.time() + 700)["scheduled"]
+        s2 = a.request("schedule_add", conv=f"u:{self.b}", sticker="moods/217.webp", due_at=time.time() + 700)["scheduled"]
         s3 = a.request("schedule_add", conv=f"u:{self.b}", text="cancel me", due_at=time.time() + 800)["scheduled"]
         self.assertFalse(a.request("schedule_add", conv=f"u:{self.b}", text="", due_at=time.time() + 60)["ok"])
         self.assertFalse(a.request("schedule_add", conv=f"u:{self.b}", text="x", due_at=time.time() - 600)["ok"])
@@ -90,7 +90,7 @@ class PlannerTest(unittest.TestCase):
         got = [b.wait_for("message")["message"] for _ in range(2)]
         self.assertEqual(got[0]["body"], "Good morning! Dailies at 11")
         self.assertEqual(got[0]["sender_id"], self.a)
-        self.assertEqual((got[1]["kind"], got[1]["body"]), ("sticker", "moods/07.webp"))
+        self.assertEqual((got[1]["kind"], got[1]["body"]), ("sticker", "moods/217.webp"))
         self.assertFalse(any(m["body"] == "cancel me" for m in b.request("history", conv=f"u:{self.a}")["messages"]))
         self.assertEqual(a.request("scheduled")["scheduled"], [])
         self.assertFalse(a.request("schedule_delete", id=s2["id"])["ok"])    # already sent

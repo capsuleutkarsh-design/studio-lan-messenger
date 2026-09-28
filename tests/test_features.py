@@ -75,12 +75,12 @@ class FeatureTest(unittest.TestCase):
 
     def test_stickers(self):
         a, b = Client("ann"), Client("ben")
-        r = a.request("send", conv=f"u:{self.b}", sticker="desi_chat/03.webp")
+        r = a.request("send", conv=f"u:{self.b}", sticker="desi_slang/003.webp")
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["message"]["kind"], "sticker")
-        self.assertEqual(r["message"]["body"], "desi_chat/03.webp")
+        self.assertEqual(r["message"]["body"], "desi_slang/003.webp")
         got = b.wait_for("message")["message"]
-        self.assertEqual((got["kind"], got["body"]), ("sticker", "desi_chat/03.webp"))
+        self.assertEqual((got["kind"], got["body"]), ("sticker", "desi_slang/003.webp"))
         # every sticker id must look like pack/NN.webp (no paths, no text smuggled in)
         for bad in ("../../etc/passwd", "desi_chat/03.png", "x" * 200, "Desi/01.webp", 5):
             self.assertFalse(a.request("send", conv=f"u:{self.b}", sticker=bad)["ok"], bad)

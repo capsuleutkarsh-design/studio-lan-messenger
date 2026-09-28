@@ -26,6 +26,5 @@ changes their terms.
 | Part | By | Licence |
 |---|---|---|
 | *Classic* theme and its icons, based on the PyBlackBox demo | Wanderson M. Pimenta | MIT |
-| Sticker artwork | Designed by Freepik (freepik.com) | Freepik licence held by the author; the stickers may not be copied out of Quillo or reused on their own |
 
 Thank you to everyone above.

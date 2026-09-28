@@ -674,7 +674,9 @@ class MessageRow(QWidget):
             if pm:
                 art.setPixmap(pm)
             else:
-                art.setText("Sticker (update Quillo to see it)")
+                # the old sticker set used two-digit names (desi_chat/03.webp) and has been retired
+                old = re.search(r"/[0-9]{2}\.webp$", msg["body"] or "")
+                art.setText("Old sticker (no longer in Quillo)" if old else "Sticker (update Quillo to see it)")
                 art.setStyleSheet(f"color: {T.FAINT}; font-style: italic;")
             if msg.get("reply"):
                 q = ReplyQuote(ctx, msg["reply"])
@@ -1102,7 +1104,7 @@ class StickerPicker(QFrame):
         self.title = QLabel()
         self.title.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 700; padding: 2px 6px;")
         top.addWidget(self.title, 1)
-        credit = QLabel("Stickers designed by Freepik")
+        credit = QLabel("Stickers © Utkarsh Tripathi")
         credit.setStyleSheet(f"color: {T.FAINT}; font-size: 7.5pt; padding: 2px 6px;")
         top.addWidget(credit)
         lay.addLayout(top)

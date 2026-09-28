@@ -51,7 +51,7 @@ def scroll_column():
 
 
 TIPS = [
-    ("sticker", "Stickers", "Click the sticker button next to the emoji button — 185 desi, festival and mood stickers."),
+    ("sticker", "Stickers", "Click the sticker button next to the emoji button — 459 desi, filmy, festival and mood stickers."),
     ("chart", "Quick polls", "Where for lunch? Which dailies slot? Attach button → Create a poll."),
     ("file", "Nuke scripts", "Paste a Nuke script straight into a chat. Others click Copy and paste it into Nuke."),
     ("pin", "Pin what matters", "Right-click a message → Pin to the top, so nobody misses the dailies time."),

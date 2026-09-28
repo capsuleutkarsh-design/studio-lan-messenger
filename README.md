@@ -188,7 +188,7 @@ This is a source-available licence, not an OSI open-source one. Copies up to 1.7
 
 ## 🙏 Credits
 
-Quillo is built on Python, Qt / PySide6, cryptography, OpenSSL and openpyxl. Stickers designed by **Freepik**.
+Quillo is built on Python, Qt / PySide6, cryptography, OpenSSL and openpyxl. Stickers © Utkarsh Tripathi, made for Quillo.
 The first version of the interface was inspired by the **PyBlackBox** demo by Wanderson M. Pimenta (MIT), kept
 today as the *Classic* theme. The full list is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and on the
 Credits screen in the app (click the line at the bottom of any window).

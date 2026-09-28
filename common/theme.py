@@ -19,15 +19,15 @@ THEMES = {"midnight": "Midnight (dark)", "light": "Light", "system": "Follow Win
 FESTIVALS = {
     "independence": dict(name="Independence Day", days=[(8, 15)], accent="#ff9933",
                          greeting="Happy Independence Day", sub="Jai Hind!  ·  15 August", emoji="",
-                         stripe=["#ff9933", "#ffffff", "#138808"], art="chakra", stickers="independence",
+                         stripe=["#ff9933", "#ffffff", "#138808"], art="chakra", stickers="festival_icons",
                          glow=["#ff9933", "#138808"]),
     "republic": dict(name="Republic Day", days=[(1, 26)], accent="#5b8cff",
                      greeting="Happy Republic Day", sub="Jai Hind!  ·  26 January", emoji="",
-                     stripe=["#ff9933", "#ffffff", "#138808"], art="republic", stickers="republic",
+                     stripe=["#ff9933", "#ffffff", "#138808"], art="republic", stickers="festival_icons",
                      glow=["#ff9933", "#138808"]),
     "christmas": dict(name="Christmas", days=[(12, 24), (12, 25), (12, 26)], accent="#e5484d",
                       greeting="Merry Christmas", sub="Wishing you joy, peace and a great year ahead", emoji="🎄",
-                      stripe=["#e5484d", "#ffffff", "#e5484d", "#ffffff", "#1f8a4c"], art="snow", stickers="",
+                      stripe=["#e5484d", "#ffffff", "#e5484d", "#ffffff", "#1f8a4c"], art="snow", stickers="festival_icons",
                       glow=["#e5484d", "#1f8a4c"], gold="#f2c14e"),
 }
 FESTIVAL = None
