@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTreeWidget, QTree
 
 from common import theme as T
 from common.icons import icon
+from common.orgviews import by_department
 
 COLUMNS = ["Name", "Designation", "Department / Section", "Status"]
 
@@ -60,7 +61,8 @@ def _matches(u, q):
 
 
 def fill(tree: QTreeWidget, users, mode="department", query="", me_id=None):
-    """mode: 'department' (Department > Section > people) or 'reporting' (lead > reports)."""
+    """mode: 'department' (Department > Section > people) or 'reporting' (lead > reports; a lead whose
+    reports come from several departments gets a branch per department)."""
     tree.clear()
     q = query.strip().lower()
     by_id = {u["id"]: u for u in users}
@@ -99,10 +101,8 @@ def fill(tree: QTreeWidget, users, mode="department", query="", me_id=None):
                         keep.add(x["id"])
                         x = by_id.get(x.get("manager_id"))
 
-        def add(parent_item, uid, seen):
-            for u in sorted(children.get(uid, []), key=_sort_key):
-                if u["id"] in seen or (keep is not None and u["id"] not in keep):
-                    continue
+        def add_people(parent_item, people, seen):
+            for u in people:
                 it = _person(u, me_id)
                 n = len(children.get(u["id"], []))
                 if n:
@@ -111,7 +111,21 @@ def fill(tree: QTreeWidget, users, mode="department", query="", me_id=None):
                     tree.addTopLevelItem(it)
                 else:
                     parent_item.addChild(it)
-                add(it, u["id"], seen | {u["id"]})
+                add(it, u, seen | {u["id"]})
+
+        def add(parent_item, lead, seen):
+            """lead's reports under parent_item: one branch per department when they come from several."""
+            people = [u for u in sorted(children.get(lead["id"] if lead else None, []), key=_sort_key)
+                      if u["id"] not in seen and (keep is None or u["id"] in keep)]
+            split = by_department(lead, people) if lead else None
+            if not split:
+                add_people(parent_item, people, seen)
+                return
+            for dept, members in split:
+                g = _group(dept, len(members), "users")
+                parent_item.addChild(g)
+                g.setFirstColumnSpanned(True)
+                add_people(g, members, seen)
         add(None, None, set())
     tree.expandAll()
 

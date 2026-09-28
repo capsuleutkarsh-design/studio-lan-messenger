@@ -85,6 +85,9 @@ can also connect to a server on another PC (admin / IT login).
    an `.ics` file, or add India's list for a later year. HR (designations that can manage accounts) can do
    the same from the calendar in the app (*New → Studio holidays*).
 7. **Org chart** shows who reports to whom; people without a lead appear under *Not in a reporting line*.
+   When someone's reports come from two or more departments, each department gets its own branch under
+   that person (a small department label with its people below). The List view's *By reporting line*
+   does the same.
 
 ## 3. Designations and permissions
 

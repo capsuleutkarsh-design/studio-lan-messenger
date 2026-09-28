@@ -58,6 +58,35 @@ def _sort_key(u):
     return (-(u.get("level") or 0), u["name"].lower())
 
 
+def by_department(lead, people):
+    """[(department, people)] when people come from two or more departments, else None.
+    The lead's own department comes first and 'No department' last; the people keep their order."""
+    depts, names = {}, {}
+    for u in people:
+        d = (u.get("department") or "").strip()
+        names.setdefault(d.lower(), d)
+        depts.setdefault(d.lower(), []).append(u)
+    if len(depts) < 2:
+        return None
+    own = ((lead or {}).get("department") or "").strip().lower()
+    order = sorted(depts, key=lambda d: (d != own, d == "", d))
+    return [(names[d] or "No department", depts[d]) for d in order]
+
+
+def department_groups(lead, children, kids):
+    """The chart's children for lead: the people themselves, or one department label node per
+    department when they come from several (kids gets each label's people)."""
+    split = by_department(lead, children)
+    if not split:
+        return children
+    groups = []
+    for name, people in split:
+        g = {"id": ("dept", lead["id"], name.lower()), "group": name, "count": len(people)}
+        kids[g["id"]] = people
+        groups.append(g)
+    return groups
+
+
 def _status_line(u):
     custom = " ".join(x for x in (u.get("status_emoji", ""), u.get("status_msg", "")) if x)
     return custom
@@ -246,13 +275,18 @@ class PeopleGrid(QWidget):
 
 # ======================================================================== org chart
 class OrgChart(QWidget):
-    """Reporting lines as a top-down chart. Big teams without sub-teams are stacked in columns."""
+    """Reporting lines as a top-down chart. Big teams without sub-teams are stacked in columns.
+
+    When someone's direct reports come from two or more departments, each department gets its own
+    branch under that person: a small department label with that department's people below it.
+    """
     open_person = Signal(int)
     person_menu = Signal(int, QPoint)
     person_selected = Signal(int)
     zoom_changed = Signal(float)
 
     BOX_W, BOX_H, HGAP, VGAP, STACK_GAP, STACK_ROWS = 200, 72, 20, 58, 14, 6
+    GROUP_H = 30                  # department label between a lead and that department's people
     PAD = 30
 
     def __init__(self, parent=None):
@@ -260,6 +294,7 @@ class OrgChart(QWidget):
         self.setMouseTracking(True)
         self.zoom = 1.0
         self.boxes = {}               # uid -> QRectF (chart units)
+        self.group_boxes = []         # [(QRectF, department label node)]
         self.lines = []               # [(QPointF...)] polylines
         self.labels = []              # [(QRectF, text)]
         self.people = {}
@@ -286,7 +321,10 @@ class OrgChart(QWidget):
             k.sort(key=_sort_key)
         self.reports = {uid: len(kids.get(uid, [])) for uid in self.people}
         self.matches = {u["id"] for u in users if q and matches(u, q)}
-        self.boxes, self.lines, self.labels = {}, [], []
+        for uid, u in self.people.items():
+            if kids.get(uid):
+                kids[uid] = department_groups(u, kids[uid], kids)
+        self.boxes, self.group_boxes, self.lines, self.labels = {}, [], [], []
         W, H = self.BOX_W, self.BOX_H
 
         def leaf(u):
@@ -310,13 +348,17 @@ class OrgChart(QWidget):
 
         def place(u, left, top, seen=frozenset()):
             w = width(u, seen)
-            box = QRectF(left + (w - W) / 2, top, W, H)
-            self.boxes[u["id"]] = box
+            h = self.GROUP_H if "group" in u else H
+            box = QRectF(left + (w - W) / 2, top, W, h)
+            if "group" in u:
+                self.group_boxes.append((box, u))
+            else:
+                self.boxes[u["id"]] = box
             ch = [c for c in kids.get(u["id"], []) if c["id"] not in seen]
             if not ch:
-                return top + H
+                return top + h
             px, pb = box.center().x(), box.bottom()
-            ctop = top + H + self.VGAP
+            ctop = top + h + self.VGAP
             bottom = ctop
             if all(leaf(c) for c in ch) and len(ch) > 3:
                 cols = math.ceil(len(ch) / self.STACK_ROWS)
@@ -416,8 +458,22 @@ class OrgChart(QWidget):
         p.setPen(QColor(T.MUTED))
         for rect, text in self.labels:
             p.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+        for box, g in self.group_boxes:
+            self._paint_group(p, box, g)
         for uid, box in self.boxes.items():
             self._paint_box(p, box, self.people[uid])
+
+    def _paint_group(self, p, box, g):
+        """Department label under a lead whose team spans several departments."""
+        p.setPen(QPen(QColor(T.BORDER), 1))
+        p.setBrush(QColor(T.SURFACE))
+        p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+        p.setFont(_font(10, True))
+        fm = QFontMetrics(p.font())
+        count = f"  ·  {g['count']}"
+        name = fm.elidedText(g["group"].upper(), Qt.ElideRight, int(box.width() - 28 - fm.horizontalAdvance(count)))
+        p.setPen(QColor(T.ACCENT))
+        p.drawText(box, Qt.AlignCenter, name + count)
 
     def _paint_box(self, p, box, u):
         uid = u["id"]
