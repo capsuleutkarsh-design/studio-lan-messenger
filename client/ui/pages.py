@@ -297,9 +297,10 @@ class HomePage(QWidget):
         hi.setStyleSheet("font-size: 21pt; font-weight: 800;")
         col.addWidget(hi)
         # "Tuesday 1 October · Studio": no zero-padded day
+        on_hero = [deep, T.PANEL]                # the gradient's two ends: text must read on both
         today = plain(QLabel(fmt_date(datetime.date.today(), long=True, year=False) + SEP + s.server_name))
         today.setWordWrap(True)
-        today.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_M)};")
+        today.setStyleSheet(f"color: {T.readable_on(T.MUTED, on_hero)}; font-size: {T.pt(T.FONT_M)};")
         col.addWidget(today)
         col.addSpacing(8)
         chats = sum(1 for c in s.convs.values() if c.unread and s.conv_exists(c.conv) and not s.is_muted(c.conv))
@@ -333,11 +334,12 @@ class HomePage(QWidget):
         n.setStyleSheet(f"font-weight: 700; font-size: {T.pt(T.FONT_BODY)};")
         mc.addWidget(n)
         st = plain(QLabel(s.status_text(me) or T.STATUS_LABELS.get(status, status)))
-        st.setStyleSheet(f"color: {T.STATUS_COLORS.get(status, T.MUTED) if not s.status_text(me) else T.MUTED};"
-                         f" font-size: {T.pt(T.FONT_S)};")
+        # the status colour as text: readable on the gradient (the light theme's green 'Online' was ~2:1)
+        colour = T.STATUS_COLORS.get(status, T.MUTED) if not s.status_text(me) else T.MUTED
+        st.setStyleSheet(f"color: {T.readable_on(colour, on_hero)}; font-size: {T.pt(T.FONT_S)};")
         mc.addWidget(st)
         edit = plain(QLabel("Set status & photo"))
-        edit.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; font-weight: 600;")
+        edit.setStyleSheet(f"color: {T.readable_on(T.ACCENT, on_hero)}; font-size: 8.5pt; font-weight: 600;")
         mc.addWidget(edit)
         mb.addLayout(mc)
         h.addWidget(me_box, 0, Qt.AlignVCenter)
@@ -541,7 +543,7 @@ class HomePage(QWidget):
     def _calendar(self):
         """A small month (dots on days with something) and what's on in the next days."""
         from client.ui.calendar_views import MiniMonth, entries_from, kind_color
-        frame, body = _panel("Calendar", "Open calendar", lambda: self.ctx.open_calendar(), spacing=6)
+        frame, body = _panel("Calendar", "Open calendar", lambda: self.ctx.open_calendar(), spacing=8)
         data = self.store.calendar
         layers = {"meeting", "event", "note", "deadline", "holiday", "leave", "birthday", "anniversary"}
         entries = entries_from(data, layers, self.store.my_id)
@@ -580,6 +582,7 @@ class HomePage(QWidget):
             empty = QLabel("Nothing planned this week.")
             empty.setStyleSheet(f"color: {T.MUTED}; background: transparent; padding-left: {ROW_INSET}px;")
             body.addWidget(empty)
+        whens = []
         for e in soon:
             # icon and day sit level with the title's first line, also when a long title wraps
             row = QHBoxLayout()
@@ -590,7 +593,7 @@ class HomePage(QWidget):
             d = e.start.date()
             day = "Today" if d <= today else (day_word(d) or fmt_date(d, year=False))     # 'Thu 1 Oct', not 'Thu 01'
             when = plain(QLabel(day + ("" if e.all_day else f" {fmt_time(e.start)}")))
-            when.setFixedWidth(100)
+            whens.append(when)
             when.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)}; background: transparent;"
                                " padding-top: 2px;")
             row.addWidget(when, 0, Qt.AlignTop)
@@ -598,6 +601,14 @@ class HomePage(QWidget):
             t.setStyleSheet("font-weight: 600; background: transparent;")
             row.addWidget(t, 1, Qt.AlignTop)
             body.addLayout(row)
+        # the day column is as wide as its longest day, no wider: long titles get the room and wrap less
+        if whens:
+            from PySide6.QtGui import QFontMetrics
+            from client.ui.widgets import ui_font
+            fm = QFontMetrics(ui_font(T.FONT_S))
+            width = max(fm.horizontalAdvance(w.text()) for w in whens) + 8
+            for w in whens:
+                w.setFixedWidth(width)
         return frame
 
     # ---- the Calendar card's month: step through months without rebuilding the page

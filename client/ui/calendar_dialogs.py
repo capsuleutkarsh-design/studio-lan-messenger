@@ -22,6 +22,7 @@ KIND_TITLES = {"meeting": "Meeting", "event": "Personal event", "note": "Note of
 REPEATS = [("Does not repeat", None), ("Every day", "daily"), ("Every working day (Mon–Sat)", "workdays"),
            ("Every week on…", "weekly"), ("Every month", "monthly")]
 DATE_FORMAT = "ddd d MMM yyyy"          # date boxes: 'Tue 6 Oct 2026' (no zero-padded day, like the rest)
+HOLIDAY_KINDS = {"national": "National", "festival": "Festival", "studio": "Studio", "other": "Public"}  # as the console
 NIGHT = 18                              # an item that starts from 18:00 on may end the next morning
 
 
@@ -38,6 +39,18 @@ def studio_wide(store):
 def can_manage_holidays(store):
     me, perms = store.me, store.me.get("perms") or {}
     return bool(me.get("is_admin") or perms.get("manage_users"))
+
+
+def default_start(day, hour=9, now=None):
+    """When a new item on `day` starts: 09:00 (deadlines 18:00), but never in the past - today after that hour
+    it is the next half hour (15:10 -> 15:30)."""
+    start = datetime.datetime.combine(day, datetime.time(hour))
+    now = now or datetime.datetime.now()
+    if day == now.date() and now >= start:
+        now = now.replace(second=0, microsecond=0)
+        start = now + datetime.timedelta(minutes=30 - now.minute % 30)
+        start = min(start, datetime.datetime.combine(day, datetime.time(23, 30)))
+    return start
 
 
 def _qdate(d):
@@ -79,8 +92,7 @@ class EventDialog(Dialog):
             start = datetime.datetime.fromtimestamp(item["start"])
             end = datetime.datetime.fromtimestamp(item["end"])
         else:
-            start = start or (datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
-                              + datetime.timedelta(hours=1))
+            start = start or default_start(datetime.date.today(), 18 if kind == "deadline" else 9)
             end = start + (datetime.timedelta(minutes=30) if kind == "meeting" else datetime.timedelta(hours=1))
         form = QFormLayout()
         form.setSpacing(10)
@@ -664,7 +676,7 @@ class HolidaysDialog(Dialog):
         add.setIcon(icon("plus", T.ACCENT_TEXT, 15))
         T.polish(add, primary=True)
         add.clicked.connect(lambda: self._edit(None))
-        imp = QPushButton(" Import .ics")
+        imp = QPushButton(" Import .ics…")
         imp.setIcon(icon("upload", T.TEXT, 15))
         imp.clicked.connect(self._import)
         more = QPushButton(" Add India's list…")
@@ -680,8 +692,8 @@ class HolidaysDialog(Dialog):
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_S)};")
         self.lay.addWidget(hint)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Studio closed", "Date", "Holiday", "Note"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Studio closed", "Date", "Holiday", "Kind", "Note"])
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -738,11 +750,14 @@ class HolidaysDialog(Dialog):
                 d = datetime.date.fromisoformat(h["day"])
                 self.table.setItem(r, 1, QTableWidgetItem(fmt_date(d, year=False)))
                 self.table.setItem(r, 2, QTableWidgetItem(h["name"]))
+                kind = QTableWidgetItem(HOLIDAY_KINDS.get(h.get("kind") or "", (h.get("kind") or "").capitalize()))
+                kind.setForeground(QColor(T.META))
+                self.table.setItem(r, 3, kind)
                 note = QTableWidgetItem("Check the date" if h["confirm"] else "")
                 if h["confirm"]:
                     note.setForeground(QColor(T.readable_on(T.WARN_TEXT, [T.PANEL, T.SURFACE])))
                     note.setToolTip("A festival: its date follows the lunar calendar")
-                self.table.setItem(r, 3, note)
+                self.table.setItem(r, 4, note)
             self._loading = False
             self._selection_changed()
         self.ctx.conn.request("cal_holidays", done, year=self.year)

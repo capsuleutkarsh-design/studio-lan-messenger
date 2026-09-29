@@ -287,6 +287,7 @@ class LoginWindow(QWidget):
         self.status.setStyleSheet(f"color: {T.DANGER};")
         self.status.setText(text)
         low = text.lower()
+        self._mark_password(False)
         if "invalid" in low and "password" in low:   # wrong password: straight back into the box, marked
             self._mark_password(True)
             self.password.setFocus()

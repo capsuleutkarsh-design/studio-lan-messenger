@@ -116,6 +116,20 @@ class ServerSideTest(unittest.TestCase):
             boss.close()
             ann.close()
 
+    def test_read_count_goes_up_live_for_the_sender_and_admins(self):
+        c = self.core
+        c.call(c.admin_create_user, must_change=False, username="boss", password="Artist2026",
+               display_name="Boss", department="Paint", is_admin=1)
+        ann_id = c.call(c.admin_announce, "Fire drill", "At 3 PM", "all")
+        boss, ann = Client("boss"), Client("ananya")
+        try:
+            ann.request("announcement_read", id=ann_id)
+            update = boss.wait_for("announcement_reads")
+            self.assertEqual((update["id"], update["read_count"], update["total"]), (ann_id, 1, 3))
+        finally:
+            boss.close()
+            ann.close()
+
     def test_server_info_says_when_backups_run(self):
         info = self.core.call(self.core.admin_server_info)
         self.assertEqual((info["backup_enabled"], info["backup_hour"], info["chat_log_enabled"]), (True, 2, True))

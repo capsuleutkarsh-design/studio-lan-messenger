@@ -138,9 +138,13 @@ class CalendarV112Test(unittest.TestCase):
         cal.set_view("agenda")
         settle(self.app, 0.2)
         self.assertFalse(cal.side.isVisible())
+        cal.set_view("day")
+        settle(self.app, 0.2)
+        self.assertFalse(cal.side.isVisible(), "Day view shows the day already")
         cal.set_view("month")
         settle(self.app, 0.2)
         self.assertTrue(cal.side.isVisible())
+        self.assertTrue(all(not b.icon().isNull() for b in cal.layer_buttons.values()))
 
     def test_titles_have_no_zero_padded_days(self):
         cal = self.cal
@@ -150,11 +154,14 @@ class CalendarV112Test(unittest.TestCase):
         cal._title()
         monday = dt.date(year, 10, 1) - dt.timedelta(days=dt.date(year, 10, 1).weekday())
         sunday = monday + dt.timedelta(days=6)
-        self.assertIn(f"{sunday.day} {sunday:%b} {year}", cal.title.text())
+        self.assertTrue(cal.title.text().endswith(f"{sunday.day} {sunday:%b}"))     # this year: no year
         self.assertNotIn(" 0", cal.title.text())
         cal.set_view("day", fetch=False)
         cal._title()
-        self.assertEqual(cal.title.text(), f"{dt.date(year, 10, 1):%A} 1 October {year}")
+        self.assertEqual(cal.title.text(), f"{dt.date(year, 10, 1):%A} 1 October")
+        cal.anchor = cal.selected = dt.date(year + 1, 1, 5)
+        cal._title()
+        self.assertTrue(cal.title.text().endswith(str(year + 1)))                     # another year: with it
         cal.go_today()
         cal.set_view("month")
 
@@ -192,6 +199,12 @@ class CalendarV112Test(unittest.TestCase):
         self.assertEqual(start(d, now=dt.datetime(2026, 9, 28, 15, 0)), dt.datetime(2026, 9, 29, 9, 0))
         self.assertEqual(start(d, 18, now=dt.datetime(2026, 9, 29, 12, 0)), dt.datetime(2026, 9, 29, 18, 0))
         self.assertEqual(start(d, 18, now=dt.datetime(2026, 9, 29, 19, 5)), dt.datetime(2026, 9, 29, 19, 30))
+        # a dialog opened without a time uses the same rule, not 'now + 1 hour' (02:00 at night)
+        from client.ui.calendar_dialogs import EventDialog
+        dlg = EventDialog(self.w, "meeting")
+        want = start(dt.date.today())
+        self.assertEqual(dlg.t_start.time().toPython().replace(second=0), want.time())
+        dlg.close()
 
     # ------------------------------------------------------------ the event dialog
     def test_moving_the_start_keeps_the_length(self):
@@ -436,7 +449,13 @@ class CalendarV112Test(unittest.TestCase):
         dlg = HolidaysDialog(self.w, self.today.year)
         dlg.show()
         self.assertTrue(self.wait(lambda: dlg.table.rowCount() > 0))
-        self.assertEqual(dlg.table.columnCount(), 4)
+        self.assertEqual(dlg.table.columnCount(), 5)
+        self.assertEqual(dlg.table.horizontalHeaderItem(3).text(), "Kind")               # as in the console
+        self.assertTrue(dlg.table.item(0, 3).text())
+        from PySide6.QtWidgets import QPushButton
+        texts = [b.text().strip() for b in dlg.findChildren(QPushButton)]
+        self.assertIn("Import .ics…", texts)
+        self.assertFalse(any("..." in t for t in texts))
         self.assertTrue(dlg.table.horizontalHeader().defaultAlignment() & Qt.AlignLeft)
         self.assertFalse(dlg.edit_btn.isEnabled())
         self.assertFalse(dlg.delete_btn.isEnabled())

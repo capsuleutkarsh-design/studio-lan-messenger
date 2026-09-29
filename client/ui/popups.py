@@ -100,17 +100,23 @@ class MessagePopup(QWidget):
         col.setSpacing(2)
         head = QHBoxLayout()
         head.setSpacing(6)
-        self.title = ElidedLabel(mode=Qt.ElideMiddle)      # 'Farhan mentioned you in AK74 P…' lost the room
+        self.title = ElidedLabel()
         self.title.setStyleSheet(f"font-weight: 700; font-size: {T.pt(T.FONT_M)}; background: transparent;")
         head.addWidget(self.title, 1)
         self.more = plain(QLabel())                        # '+2 more': messages that came in since
         self.more.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)}; background: transparent;")
         self.more.hide()
         head.addWidget(self.more)
+        # in a room the title is the room (it used to be cut off the end of 'Farhan mentioned you in AK74 P'),
+        # and who wrote, or mentioned you, is a small line under it
+        self.context = ElidedLabel()
+        self.context.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)}; background: transparent;")
+        self.context.hide()
         self.text = plain(QLabel())
         self.text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.text.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_M)}; background: transparent;")
         col.addLayout(head)
+        col.addWidget(self.context)
         col.addWidget(self.text)
         col.addStretch(1)
         top.addLayout(col, 1)
@@ -118,7 +124,7 @@ class MessagePopup(QWidget):
         close.clicked.connect(self.close)
         top.addWidget(close, 0, Qt.AlignTop)
         lay.addLayout(top)
-        for w in (self.avatar, self.title, self.text):
+        for w in (self.avatar, self.title, self.context, self.text):
             w.setCursor(Qt.PointingHandCursor)
             w.mousePressEvent = self._open
 
@@ -148,7 +154,14 @@ class MessagePopup(QWidget):
         room = self.conv.startswith("r:")
         self.avatar.set(self.store.title(self.conv) if room else name, self.conv if room else name,
                         room=room, uid=None if room else sender_id)
-        self.title.setText(title)
+        where = f" in {self.store.title(self.conv)}" if room else ""
+        if where and title.endswith(where) and len(title) > len(where):
+            self.title.setText(where[4:])                 # 'AK74 Project'
+            self.context.setText(title[:-len(where)])     # 'Farhan Qureshi mentioned you'
+        else:
+            self.title.setText(title)
+            self.context.setText("")
+        self.context.setVisible(bool(self.context.text()))
         self.more.setText(f"+{self.count - 1} more")
         self.more.setVisible(self.count > 1)
         self.text.ensurePolished()

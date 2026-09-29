@@ -6,7 +6,7 @@ import re
 import tempfile
 import time
 
-from PySide6.QtCore import QMimeData, QPoint, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QTextCursor, QTextDocument, QTextOption,
 )
@@ -76,6 +76,49 @@ def transfer_status(t):
     return SEP.join(bits)
 
 
+class _InWindow(QObject):
+    """Keeps a menu opened at a click inside its window: it opens upward (or to the left) when there is no room
+    below (or to the right). Qt itself only keeps menus on the screen, so near the bottom of the chat the last
+    items - Delete among them - hung below the window."""
+
+    def __init__(self, menu, window):
+        super().__init__(menu)
+        self.window = window
+        menu.installEventFilter(self)
+
+    def eventFilter(self, menu, e):
+        if e.type() == QEvent.Show and self.window is not None:
+            win, g = self.window.frameGeometry(), menu.geometry()
+            x, y = g.x(), g.y()
+            if g.bottom() > win.bottom():
+                up = g.top() - g.height()
+                y = up if up >= win.top() else max(win.top(), win.bottom() - g.height())
+            if g.right() > win.right():
+                left = g.left() - g.width()
+                x = left if left >= win.left() else max(win.left(), win.right() - g.width())
+            if (x, y) != (g.x(), g.y()):
+                menu.move(x, y)
+        return False
+
+
+def keep_in_window(menu, widget):
+    """menu opens inside widget's window (see _InWindow); returns the menu."""
+    _InWindow(menu, widget.window())
+    return menu
+
+
+def menu_point(menu, at, widget):
+    """Where to open menu for a click at `at` (global): at the click, or ending at it - upward / leftward - when
+    widget's window has no room below / to the right."""
+    win, size = widget.window().frameGeometry(), menu.sizeHint()
+    x, y = at.x(), at.y()
+    if y + size.height() > win.bottom() and y - size.height() >= win.top():
+        y -= size.height()
+    if x + size.width() > win.right() and x - size.width() >= win.left():
+        x -= size.width()
+    return QPoint(x, y)
+
+
 RENDER_MAX = 150        # message widgets built when a chat opens; scrolling up shows more
 EMOJIS = ("😀 😂 😊 😍 😎 🤔 😅 😭 😡 👍 👎 👌 🙏 👏 💪 🙌 🎉 🔥 ✅ ❌ ⚠️ ❓ 💡 ⭐ "
           "❤️ 💯 🚀 🎬 🎥 🖥️ 📁 📎 ☕ 🍕 🕐 👀 🤝 😴 🤯 🥳").split()
@@ -127,7 +170,9 @@ class SystemLine(QWidget):
         self.set_max_width(520)
 
     def set_max_width(self, w):
-        widest = max(200, int(w / 0.72))                     # a narrow window wraps instead of cutting off
+        """w: the whole width of the message list (ChatView._line_width) - a long line wraps inside it instead of
+        pushing the list wider than the window (which pushed your own bubbles off the right edge)."""
+        widest = max(160, int(w))
         self.lbl.setMaximumWidth(widest)
         self.lbl.setMinimumWidth(min(self._ideal, widest))
 
@@ -997,13 +1042,13 @@ class MessageRow(QWidget):
     def contextMenuEvent(self, e):
         m = self.build_menu()
         if m:
-            m.exec(e.globalPos())
+            m.exec(menu_point(m, e.globalPos(), self))
 
     def build_menu(self):
         msg, ctx = self.msg, self.ctx
         if msg.get("deleted"):
             return None
-        m = QMenu(self)
+        m = keep_in_window(QMenu(self), self)
         chat = ctx.chat
         # answer it
         m.addAction(icon("smile", T.TEXT, 16), "React…", lambda: chat.react_menu(msg, row=self))
@@ -1136,7 +1181,10 @@ class HoverBar(QFrame):
         if self.row:
             m = self.row.build_menu()
             if m:
-                m.exec(popup_pos(self, m.sizeHint(), align_right=self.row.mine))
+                # below the bar, or above it when the window has no room below (the last message)
+                bottom = self.mapToGlobal(QPoint(0, self.height())).y() + 6 + m.sizeHint().height()
+                above = bottom > self.window().frameGeometry().bottom()
+                m.exec(popup_pos(self, m.sizeHint(), above=above, align_right=self.row.mine))
 
 
 # ============================================================ composer
@@ -1710,6 +1758,7 @@ class ChatView(QWidget):
         self.hover_bar = HoverBar(self, self.container)
         self.first_unread_id = None      # the "New messages" line goes above this message
         self.unread_count = 0            # unread when the chat was opened
+        self.divider_count = 0           # the messages below the line (system notes left out)
         self.divider = None
         self.new_below = 0               # messages that came in while scrolled up
         self._anchor = None              # scroll the "New messages" line into view once the chat is laid out
@@ -1818,7 +1867,7 @@ class ChatView(QWidget):
         self.action_bar.hide()
         self.sched_bar = QPushButton()
         self.sched_bar.setCursor(Qt.PointingHandCursor)
-        self.sched_bar.setIcon(icon("clock", T.ACCENT, 15))
+        self.sched_bar.setIcon(icon("time", T.ACCENT, 15))          # 'clock' (an alarm) is for reminders
         self.sched_bar.setStyleSheet(f"QPushButton {{ text-align: left; background: transparent; border: none;"
                                      f" color: {T.ACCENT}; font-size: 9pt; font-weight: 600; padding: 2px 6px 6px 6px; }}"
                                      f"QPushButton:hover {{ color: {T.TEXT}; }}")
@@ -1894,6 +1943,7 @@ class ChatView(QWidget):
             # read before this chat was opened: remember where the "New messages" line goes
             self.unread_count = self.store.conversation(conv).unread
             self.first_unread_id = None
+            self.divider_count = 0
         self.new_below = 0
         self.conv = conv
         self.render_limit = RENDER_MAX
@@ -2015,12 +2065,19 @@ class ChatView(QWidget):
         """The first of the messages that were unread when the chat was opened (once enough are loaded)."""
         if not self.unread_count or self.first_unread_id:
             return
+        # the server counts every message from others (system notes too) since you last read the chat
         others = [m for m in msgs if m["sender_id"] != self.store.my_id and not m.get("deleted")]
         if len(others) >= self.unread_count:
-            self.first_unread_id = others[-self.unread_count]["id"]
-        elif c.complete and others:
-            self.first_unread_id = others[0]["id"]
-        if self.first_unread_id:
+            unread = others[-self.unread_count:]
+        elif c.complete:
+            unread = others
+        else:
+            return
+        # the line goes above the first unread *message*: an old note ('… created the room') is not news
+        said = [m for m in unread if m["kind"] not in ("system", "buzz")]
+        if unread:
+            self.first_unread_id = (said or unread)[0]["id"]
+            self.divider_count = len(said) or len(unread)
             self._anchor = True
 
     def render_all(self):
@@ -2072,7 +2129,7 @@ class ChatView(QWidget):
             self.rows.append(sep)
         unread_line = m["id"] == self.first_unread_id and self.divider is None
         if unread_line:
-            self.divider = UnreadDivider(self.unread_count)
+            self.divider = UnreadDivider(self.divider_count or self.unread_count)
             self.mlay.insertWidget(self.mlay.count(), self.divider)
             self.rows.append(self.divider)
         grouped = (prev and not new_day and not unread_line and prev["sender_id"] == m["sender_id"]
@@ -2117,11 +2174,21 @@ class ChatView(QWidget):
         room = vw - m.left() - m.right() - (44 if (self.conv or "").startswith("r:") else 0) - 8
         return int(max(200, min((vw - 40) * share, room)))
 
+    def _line_width(self):
+        """The room for a centred line (system notes): the list's width less its margins."""
+        m = self.mlay.contentsMargins()
+        return self.scroll.viewport().width() - m.left() - m.right() - 8
+
+    def _set_width(self, r, w=None):
+        if isinstance(r, SystemLine):
+            r.set_max_width(self._line_width())
+        elif isinstance(r, (MessageRow, GalleryRow)):
+            r.set_max_width(w or self._bubble_width())
+
     def _apply_widths(self):
         w = self._bubble_width()
         for r in self.rows:
-            if isinstance(r, (MessageRow, GalleryRow, SystemLine)):
-                r.set_max_width(w)
+            self._set_width(r, w)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -2269,8 +2336,7 @@ class ChatView(QWidget):
             return
         w = self._append(msg, last)
         self.rendered += 1
-        if isinstance(w, (MessageRow, GalleryRow, SystemLine)):
-            w.set_max_width(self._bubble_width())
+        self._set_width(w)
         self.loading.hide()
         if self.empty.isVisible():
             self._set_empty(False)
@@ -2589,7 +2655,7 @@ class ChatView(QWidget):
                 sub = m.addMenu(icon("close", T.DANGER, 16), f"Not sent: {label}")
                 sub.addAction(menu_text(x["error"] or "Could not be sent")).setEnabled(False)
                 continue
-            sub = m.addMenu(icon("clock", T.TEXT, 16), f"{fmt_when(x['due_at'])}{SEP}{label}")
+            sub = m.addMenu(icon("time", T.TEXT, 16), f"{fmt_when(x['due_at'])}{SEP}{label}")
             sub.addAction(icon("send", T.TEXT, 16), "Send now",
                           lambda sid=x["id"]: self.ctx.conn.request("schedule_send_now", None, id=sid))
 
@@ -2854,7 +2920,8 @@ class ChatView(QWidget):
         def done(reply):
             if reply.get("ok") and row in self.rows:
                 n, total = len(reply["read"]), reply["total"]
-                row.set_seen("Seen by everyone" if n and n == total else f"Seen by {n} of {total}")
+                row.set_seen("Seen by everyone" if n and n == total else f"Seen by {n} of {total}" if n
+                             else "Not seen yet")
         self.ctx.conn.request("read_by", done, conv=self.conv, message_id=row.msg["id"])
 
     def show_seen_by(self, msg):

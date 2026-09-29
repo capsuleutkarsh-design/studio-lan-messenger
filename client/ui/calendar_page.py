@@ -14,7 +14,7 @@ from common import theme as T
 from common.fmt import SEP, day_word, fmt_date, fmt_range, fmt_time
 from common.icons import icon
 from client.ui.calendar_dialogs import (
-    EventDialog, HolidaysDialog, ItemDialog, LeaveDialog, can_lead, can_manage_holidays, import_ics,
+    EventDialog, HolidaysDialog, ItemDialog, LeaveDialog, can_lead, can_manage_holidays, default_start, import_ics,
 )
 from client.ui.calendar_views import (
     KIND_ICONS, KINDS, AgendaView, MonthView, TimeGridView, by_day, entries_from, entry_tip, kind_color,
@@ -189,10 +189,11 @@ class CalendarPage(QWidget):
         # layers: they wrap onto a second line on a narrow window instead of being cut
         layer_box = QWidget()
         self.layer_row = _Flow(layer_box, spacing=6)
-        self.layer_buttons = {}
+        self.layer_buttons, self._layer_icons = {}, {}
         for kind, (label, _c) in KINDS.items():
             b = _chip(label, kind in self.layers)
-            b.setIcon(_dot_icon(kind_icon_color(kind), T.FAINT))
+            self._layer_icons[kind] = _dot_icon(kind_icon_color(kind), T.FAINT)
+            b.setIcon(self._layer_icons[kind])
             b.setIconSize(QSize(10, 10))
             b.setToolTip(f"Show or hide {label.lower()}" + (" and work anniversaries" if kind == "birthday" else ""))
             b.setStyleSheet(f"QPushButton:checked {{ color: {kind_text_color(kind)}; }}")
@@ -264,11 +265,11 @@ class CalendarPage(QWidget):
         self._fit()
 
     def _fit(self):
-        """Fold the day panel away on a narrow page (and in Agenda, which lists the days already); shorten
-        the title and the New button on a very narrow one."""
+        """Fold the day panel away on a narrow page (and in Day and Agenda, which show the day already);
+        shorten the title, the views and the New button on a very narrow one."""
         w = self.width()
         self._narrow = w < NARROW
-        self.side.setVisible(not self._narrow and self.view != "agenda")
+        self.side.setVisible(not self._narrow and self.view not in ("day", "agenda"))
         compact = w < COMPACT
         if compact != self._compact:
             self._compact = compact
@@ -277,6 +278,9 @@ class CalendarPage(QWidget):
             self.view_btn.setVisible(compact)
             self.new_btn.setText("" if compact else " New")
             self.new_btn.setToolTip("New meeting, event, note or leave" if compact else "")
+            # the layer chips fit on one line without their swatches (a ticked chip's text has the colour)
+            for kind, b in self.layer_buttons.items():
+                b.setIcon(QIcon() if compact else self._layer_icons[kind])
             self._title()
 
     # ------------------------------------------------------------ navigation
@@ -392,18 +396,18 @@ class CalendarPage(QWidget):
         self._title()
 
     def _title(self):
-        """'September 2026', '28 Sep – 4 Oct 2026', 'Tuesday 29 September 2026', 'From 29 September 2026';
-        on a narrow page 'Sep 2026', '28 Sep – 4 Oct', 'Tue 29 Sep', 'From 29 Sep'."""
+        """'September 2026', '28 Sep – 4 Oct', 'Tuesday 29 September', 'From 29 September' (the year only when it
+        isn't this year, like every date in the app); on a narrow page 'Sep 2026', 'Tue 29 Sep', 'From 29 Sep'."""
         a, short = self.anchor, self._compact
         if self.view == "month":
             text = f"{a:%b %Y}" if short else f"{a:%B %Y}"
         elif self.view == "week":
             s = a - datetime.timedelta(days=a.weekday())
-            text = fmt_range(s, s + datetime.timedelta(days=6), year=None if short else True)
+            text = fmt_range(s, s + datetime.timedelta(days=6))
         elif self.view == "day":
-            text = fmt_date(a) if short else fmt_date(a, long=True, year=True)
+            text = fmt_date(a) if short else fmt_date(a, long=True)
         else:
-            text = "From " + (fmt_date(a, weekday=False) if short else fmt_date(a, weekday=False, long=True, year=True))
+            text = "From " + (fmt_date(a, weekday=False) if short else fmt_date(a, weekday=False, long=True))
         self.title.setText(text)
 
     def entries(self):
@@ -484,17 +488,7 @@ class CalendarPage(QWidget):
         return b
 
     # ------------------------------------------------------------ actions
-    @staticmethod
-    def _default_start(day, hour=9, now=None):
-        """When a new item on `day` starts: 09:00 (deadlines 18:00), but never in the past - today after that
-        hour it is the next half hour (15:10 -> 15:30)."""
-        start = datetime.datetime.combine(day, datetime.time(hour))
-        now = now or datetime.datetime.now()
-        if day == now.date() and now >= start:
-            now = now.replace(second=0, microsecond=0)
-            start = now + datetime.timedelta(minutes=30 - now.minute % 30)
-            start = min(start, datetime.datetime.combine(day, datetime.time(23, 30)))
-        return start
+    _default_start = staticmethod(default_start)     # 09:00, or the next half hour (see calendar_dialogs)
 
     def new_menu(self):
         m = QMenu(self)

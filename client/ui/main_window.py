@@ -49,6 +49,24 @@ def bring_to_front(window):
         pass
 
 
+def status_dot(color, size=16, dot=10):
+    """A plain filled dot in a status colour, for the status menus (the current one is marked by bold and a
+    tick, so the dot itself never changes)."""
+    from PySide6.QtGui import QPixmap
+    ratio = 2
+    pm = QPixmap(size * ratio, size * ratio)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    off = (size - dot) * ratio // 2
+    p.drawEllipse(off, off, dot * ratio, dot * ratio)
+    p.end()
+    pm.setDevicePixelRatio(ratio)
+    return QIcon(pm)
+
+
 def idle_seconds() -> float:
     if sys.platform != "win32":
         return 0
@@ -332,7 +350,7 @@ class MainWindow(QMainWindow):
         self.tray_compact.setCheckable(True)
         status_menu = m.addMenu("Status")
         for st in P.STATUSES:
-            status_menu.addAction(icon("circle", T.STATUS_COLORS[st], 16), T.STATUS_LABELS[st],
+            status_menu.addAction(status_dot(T.STATUS_COLORS[st]), T.STATUS_LABELS[st],
                                   lambda st=st: self.set_status(st))
         m.addSeparator()
         m.addAction("Sign out", self.confirm_logout)
@@ -696,7 +714,7 @@ class MainWindow(QMainWindow):
         for st in P.STATUSES:
             current = me.get("status") == st
             # the one I am on: bold with a tick on the right (the status icons leave no room for Qt's own tick)
-            a = m.addAction(icon("circle", T.STATUS_COLORS[st], 16),
+            a = m.addAction(status_dot(T.STATUS_COLORS[st]),
                             T.STATUS_LABELS[st] + ("\t✓" if current else ""), lambda st=st: self.set_status(st))
             if current:
                 f = a.font()
@@ -1247,11 +1265,15 @@ class MainWindow(QMainWindow):
         self.toast_label.raise_()
         self.toast_label.show()
         self.toast_timer.start(ms)
+        # a bar shown just before (focus time, reconnect) moves the chat down once the layout runs: follow it
+        QTimer.singleShot(0, self._place_toast)
 
     def _place_toast(self):
         lab = self.toast_label
         text = lab.text()
         central = self.centralWidget()
+        if central.layout() is not None:
+            central.layout().activate()
         if self.stack.isVisible():
             area = QRect(self.stack.mapTo(self, QPoint(0, 0)), self.stack.size())
         else:
@@ -1270,7 +1292,10 @@ class MainWindow(QMainWindow):
         composer = getattr(self.chat, "composer", None)
         if (self.stack.isVisible() and self.stack.currentWidget() is self.chat and composer is not None
                 and composer.isVisible()):
-            y = composer.mapTo(self, QPoint(0, 0)).y() - lab.height() - 12
+            # above everything that sits on the composer (scheduled line, uploads, outbox), over the messages
+            blocks = [composer.parentWidget()] + [getattr(self.chat, n, None) for n in ("uploads", "outbox_strip")]
+            top = min(w.mapTo(self, QPoint(0, 0)).y() for w in blocks if w is not None and w.isVisible())
+            y = top - lab.height() - 8
         else:
             y = area.bottom() - lab.height() - 28
         lab.move(max(8, min(x, self.width() - lab.width() - 8)), max(8, y))

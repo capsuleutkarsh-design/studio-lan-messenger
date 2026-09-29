@@ -368,6 +368,12 @@ class Store(QObject):
             self.announcements.insert(0, ann)
             self.announcements_changed.emit()
             self.announcement.emit(ann)
+        elif op == "announcement_reads":                # 'Read by 3 of 11' going up while the sender looks
+            for a in self.announcements:
+                if a.get("id") == ev.get("id"):
+                    a["read_count"], a["total"] = ev.get("read_count", 0), ev.get("total", 0)
+                    self.announcements_changed.emit()
+                    break
 
     def add_message(self, msg, live=False):
         self.remember_name(msg)

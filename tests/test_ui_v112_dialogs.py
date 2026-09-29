@@ -279,6 +279,7 @@ class DialogsV112Test(unittest.TestCase):
         dlg.query.setText("soft edges")
         dlg.search()
         self.assertTrue(wait_until(self.app, lambda: dlg.list.count() >= 1))
+        self.assertEqual(dlg.list.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
         rich = dlg.list.item(0).data(RICH_ROLE)
         self.assertIn("<b>Soft</b> <b>edges</b>", rich, "the searched words are bold")
         self.assertIn("to you", dlg.list.item(0).text())
@@ -293,6 +294,9 @@ class DialogsV112Test(unittest.TestCase):
         main.save_for_later(msg, True)
         dlg = SavedDialog(main)
         self.assertFalse(dlg.remove.isEnabled(), "nothing selected: Remove does nothing, so it is off")
+        from PySide6.QtCore import QItemSelectionModel
+        dlg.list.setCurrentRow(0, QItemSelectionModel.NoUpdate)
+        self.assertFalse(dlg.remove.isEnabled(), "the focus row alone is not a selection")
         dlg.list.setCurrentRow(0)
         self.assertTrue(dlg.remove.isEnabled())
         dlg._remove()
@@ -330,6 +334,9 @@ class DialogsV112Test(unittest.TestCase):
         w.password.textEdited.emit("x")
         self.assertEqual(w.status.text(), "", "typing again clears the message")
         self.assertFalse(w.password.property("error"))
+        w.set_error("Invalid username or password")
+        w.set_error("Could not reach server 10.0.0.9")
+        self.assertFalse(w.password.property("error"), "another error unmarks the password box")
         w.discovery.finished.emit()
         w.close()
         for accent in T.ACCENTS:

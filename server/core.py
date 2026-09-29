@@ -2262,7 +2262,24 @@ class ServerCore(PlannerMixin, CalendarMixin):
         return later()
 
     def h_announcement_read(self, s, req):
-        self.db.mark_announcement_read(int(req.get("id") or 0), s.user_id)
+        ann_id = int(req.get("id") or 0)
+        self.db.mark_announcement_read(ann_id, s.user_id)
+        self.push_read_count(ann_id)
+
+    def push_read_count(self, ann_id):
+        """The sender and the admins who are signed in see 'Read by 3 of 11' go up while they look at it
+        ({"op": "announcement_reads"}; clients that don't know it ignore it)."""
+        ann = self.db.get_announcement(ann_id)
+        if not ann:
+            return
+        reads = self.announcement_reads(ann_id)
+        payload = {"op": "announcement_reads", "id": ann_id, "read_count": len(reads["read"]),
+                   "total": len(reads["read"]) + len(reads["unread"])}
+        for uid in list(self.sessions):
+            if uid == ann["sender_id"] or (self.org.users.get(uid) or {}).get("is_admin"):
+                for sess in list(self.sessions.get(uid, ())):
+                    if getattr(sess, "token", None):          # app sessions only, not a console
+                        sess.send(payload)
 
     SEARCH_PAGE = 200
 

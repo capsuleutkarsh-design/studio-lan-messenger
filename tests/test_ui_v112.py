@@ -281,6 +281,24 @@ class IconTest(unittest.TestCase):
         b = icons.pixmap("attachment", "#ff0000", 16).toImage()
         self.assertEqual(a, b)
 
+    def test_live_read_counts_reach_the_news_page(self):
+        from PySide6.QtCore import QObject, Signal
+        from client.store import Store
+
+        class Conn(QObject):
+            event = Signal(dict)
+
+            def send(self, *a, **k):
+                pass
+        store = Store.__new__(Store)
+        QObject.__init__(store)
+        store.announcements = [{"id": 7, "read_count": 0, "total": 10}]
+        seen = []
+        store.announcements_changed.connect(lambda: seen.append(1))
+        Store.handle_event(store, {"op": "announcement_reads", "id": 7, "read_count": 3, "total": 10})
+        self.assertEqual(store.announcements[0]["read_count"], 3)
+        self.assertEqual(seen, [1])
+
 
 if __name__ == "__main__":
     unittest.main()

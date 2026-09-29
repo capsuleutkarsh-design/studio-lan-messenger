@@ -39,7 +39,9 @@ def _person(u, me_id=None):
     it = QTreeWidgetItem([name, u.get("designation") or "", where, T.STATUS_LABELS.get(status, status)])
     it.setIcon(0, icon("user", T.STATUS_COLORS.get(status, T.MUTED), 16))
     away = status in ("offline", "invisible")
-    it.setForeground(3, QBrush(QColor(T.META if away else T.STATUS_COLORS.get(status, T.MUTED))))
+    # the status colour as text, made readable on the list (the light theme's green and orange were ~2:1)
+    colour = T.META if away else T.readable_on(T.STATUS_COLORS.get(status, T.MUTED), [T.PANEL, T.BG])
+    it.setForeground(3, QBrush(QColor(colour)))
     if u.get("designation"):
         lead = (u.get("level") or 0) >= 60
         it.setForeground(1, QBrush(QColor(T.TEXT if lead else T.MUTED)))

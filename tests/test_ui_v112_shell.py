@@ -306,7 +306,8 @@ class UiV112ShellTest(unittest.TestCase):
         main.popup_stack.close_all()
         settle(self.app, 0.1)
         room = P.room_conv(self.room)
-        title = "Ben Das mentioned you in Paint & Roto and a very long room name that cannot fit"
+        title = ("Ben Das, Lea Kapoor, Catriona Iyer and a very long list of other people mentioned you"
+                 " in Paint & Roto")
         msg = {"id": 9001, "conv": room, "sender_id": self.ben, "kind": "text", "body": "x", "ts": time.time()}
         main.notify(title, "one " * 60, room, msg)
         main.notify(title, "two", room, msg)
@@ -315,8 +316,9 @@ class UiV112ShellTest(unittest.TestCase):
         settle(self.app, 0.3)
         try:
             pop = next(p for p in main.popup_stack.popups if p.conv == room)
-            self.assertEqual(pop.title.text(), title)
-            self.assertTrue(pop.title.is_elided())
+            self.assertEqual(pop.title.text(), "Paint & Roto", "the room is the title, never cut off")
+            self.assertEqual(pop.context.text(), title[:-len(" in Paint & Roto")])
+            self.assertTrue(pop.context.is_elided(), "a long 'who' line ends in …")
             self.assertFalse(pop.more.isHidden())
             self.assertEqual(pop.more.text(), "+1 more")
             self.assertEqual(pop.input.placeholderText(), "Reply in Paint & Roto…")

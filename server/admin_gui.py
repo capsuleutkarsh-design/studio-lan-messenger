@@ -198,10 +198,12 @@ def align_columns(table, columns, align=NUM):
             item.setTextAlignment(align)
 
 
-def numbers_last(table):
-    """A table whose last column is a number: no stretching, so that number stays next to the others instead of
-    at the far right edge."""
-    table.horizontalHeader().setStretchLastSection(False)
+def numbers_last(table, stretch=0):
+    """A table whose last column is a number: a text column (`stretch`) takes the spare width instead, so the
+    numbers stay together and the header line still runs the whole width."""
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setSectionResizeMode(stretch, QHeaderView.Stretch)
 
 
 def hide_empty_columns(table, columns):
@@ -588,6 +590,7 @@ class UserDialog(QDialog):
         self.users = [u for u in users if not u["disabled"]]
         self.depts = list(depts)
         form = QFormLayout(self)
+        form.setContentsMargins(22, 20, 22, 16)
         form.setSpacing(10)
         self.username = QLineEdit(user["username"] if user else "")
         self.name = QLineEdit(user["display_name"] if user else "")
@@ -854,6 +857,7 @@ class UsersPage(Page):
         dlg.setWindowTitle("Reset password")
         dlg.setMinimumWidth(440)
         form = QFormLayout(dlg)
+        form.setContentsMargins(22, 20, 22, 16)
         form.setSpacing(10)
         pw = QLineEdit()
         pw.setEchoMode(QLineEdit.Password)
@@ -1152,6 +1156,8 @@ class RoomDialog(QDialog):
         self.setWindowTitle("Edit room" if room else "New room")
         self.setMinimumSize(420, 520)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(10)
         form = QFormLayout()
         self.name = QLineEdit(room["name"] if room else "")
         self.name.setPlaceholderText("e.g. Compositing, Project X, All Studio")
@@ -1364,6 +1370,7 @@ class RoleDialog(QDialog):
         self.setWindowTitle("Edit designation" if role else "New designation")
         self.setMinimumWidth(500)
         form = QFormLayout(self)
+        form.setContentsMargins(22, 20, 22, 16)
         form.setSpacing(10)
         self.name = QLineEdit(role["name"] if role else "")
         self.name.setPlaceholderText("e.g. Lead, Supervisor, HR")
@@ -1421,7 +1428,7 @@ class RolesPage(Page):
         self.table = make_table(["Designation", "Level", "Announcements to", "Create rooms",
                                  "Manage accounts", "Sees", "Always visible", "People"])
         align_columns(self.table, [1, 7])
-        numbers_last(self.table)
+        numbers_last(self.table, stretch=2)
         self.table.horizontalHeaderItem(5).setToolTip("Who they see in the app: everyone, or a limited list")
         self.table.doubleClicked.connect(lambda: self.edit(self.selected()))
         self.lay.addWidget(self.table, 1)
@@ -1600,7 +1607,7 @@ class AnnouncePage(Page):
         self.lay.addLayout(sent_row)
         self.table = make_table(["When", "From", "Title", "To", "Read"])
         align_columns(self.table, [4])
-        numbers_last(self.table)
+        numbers_last(self.table, stretch=2)
         self.table.doubleClicked.connect(self.show_reads)
         self.lay.addWidget(self.table, 1)
         self.anns = []
@@ -1775,7 +1782,8 @@ class ReportsPage(Page):
         r = self.data = self.win.api.call("admin_report", days)
         self.summary.setText(
             f"<b style='font-size:12pt'>{r['total_messages']:,}</b> messages &nbsp;·&nbsp; "
-            f"<b style='font-size:12pt'>{r['total_files']:,}</b> files ({human_size(r['total_uploaded'])}) &nbsp;·&nbsp; "
+            f"<b style='font-size:12pt'>{r['total_files']:,}</b> files"
+            + (f" ({human_size(r['total_uploaded'])})" if r["total_uploaded"] else "") + " &nbsp;·&nbsp; "
             f"<b style='font-size:12pt'>{r['active_users']}</b> of {r['users']} people active "
             f"<span style='color:{T.MUTED}'>in the last {r['days']} days</span>")
         self.chart.set_data(self.every_day(r["daily"], r["days"]))
@@ -1959,7 +1967,10 @@ class HolidaysPage(Page):
         from PySide6.QtWidgets import QDateEdit
         dlg = QDialog(self)
         dlg.setWindowTitle("Edit holiday" if h else "Add a holiday")
+        dlg.setMinimumWidth(380)
         form = QFormLayout(dlg)
+        form.setContentsMargins(22, 20, 22, 16)
+        form.setSpacing(10)
         day = QDateEdit()
         d = datetime.date.fromisoformat(h["day"]) if h else datetime.date(self.year.value(), 1, 1)
         day.setDate(QDate(d.year, d.month, d.day))
@@ -2557,7 +2568,10 @@ class SettingsPage(Page):
         T.polish(shot_hint, muted=True)
         form.addRow("", shot_hint)
 
-        row = QHBoxLayout()
+        bar = QWidget()
+        bar.setMaximumWidth(808)                        # the right edge of the form above (820 less its margin)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
         row.addStretch(1)
         self.unsaved = QLabel("Unsaved changes")
         self.unsaved.setStyleSheet(f"color: {T.readable_on(T.WARN_TEXT, T.BG)}; font-weight: 600;")
@@ -2569,7 +2583,7 @@ class SettingsPage(Page):
         self.save_btn = btn("Save settings", "check", primary=True)
         self.save_btn.clicked.connect(self.save)
         row.addWidget(self.save_btn)
-        self.lay.addLayout(row)
+        self.lay.addWidget(bar)
         self.cfg = {}
         # typing in the form marks it changed; the once-a-minute refresh then leaves it alone
         self._dirty = False

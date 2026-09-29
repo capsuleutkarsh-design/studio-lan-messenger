@@ -290,24 +290,26 @@ class MonthView(QWidget):
             shown = items if len(items) <= room else items[:max(0, room - 1)]
             p.setFont(_font(8.5))
             for e in shown:
-                pill = QRectF(r.x() + 5, top, r.width() - 10, line_h)
+                pill = QRectF(r.x() + 3, top, r.width() - 6, line_h)          # the whole cell width for the name
                 colour = QColor(kind_color(e.kind))
-                x = pill.x() + 6
+                x = pill.x() + 5
+                # a narrow cell keeps the name: an all-day item's tint (a timed one's dot) says the kind there
+                symbol = e.icon if pill.width() >= 90 else None
                 if e.all_day:
                     soft = QColor(colour)
                     soft.setAlphaF(0.14 if outside else 0.18)
                     p.setPen(Qt.NoPen)
                     p.setBrush(soft)
                     p.drawRoundedRect(pill, 7, 7)
-                elif not e.icon:
+                elif not symbol:
                     p.setPen(Qt.NoPen)
                     p.setBrush(colour)
-                    p.drawEllipse(QRectF(pill.x() + 5, pill.center().y() - 3, 6, 6))
-                    x = pill.x() + 15
-                if e.icon and pill.width() > 44:
-                    _draw_icon(p, e.icon, kind_icon_color(e.kind), QRectF(x - 1, pill.center().y() - 6, 12, 12))
+                    p.drawEllipse(QRectF(pill.x() + 4, pill.center().y() - 3, 6, 6))
+                    x = pill.x() + 13
+                if symbol:
+                    _draw_icon(p, symbol, kind_icon_color(e.kind), QRectF(x - 1, pill.center().y() - 6, 12, 12))
                     x += 14
-                right = pill.right() - 3
+                right = pill.right() - 2
                 text_colour = QColor(T.MUTED if outside else T.TEXT)
                 if pill.width() >= 150 and e.time_text():     # a wide cell: the time first, in the meta colour
                     t = e.time_text() + " "
@@ -320,7 +322,7 @@ class MonthView(QWidget):
                 self._hits.append((pill, day, e))
                 top += line_h + 2
             if len(shown) < len(items):
-                more = QRectF(r.x() + 5, top, r.width() - 10, line_h)
+                more = QRectF(r.x() + 3, top, r.width() - 6, line_h)
                 p.setPen(QColor(T.ACCENT if day == self._hover else T.MUTED))
                 p.setFont(_font(8, True))
                 p.drawText(more.adjusted(3, 0, 0, 0), Qt.AlignVCenter, f"+{len(items) - len(shown)} more")

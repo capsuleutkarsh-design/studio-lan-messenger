@@ -18,6 +18,7 @@ import logging
 import time
 
 from common import india_holidays, ics, recur
+from common.fmt import fmt_date
 
 log = logging.getLogger("server")
 
@@ -393,7 +394,7 @@ class CalendarMixin:
     def _cal_announce(self, uid, ev, rule):
         """A new meeting or deadline tells the people concerned (a line in the room, or an invitation)."""
         when = _dt(ev["start"])
-        text = f"{when:%a %d %b}" + ("" if ev["all_day"] else f", {when:%H:%M}")
+        text = fmt_date(when) + ("" if ev["all_day"] else f", {when:%H:%M}")
         if rule:
             text += f" · {recur.describe(rule, when)}"
         if ev["scope"] == "room" and ev["kind"] in ("meeting", "deadline"):

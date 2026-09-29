@@ -390,6 +390,42 @@ class UiV112ChatTest(unittest.TestCase):
         m = chat.mlay.contentsMargins()
         self.assertLessEqual(w, 360 - m.left() - m.right())
 
+    def test_long_system_line_wraps_inside_a_narrow_chat(self):
+        from client.ui.chat_view import SystemLine
+        chat = self.open(self.room_conv)
+        line = SystemLine({"id": 1, "ts": time.time(), "kind": "system",
+                           "body": 'Farhan Qureshi scheduled "AK74 dailies" · Thu 1 Oct, 14:30 in Screening Room 2'})
+        chat.scroll.viewport().resize(330, 400)
+        room = chat._line_width()
+        chat._set_width(line)
+        self.assertLessEqual(line.lbl.minimumWidth(), room, "the list never gets wider than the chat")
+
+    def test_new_messages_line_skips_old_system_notes(self):
+        chat = self.main.chat
+        saved = chat.unread_count, chat.first_unread_id, chat.divider_count, chat._anchor
+
+        class Conv:
+            complete = True
+        msgs = [self.msg("Administrator created the room", sender=0, kind="system", id=1),
+                self.msg("Timesheets are due", id=2), self.msg("Room 2 is booked", id=3)]
+        try:
+            chat.unread_count, chat.first_unread_id, chat.divider_count = 3, None, 0
+            chat._find_first_unread(Conv(), msgs)
+            self.assertEqual(chat.first_unread_id, 2, "above the first unread message, not the old note")
+            self.assertEqual(chat.divider_count, 2)
+        finally:
+            chat.unread_count, chat.first_unread_id, chat.divider_count, chat._anchor = saved
+
+    def test_message_menu_opens_upward_near_the_bottom(self):
+        from PySide6.QtCore import QPoint
+        from client.ui.chat_view import MessageRow, menu_point
+        row = MessageRow(self.main, self.msg("hello", sender=self.ann, conv=self.room_conv), True, True, True, True)
+        menu = row.build_menu()
+        win = self.main.frameGeometry()
+        at = QPoint(win.left() + 300, win.bottom() - 20)
+        pos = menu_point(menu, at, self.main)
+        self.assertLessEqual(pos.y() + menu.sizeHint().height(), win.bottom(), "Delete stays inside the window")
+
     # ------------------------------------------------------------ thread panel
     def test_thread_panel(self):
         main = self.main

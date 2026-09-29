@@ -76,6 +76,17 @@ def person_icon(store, uid, status=None, size=28):
     return QIcon(pm)
 
 
+def room_icon(name, size=24):
+    """A room's rounded-square avatar, as in the chat list."""
+    pm = QPixmap(size * 2, size * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    paint_avatar(p, QRect(0, 0, size, size), name, name, room=True)
+    p.end()
+    return QIcon(pm)
+
+
 # ------------------------------------------------------------------ list rows with two tones of text
 RICH_ROLE = Qt.UserRole + 1        # a row's rich text; the item's own text stays plain (search filters, tests)
 
@@ -137,7 +148,7 @@ class RichRows(QStyledItemDelegate):
             rect.adjust(self.CHECK_GAP, 0, 0, 0)
         doc = self._doc(html, opt.font, rect.width())
         pad = 200 - rect.height()                 # the item's own padding above and below the text
-        return QSize(base.width(), max(base.height(), int(doc.size().height() + 0.99) + max(8, pad)))
+        return QSize(max(40, width - 4), max(base.height(), int(doc.size().height() + 0.99) + max(8, pad)))
 
 
 def rich_list(word_wrap=True):
@@ -146,6 +157,7 @@ def rich_list(word_wrap=True):
     lst.setItemDelegate(RichRows(lst))
     lst.setResizeMode(QListView.Adjust)
     lst.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+    lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)       # rows wrap (or clip) to the width
     lst.setWordWrap(word_wrap)
     return lst
 
@@ -1243,8 +1255,9 @@ class AnnouncementPopup(QDialog):
         lay.addStretch(0)
         buttons = QHBoxLayout()
         if hasattr(ctx, "rail_clicked") and "announcements" in getattr(ctx, "rail", {}):
-            news = QPushButton("Open News")
-            T.polish(news, flat=True)
+            news = QPushButton(" Open News")          # a normal secondary button beside the primary Got it
+            news.setIcon(icon("megaphone", T.TEXT, 16))
+            news.setCursor(Qt.PointingHandCursor)
             news.setToolTip("See every announcement on the News page")
             news.clicked.connect(self._open_news)
             buttons.addWidget(news)
@@ -1316,7 +1329,7 @@ class ForwardDialog(Dialog):
                     store.users.get(target, {}).get("status", "offline")
                 ic = person_icon(store, target, status, 24)
             else:
-                ic = icon("hash", T.MUTED, 18)
+                ic = room_icon(store.title(conv), 24)
             it = QListWidgetItem(ic, store.title(conv))
             it.setData(Qt.UserRole, conv)
             self.list.addItem(it)
@@ -1374,7 +1387,7 @@ class SavedDialog(Dialog):
         self.list = rich_list()
         self.list.itemActivated.connect(self._open)
         self.list.itemDoubleClicked.connect(self._open)
-        self.list.currentItemChanged.connect(lambda *_: self._update_remove())
+        self.list.itemSelectionChanged.connect(self._update_remove)
         self.lay.addWidget(self.list, 1)
         self.help = hint("Double-click a message to go to it.")
         self.lay.addWidget(self.help)
@@ -1414,11 +1427,14 @@ class SavedDialog(Dialog):
         self._update_remove()
 
     def _update_remove(self):
+        """Remove works on the row that is visibly selected (the list's focus row alone doesn't count)."""
         try:
-            it = self.list.currentItem()
-            self.remove.setEnabled(bool(it is not None and it.data(Qt.UserRole)))
+            self.remove.setEnabled(bool(self._selected()))
         except RuntimeError:
             pass
+
+    def _selected(self):
+        return [it.data(Qt.UserRole) for it in self.list.selectedItems() if it.data(Qt.UserRole)]
 
     def _open(self, it):
         x = it.data(Qt.UserRole)
@@ -1429,9 +1445,7 @@ class SavedDialog(Dialog):
         self.accept()
 
     def _remove(self):
-        it = self.list.currentItem()
-        x = it.data(Qt.UserRole) if it else None
-        if x:
+        for x in self._selected():
             self.ctx.store.set_saved(x, False)
 
 
@@ -1453,7 +1467,8 @@ class ReadReceiptsDialog(Dialog):
         self.list = lst = QListWidget()
         lst.setSelectionMode(QAbstractItemView.NoSelection)
         lst.setFocusPolicy(Qt.NoFocus)
-        groups = ((verb, read, "check", T.ACCENT), (f"Not {verb.lower()} yet", unread, "close", T.MUTED))
+        # not read yet is waiting, not an error: a muted clock rather than a cross
+        groups = ((verb, read, "check", T.ACCENT), (f"Not {verb.lower()} yet", unread, "time", T.MUTED))
         for label, people, ic, color in groups:
             if not people:
                 continue
@@ -1467,7 +1482,8 @@ class ReadReceiptsDialog(Dialog):
             lst.addItem(h)
             for person in people:
                 lst.addItem(QListWidgetItem(icon(ic, color, 14), person["name"]))
-        lst.setMinimumHeight(300)
+        lst.setIconSize(QSize(16, 16))
+        lst.setMinimumHeight(max(220, min(460, lst.count() * 36 + 16)))      # the whole list when it fits
         self.lay.addWidget(lst, 1)
         close = QPushButton("Close")
         T.polish(close, primary=True)
