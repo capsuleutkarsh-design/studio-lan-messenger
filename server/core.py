@@ -172,7 +172,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "set_pref": self.h_set_pref,
             "shot_status_set": self.h_shot_status_set,
             "shot_history": self.h_shot_history,
-            "thumb": self.h_thumb,
             "read_by": self.h_read_by,
             "announcement_reads": self.h_announcement_reads,
             "screen_invite": self.h_screen_invite,
@@ -1840,71 +1839,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
         return {"shot": shot, "history": [{"status": r["status"], "user_id": r["user_id"],
                                            "name": self._user_name(r["user_id"]), "ts": r["ts"]}
                                           for r in self.db.shot_history(shot)]}
-
-    # ---- EXR / MOV / DPX previews: made on the server (it has the file) with ffmpeg, kept small
-    THUMB_EXT = {".exr", ".dpx", ".tif", ".tiff", ".tga", ".psd", ".mov", ".mp4", ".m4v", ".avi", ".mkv",
-                 ".mxf", ".webm", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
-    VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".mxf", ".webm"}
-
-    async def h_thumb(self, s, req):
-        file_id = str(req.get("file_id") or "")
-        size = 1280 if int(req.get("size") or 320) > 400 else 320
-        f = self.db.get_file(file_id)
-        if not f or not f["complete"] or not self.db.can_access_file(s.user_id, file_id):
-            raise ClientError("File not found")
-        if f["purged"] or not os.path.exists(f["path"]):
-            raise ClientError("File was removed from the server")
-        ext = os.path.splitext(f["name"])[1].lower()
-        if ext not in self.THUMB_EXT:
-            raise ClientError("No preview for this kind of file")
-        out = await self.loop.run_in_executor(None, self._make_thumb, f["path"], file_id, ext, size)
-        if not out:
-            raise ClientError("No preview")
-        with open(out, "rb") as fh:
-            return {"file_id": file_id, "size": size, "data": base64.b64encode(fh.read()).decode()}
-
-    @staticmethod
-    def ffmpeg_path():
-        """ffmpeg.exe next to the server program (installed), or the developer's imageio-ffmpeg copy."""
-        here = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ""
-        for p in ([os.path.join(here, "ffmpeg.exe")] if here else []):
-            if os.path.exists(p):
-                return p
-        try:
-            import importlib
-            return importlib.import_module("imageio_ffmpeg").get_ffmpeg_exe()
-        except Exception:                                    # noqa: BLE001 - no previews, nothing else breaks
-            return None
-
-    def _make_thumb(self, src, file_id, ext, size):
-        import subprocess
-        folder = os.path.join(self.config.storage_dir, ".thumbs")
-        os.makedirs(folder, exist_ok=True)
-        safe = "".join(c for c in file_id if c.isalnum() or c in "-_")[:64]
-        out = os.path.join(folder, f"{safe}_{size}.jpg")
-        if os.path.exists(out) and os.path.getsize(out):
-            return out
-        exe = self.ffmpeg_path()
-        if not exe:
-            return None
-        scale = f"scale='min({size},iw)':-2"
-        tries = []
-        if ext in self.VIDEO_EXT:
-            tries = [["-ss", "1"], []]                   # skip a black first frame; a short clip: from the start
-        elif ext == ".exr":
-            tries = [["-apply_trc", "iec61966_2_1"], []]  # linear EXR shown as it looks on screen (sRGB)
-        else:
-            tries = [[]]
-        for pre in tries:
-            cmd = [exe, "-v", "error", "-y"] + pre + ["-i", src, "-frames:v", "1", "-vf", scale, "-q:v", "4", out]
-            try:
-                subprocess.run(cmd, timeout=60, capture_output=True,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            except (OSError, subprocess.SubprocessError):
-                continue
-            if os.path.exists(out) and os.path.getsize(out):
-                return out
-        return None
 
     def shot_pattern(self):
         """The admin's shot name pattern (Settings), or "" when it is off or not a valid regular expression."""

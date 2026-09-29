@@ -206,8 +206,6 @@ class MainWindow(QMainWindow):
         from client.previews import PreviewCache
         from client.folders import Extractor
         self.previews = PreviewCache(transfers, self)
-        from client.previews import ThumbCache
-        self.thumbs = ThumbCache(conn, self)
         from client.avatars import AvatarCache
         self.avatars = AvatarCache(conn, store, self)
         self._avatar_repaint = QTimer(self, singleShot=True, interval=120, timeout=self._repaint_avatars)

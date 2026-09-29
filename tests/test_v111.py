@@ -1,12 +1,10 @@
-"""1.11.0: shot status, the leave auto-reply, saved messages, the update tracker, "not seen lately",
-EXR / MOV previews made by the server - and the client side of next-unread, mark-all-read, drafts,
-"In a meeting", drawing on a picture and comparing two versions."""
+"""1.11: shot status, the leave auto-reply, saved messages, the update tracker, "not seen lately" - and the
+client side of next-unread, mark-all-read, drafts, "In a meeting", drawing on a picture and comparing two
+versions."""
 
-import base64
 import datetime
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -37,14 +35,6 @@ class Client(base.Client):
             self.login = self.read()
         finally:
             base.PORT = old
-
-
-def ffmpeg():
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:                                   # noqa: BLE001
-        return None
 
 
 class ServerV111Test(unittest.TestCase):
@@ -145,42 +135,6 @@ class ServerV111Test(unittest.TestCase):
         self.assertIn("Ben Das", names)
         self.assertIn("Cat Iyer", names, "never signed in")
         self.assertNotIn("Ann Rao", names)
-
-    # ------------------------------------------------------------ previews made by the server
-    @unittest.skipUnless(ffmpeg(), "imageio-ffmpeg is not installed")
-    def test_exr_and_mov_previews(self):
-        a = Client("ann")
-        exe = ffmpeg()
-        clip = os.path.join(self.tmp, "FAL_030_v012.mov")
-        exr = os.path.join(self.tmp, "FAL_030_v012.1001.exr")
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=24:duration=2",
-                        "-pix_fmt", "yuv420p", clip], check=True, creationflags=flags)
-        subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360", "-frames:v", "1",
-                        "-pix_fmt", "gbrpf32le", exr], check=True, creationflags=flags)
-        for path in (clip, exr):
-            data = open(path, "rb").read()
-            s = base.tls_connect(PORT)
-            s.sendall(P.encode({"op": "upload", "token": a.login["token"], "name": os.path.basename(path),
-                                "size": len(data)}))
-            f = s.makefile("rb")
-            import json
-            hdr = json.loads(f.readline())
-            s.sendall(data)
-            json.loads(f.readline())
-            s.close()
-            a.request("send", conv=f"u:{self.b}", file_id=hdr["file_id"])
-            r = a.request("thumb", file_id=hdr["file_id"], size=320)
-            self.assertTrue(r["ok"], (path, r))
-            jpg = base64.b64decode(r["data"])
-            self.assertTrue(jpg.startswith(b"\xff\xd8"), "a JPEG")
-            again = a.request("thumb", file_id=hdr["file_id"], size=320)
-            self.assertEqual(again["data"], r["data"], "made once, then kept")
-        b = Client("cat")
-        self.assertFalse(b.request("thumb", file_id=hdr["file_id"])["ok"], "only people who can see the file")
-        a.close()
-        b.close()
-
 
 class ClientV111Test(unittest.TestCase):
     """The client side, against a real server."""

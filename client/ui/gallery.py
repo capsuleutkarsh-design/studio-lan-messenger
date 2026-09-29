@@ -388,7 +388,6 @@ class ImageViewer(QDialog):
         lay.addWidget(self.strip_area)
 
         ctx.previews.ready.connect(self._ready)
-        ctx.thumbs.ready.connect(lambda fid, size, path: size == 1280 and self._ready(fid, path))
         win = ctx.frameGeometry() if ctx.isVisible() else QGuiApplication.primaryScreen().availableGeometry()
         self.setGeometry(win)
         self._fill_strip()
@@ -396,14 +395,11 @@ class ImageViewer(QDialog):
 
     # ------------------------------------------------------------------ pictures
     def _path(self, m):
-        if is_previewable(m["file"]):
-            return self.ctx.previews.request(m["file"])
-        return self.ctx.thumbs.request(m["file"], 1280)       # EXR / MOV...: the server's larger preview
+        return self.ctx.previews.request(m["file"])
 
     def _fill_strip(self):
         for k, m in enumerate(self.msgs):
-            path = (self.ctx.previews.path_for(m["file"]) if is_previewable(m["file"])
-                    else self.ctx.thumbs.path_for(m["file"], 320))
+            path = self.ctx.previews.path_for(m["file"])
             pm = square(path, 54) if os.path.exists(path) else None
             if pm:
                 self.strip[k].setPixmap(pm)

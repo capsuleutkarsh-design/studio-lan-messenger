@@ -117,7 +117,6 @@ def build_programs():
                 os.remove(path)
     shutil.copy(os.path.join(ROOT, "client_config.example.json"), os.path.join(DIST, "LANMessenger"))
     shutil.copy(os.path.join(ROOT, "firewall_setup.bat"), os.path.join(DIST, "LANMessengerServer"))
-    copy_ffmpeg(os.path.join(DIST, "LANMessengerServer"))
     for folder in ("LANMessenger", "LANMessengerServer"):          # the licence travels with the program
         for name in ("LICENSE.md", "THIRD_PARTY_NOTICES.md"):     # the apps check these at startup
             shutil.copy(os.path.join(ROOT, name), os.path.join(DIST, folder, name))
@@ -126,33 +125,6 @@ def build_programs():
     for name, _, _ in PROGRAMS:
         size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(os.path.join(DIST, name)) for f in fs)
         print(f"  {name}: {size / 1e6:.0f} MB")
-
-
-FFMPEG_NOTICE = """FFmpeg (ffmpeg.exe)
-
-Quillo's server runs this separate program to make small previews of EXR, DPX, TIFF and video files that
-people share in chats. It is not part of Quillo and is not changed by Quillo.
-
-FFmpeg is free software by the FFmpeg developers (https://ffmpeg.org). This build ({version}) is licensed
-under the GNU General Public License, version 3 (https://www.gnu.org/licenses/gpl-3.0.html).
-The build comes from https://www.gyan.dev/ffmpeg/builds/ via the imageio-ffmpeg package; its source code
-is available from https://ffmpeg.org/download.html and https://www.gyan.dev/ffmpeg/builds/.
-"""
-
-
-def copy_ffmpeg(folder):
-    """ffmpeg.exe (from imageio-ffmpeg) next to the server, with its licence note. Only the server needs it."""
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as e:                               # noqa: BLE001
-        print(f"  WARNING: no ffmpeg ({e}) - the server will not make EXR/MOV previews")
-        return
-    shutil.copy(exe, os.path.join(folder, "ffmpeg.exe"))
-    version = subprocess.run([exe, "-version"], capture_output=True, text=True).stdout.split("\n")[0]
-    with open(os.path.join(folder, "FFMPEG-LICENSE.txt"), "w", encoding="utf-8") as f:
-        f.write(FFMPEG_NOTICE.format(version=version.strip() or "ffmpeg"))
-    print(f"  ffmpeg: {version.strip()}")
 
 
 def build_installers():

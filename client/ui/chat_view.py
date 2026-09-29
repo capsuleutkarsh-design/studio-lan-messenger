@@ -320,63 +320,6 @@ class ImagePreview(QLabel):
                 open_file(self.path)
 
 
-class ServerThumb(QLabel):
-    """Preview of an EXR, DPX, MOV... made by the server. A click opens the picture viewer."""
-
-    def __init__(self, ctx, msg):
-        super().__init__()
-        from client.previews import is_video
-        self.ctx, self.msg, self.info = ctx, msg, msg["file"]
-        self.video = is_video(self.info)
-        self.path = None
-        self.setCursor(Qt.PointingHandCursor)
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(120, 80)
-        self.setStyleSheet(f"background: {T.TINT}; border-radius: 12px; color: {T.FAINT};")
-        self.setText("Loading preview...")
-        ctx.thumbs.ready.connect(self._ready)
-        ctx.thumbs.failed.connect(self._failed)
-        path = ctx.thumbs.request(self.info, 320)
-        if path:
-            self._show(path)
-
-    def _ready(self, file_id, size, path):
-        if file_id == self.info["id"] and size == 320:
-            self._show(path)
-
-    def _failed(self, file_id, size):
-        if file_id == self.info["id"] and size == 320 and not self.path:
-            self.hide()                          # an older server, or ffmpeg could not read it: the card stays
-
-    def _show(self, path):
-        pm = thumbnail(path)
-        if pm is None:
-            self.hide()
-            return
-        if self.video:                           # a play mark: it is a clip, not a still
-            from PySide6.QtGui import QPixmap, QPolygonF
-            pm = QPixmap(pm)
-            p = QPainter(pm)
-            p.setRenderHint(QPainter.Antialiasing)
-            c = pm.rect().center()
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, 150))
-            p.drawEllipse(c, 24, 24)
-            p.setBrush(QColor("#ffffff"))
-            p.drawPolygon(QPolygonF([QPoint(c.x() - 7, c.y() - 11), QPoint(c.x() - 7, c.y() + 11),
-                                     QPoint(c.x() + 12, c.y())]))
-            p.end()
-        self.path = path
-        self.setStyleSheet("background: transparent;")
-        self.setPixmap(pm)
-        self.setFixedSize(pm.size())
-        self.setToolTip("Preview made by the server - click to view larger")
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton and self.path:
-            self.ctx.chat.open_viewer(self.msg)
-
-
 class PathCard(QFrame):
     """A studio folder or file named in a message: its name, where it is, and Open / Copy buttons."""
 
@@ -828,11 +771,8 @@ class MessageRow(QWidget):
                 b.addWidget(q)
             f = msg.get("file")
             if f:
-                from client.previews import is_thumbable
                 if is_previewable(f):
                     b.addWidget(ImagePreview(ctx, f, msg))
-                elif is_thumbable(f) and getattr(ctx, "thumbs", None):
-                    b.addWidget(ServerThumb(ctx, msg))
                 b.addWidget(FileCard(ctx, f, msg["conv"], msg["ts"]))
             if msg.get("kind") == "poll" and msg.get("poll"):
                 b.addWidget(PollCard(ctx, msg))
@@ -2082,13 +2022,12 @@ class ChatView(QWidget):
 
     def open_viewer(self, msg):
         """The picture viewer, with every picture shown in this chat (← → move between them)."""
-        from client.previews import is_thumbable
         pics = []
         for r in self.rows:
             if isinstance(r, GalleryRow):
                 pics += r.msgs
             elif isinstance(r, MessageRow) and r.msg.get("file") and not r.msg.get("deleted") \
-                    and (is_previewable(r.msg["file"]) or is_thumbable(r.msg["file"])):
+                    and is_previewable(r.msg["file"]):
                 pics.append(r.msg)
         if not any(m["id"] == msg["id"] for m in pics):
             pics = [msg]
