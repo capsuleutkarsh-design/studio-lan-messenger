@@ -221,10 +221,9 @@ class FileCard(QFrame):
         ic.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 11px;")
         ic.setPixmap(pixmap(_file_icon_name(file_info["name"]), T.ACCENT, 22))
         lay.addWidget(ic, 0, 0, 2, 1)
-        self.name = plain(QLabel(file_info["name"]))
+        # a file name has no spaces to wrap at: cut it in the middle so the extension stays visible
+        self.name = ElidedLabel(file_info["name"], mode=Qt.ElideMiddle)
         self.name.setStyleSheet(f"font-weight: 600; font-size: {text_pt(T.FONT_M)};")
-        self.name.setWordWrap(True)
-        self.name.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.name, 0, 1)
         self.meta = plain(QLabel())
         self.meta.setWordWrap(True)                      # a narrow bubble wraps 'available until …'
