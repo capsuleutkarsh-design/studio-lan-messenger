@@ -1,12 +1,18 @@
 """Readable chat backups and message retention.
 
-Every night the server appends new messages to plain text files, one per conversation per month:
+Every night the server appends new messages to plain text files: a folder per room and per pair of
+people, one file per month:
 
-    <backup folder>/Chat logs/2026-09/Room - Falcon Comp (r12).txt
-    <backup folder>/Chat logs/2026-09/Alice Mathew + Bob Fernandes (u3-u5).txt
+    <chat backup>/Rooms/Falcon Comp/2026-09.txt
+    <chat backup>/People/Alice Mathew + Bob Fernandes/2026-09.txt
+    <chat backup>/People/Alice Mathew - My space/2026-09.txt
 
-Messages older than ``message_retention_days`` are then removed from the database - but only once they
-are in those files, so nothing is lost. Nothing here needs the network; it runs on the server's loop.
+The chat backup lives in the central folder (see server/safecopy.py) when there is one, so it stays with
+the studio when the server PC goes, and that folder is locked to administrators. A room keeps its folder
+when it is renamed (folders.json remembers which folder is whose).
+
+Messages older than ``message_retention_days`` (0 = never, the default) are then removed from the
+database - but only once they are in those files, so nothing is lost.
 """
 
 import json
@@ -17,19 +23,41 @@ import time
 
 log = logging.getLogger("server")
 
-META_LAST_ID = "chat_log_last_id"
+# The Rooms / People layout starts its own count, so a server upgraded from 1.8 writes everything still in
+# its database once into the new folders (the old month folders are copied to "Before 1.9.0").
+META_LAST_ID = "chat_backup_last_id"
+META_OLD_LAST_ID = "chat_log_last_id"
+META_MIGRATED = "chat_backup_migrated"
+INDEX = "folders.json"
 META_LAST_RUN = "chat_log_last_run"
 META_PREVIOUS_RUN = "chat_log_previous_run"
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def log_dir(config) -> str:
+    """The chat backup folder: set in Settings, else in the central folder, else next to the backups."""
+    from server import safecopy
+    if config.values.get("chat_log_dir"):
+        return config.values["chat_log_dir"]
+    central = safecopy.folder(config)
+    if central:
+        return os.path.join(central, "Chat backup")
+    return os.path.join(config.backup_dir, "Chat backup")
+
+
+def old_log_dir(config) -> str:
+    """Where 1.8 and earlier wrote the month folders."""
     return config.values.get("chat_log_dir") or os.path.join(config.backup_dir, "Chat logs")
 
 
+_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _safe(name: str) -> str:
-    name = _BAD.sub("_", name).strip(" .")
-    return name[:80] or "chat"
+    name = _BAD.sub("_", name).strip(" .")[:80] or "chat"
+    if name.split(".")[0].strip().upper() in _RESERVED:
+        name += "_"                  # Windows keeps these names for devices: "NUL" can't be a folder
+    return name
 
 
 class _Names:
@@ -52,12 +80,58 @@ class _Names:
             self.rooms[rid] = row["name"] if row else f"room {rid}"
         return self.rooms[rid]
 
-    def file_title(self, conv):
+    def title(self, conv):
+        """'Room · Falcon Comp' / 'Alice Mathew + Bob Fernandes' - the heading of a backup file."""
         if conv.startswith("r:"):
-            rid = int(conv[2:])
-            return f"Room - {self.room(rid)} (r{rid})"
+            return f"Room · {self.room(int(conv[2:]))}"
+        return " + ".join(self.pair(conv))
+
+    def pair(self, conv):
         _, a, b = conv.split(":")
-        return f"{self.user(int(a))} + {self.user(int(b))} (u{a}-u{b})"
+        if a == b:
+            return [f"{self.user(int(a))} - My space"]
+        return sorted((self.user(int(a)), self.user(int(b))), key=str.lower)
+
+    def folder(self, conv):
+        """Rooms/<name> or People/<A + B> (not yet made unique - see _Index)."""
+        if conv.startswith("r:"):
+            return "Rooms", _safe(self.room(int(conv[2:])))
+        return "People", _safe(" + ".join(self.pair(conv)))
+
+
+class _Index:
+    """Which folder belongs to which chat, kept in folders.json: a renamed room keeps its folder, and two
+    rooms with the same name get two folders ('Comp' and 'Comp (room 12)')."""
+
+    def __init__(self, root):
+        self.path = os.path.join(root, INDEX)
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.by_conv = json.load(f)
+        except (OSError, ValueError):
+            self.by_conv = {}
+        self.changed = False
+
+    def folder(self, root, names, conv):
+        if conv not in self.by_conv:
+            group, name = names.folder(conv)
+            taken = {v.lower() for v in self.by_conv.values()}
+            rel = f"{group}/{name}"
+            if rel.lower() in taken:
+                ref = f"room {conv[2:]}" if conv.startswith("r:") else "users " + "-".join(conv.split(":")[1:])
+                rel = f"{group}/{name} ({ref})"
+            self.by_conv[conv] = rel
+            self.changed = True
+        return os.path.join(root, *self.by_conv[conv].split("/"))
+
+    def save(self):
+        if not self.changed:
+            return
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(self.by_conv, f, indent=1, ensure_ascii=False, sort_keys=True)
+        os.replace(self.path + ".tmp", self.path)
+        self.changed = False
 
 
 def format_message(m, names, db) -> str:
@@ -71,6 +145,11 @@ def format_message(m, names, db) -> str:
     parts = []
     if m["forwarded"]:
         parts.append("[forwarded]")
+    if "thread_root" in m.keys() and m["thread_root"]:
+        root = db.get_message(m["thread_root"])
+        if root:
+            snippet = (root["body"] or "").replace("\n", " ")[:50]
+            parts.append(f"[in the thread of {names.user(root['sender_id'])}: {snippet}]")
     if m["reply_to"]:
         q = db.get_message(m["reply_to"])
         if q:
@@ -109,19 +188,35 @@ def _size(n):
     return f"{n} B"
 
 
-def _write(root, names, by_file, touched):
-    """Append lines to the monthly file of each conversation. by_file: {(month, conv): [lines]}"""
+def _write(root, names, by_file, touched, index=None):
+    """Append lines to the month file of each chat. by_file: {(month, conv): [lines]}"""
+    index = index or _Index(root)
     for (month, conv), lines in by_file.items():
-        folder = os.path.join(root, month)
+        folder = index.folder(root, names, conv)
         os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, _safe(names.file_title(conv)) + ".txt")
+        path = os.path.join(folder, month + ".txt")
         new = not os.path.exists(path)
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             if new:
-                title = names.file_title(conv)
-                f.write(f"Quillo chat log  ·  {title}  ·  {month}\n{'=' * 72}\n")
+                f.write(f"Quillo chat backup  ·  {names.title(conv)}  ·  {month}\n{'=' * 72}\n")
             f.write("\n".join(lines) + "\n")
         touched.add(path)
+    index.save()
+
+
+def _copy_old_logs(db, config, root):
+    """Once: 1.8 wrote <backups>/Chat logs/<month>/<chat>.txt. Keep a copy of it inside the new chat backup
+    ('Before 1.9.0'), because messages older than the old 90-day limit exist only there."""
+    import shutil
+    if db.get_meta(META_MIGRATED, ""):
+        return
+    old = old_log_dir(config)
+    if os.path.isdir(old) and os.path.normcase(os.path.abspath(old)) != os.path.normcase(os.path.abspath(root)):
+        target = os.path.join(root, "Before 1.9.0")
+        if not os.path.exists(target):
+            shutil.copytree(old, target)
+            log.info("Chat backup: the old chat logs were copied to %s", target)
+    db.set_meta(META_MIGRATED, "1")
 
 
 def export_chat_logs(db, config, batches=None) -> dict:
@@ -130,8 +225,10 @@ def export_chat_logs(db, config, batches=None) -> dict:
     batches: stop after that many 5000-message batches (a huge first export must not hold up the server)."""
     root = log_dir(config)
     os.makedirs(root, exist_ok=True)
+    _copy_old_logs(db, config, root)
     last = int(db.get_meta(META_LAST_ID, 0))
     names = _Names(db)
+    index = _Index(root)
     total, touched, done, more = 0, set(), 0, False
     while True:
         if batches is not None and done >= batches:
@@ -144,7 +241,7 @@ def export_chat_logs(db, config, batches=None) -> dict:
         for m in rows:
             month = time.strftime("%Y-%m", time.localtime(m["created_at"]))
             by_file.setdefault((month, m["conv"]), []).append(format_message(m, names, db))
-        _write(root, names, by_file, touched)
+        _write(root, names, by_file, touched, index)
         last = rows[-1]["id"]
         db.set_meta(META_LAST_ID, last)        # progress is saved per batch: a crash never duplicates much
         total += len(rows)

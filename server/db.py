@@ -205,7 +205,27 @@ MIGRATIONS = [
     ("users", "avatar_ver", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "status_emoji", "TEXT NOT NULL DEFAULT ''"),
     ("users", "status_until", "REAL"),
+    # 1.9.0: the sender's own id for a message, so one sent again after a lost connection is stored once
+    ("messages", "client_id", "TEXT"),
+    # 1.9.0: threads - a reply in a thread points at the message that started it
+    ("messages", "thread_root", "INTEGER"),
+    ("messages", "thread_broadcast", "INTEGER NOT NULL DEFAULT 0"),      # "also send to the chat"
+    ("messages", "thread_count", "INTEGER NOT NULL DEFAULT 0"),          # on the first message: replies
+    ("messages", "thread_last", "REAL"),                                 # ... and when the last one came
 ]
+
+POST_MIGRATION_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_msg_sender_conv ON messages(sender_id, conv, id);
+CREATE INDEX IF NOT EXISTS idx_msg_recipient_conv ON messages(recipient_id, conv, id);
+CREATE INDEX IF NOT EXISTS idx_msg_client ON messages(sender_id, client_id) WHERE client_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_root, id) WHERE thread_root IS NOT NULL;
+"""
+
+# A message in the chat itself: not a reply that lives only inside a thread.
+IN_CHAT = "(thread_root IS NULL OR thread_broadcast=1)"
+
+# A muted room nobody opens can hold thousands of unread messages; counting past this is wasted work.
+UNREAD_CAP = 999
 
 # Who can announce to whom, from least to most.
 ANNOUNCE_LEVELS = ("none", "team", "section", "department", "all")
@@ -383,6 +403,9 @@ class Database:
             if column not in cols:
                 self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                 added.add((table, column))
+        # Indexes on columns that migrations add, so they come after them. The first start after an upgrade
+        # builds them once (seconds on a big database); every sign-in after that reads only the person's rows.
+        self.con.executescript(POST_MIGRATION_INDEXES)
         if ("announcements", "target_kind") in added:      # v1 department announcements
             self.con.execute("UPDATE announcements SET target_kind='department',"
                              " target_value=department WHERE department<>''")
@@ -447,6 +470,16 @@ class Database:
 
     def close(self):
         self.con.close()
+
+    def reader(self):
+        """The same database through a connection of its own, for a worker thread (the chat backup).
+
+        Close it when done. It may write small things (the backup's progress); WAL keeps both sides going."""
+        other = object.__new__(Database)
+        other.path = self.path
+        other.con = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        other.con.row_factory = sqlite3.Row
+        return other
 
     def _one(self, sql, *args):
         return self.con.execute(sql, args).fetchone()
@@ -546,14 +579,44 @@ class Database:
     def backup_to(self, path: str):
         """Consistent copy of the live database (safe while the server runs).
 
-        Uses its own connection, so it can run in a worker thread while the server keeps serving chats."""
-        src = sqlite3.connect(self.path, check_same_thread=False)
-        dst = sqlite3.connect(path)
+        Uses its own connection, so it can run in a worker thread while the server keeps serving chats.
+
+        The snapshot is taken in one step onto the server's own disk, then copied to `path`. Copying in
+        small steps restarted from the beginning after every write, so on a busy server (or onto a slow
+        network folder) a copy could run for ever; in WAL mode one step does not hold up anyone writing."""
+        import shutil
+        import threading
+        local = f"{self.path}.snapshot-{os.getpid()}-{threading.get_ident()}.tmp"
         try:
-            src.backup(dst, pages=4096)
+            size = os.path.getsize(self.path)
+            room = shutil.disk_usage(os.path.dirname(os.path.abspath(self.path))).free
+        except OSError:
+            size, room = 0, 0
+        if room < size * 1.2 + 500 * 1024 * 1024:
+            local = path + ".snap"            # this disk is nearly full: never take its last space
+        try:
+            src = sqlite3.connect(self.path, check_same_thread=False)
+            dst = sqlite3.connect(local)
+            try:
+                src.backup(dst, pages=-1)
+            finally:
+                dst.close()
+                src.close()
+            shutil.copyfile(local, path)
         finally:
-            dst.close()
-            src.close()
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+
+    def remove_stale_snapshots(self):
+        """Snapshots a crash or a power cut left next to the database (backup_to removes its own)."""
+        import glob
+        for stale in glob.glob(glob.escape(self.path) + ".snapshot-*.tmp"):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
 
     def delete_user(self, user_id: int):
         # Soft delete: messages keep pointing at the row, the name is freed.
@@ -939,14 +1002,40 @@ class Database:
 
     # --------------------------------------------------------------- messages
     def add_message(self, conv, sender_id, body, kind="text", file_id=None,
-                    recipient_id=None, room_id=None, delivered=False, reply_to=None, forwarded=False) -> int:
+                    recipient_id=None, room_id=None, delivered=False, reply_to=None, forwarded=False,
+                    client_id=None, thread_root=None, thread_broadcast=False) -> int:
         now = time.time()
-        cur = self._exec(
+        cur = self.con.execute(
             "INSERT INTO messages(conv, sender_id, recipient_id, room_id, kind, body, file_id,"
-            " created_at, delivered_at, reply_to, forwarded) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            conv, sender_id, recipient_id, room_id, kind, body, file_id, now,
-            now if delivered else None, reply_to, int(bool(forwarded)))
+            " created_at, delivered_at, reply_to, forwarded, client_id, thread_root, thread_broadcast)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (conv, sender_id, recipient_id, room_id, kind, body, file_id, now,
+             now if delivered else None, reply_to, int(bool(forwarded)), client_id, thread_root,
+             int(bool(thread_broadcast))))
+        if thread_root:
+            self.con.execute("UPDATE messages SET thread_count=thread_count+1, thread_last=? WHERE id=?",
+                             (now, thread_root))
+        self.con.commit()
         return cur.lastrowid
+
+    def message_by_client_id(self, sender_id: int, client_id: str):
+        """The message this person already sent with this id (a resend after a lost connection)."""
+        row = self._one("SELECT id FROM messages WHERE sender_id=? AND client_id=?", sender_id, client_id)
+        return self.get_message(row[0]) if row else None
+
+    def my_threads(self, user_id: int, limit=500):
+        """The threads this person replied in (their first messages' ids), newest first."""
+        return [r[0] for r in self._all(
+            "SELECT thread_root FROM messages WHERE sender_id=? AND thread_root IS NOT NULL"
+            " GROUP BY thread_root ORDER BY MAX(id) DESC LIMIT ?", user_id, limit)]
+
+    def thread(self, root_id: int, limit=500):
+        """The replies in a thread, oldest first."""
+        rows = self._all(
+            "SELECT m.*, f.name AS file_name, f.size AS file_size, f.purged AS file_purged"
+            " FROM messages m LEFT JOIN files f ON f.id=m.file_id"
+            " WHERE m.thread_root=? ORDER BY m.id DESC LIMIT ?", root_id, limit)
+        return list(reversed(rows))
 
     def edit_message(self, msg_id: int, body: str):
         self._exec("UPDATE messages SET body=?, edited_at=? WHERE id=?", body, time.time(), msg_id)
@@ -992,18 +1081,34 @@ class Database:
         rows = self._all(
             "SELECT m.*, f.name AS file_name, f.size AS file_size, f.purged AS file_purged"
             " FROM messages m LEFT JOIN files f ON f.id=m.file_id"
-            " WHERE m.conv=? AND m.id<? ORDER BY m.id DESC LIMIT ?", conv, before, limit)
+            " WHERE m.conv=? AND m.id<? AND (m.thread_root IS NULL OR m.thread_broadcast=1)"
+            " ORDER BY m.id DESC LIMIT ?", conv, before, limit)
         return list(reversed(rows))
 
-    def search(self, user_id: int, query: str, limit=100):
-        like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    def search(self, user_id: int, query: str, limit=100, sender=None, conv=None, since=None, until=None,
+               files_only=False, before=None):
+        """Messages this person can see that contain `query` (in the text or a file name), newest first.
+
+        Filters: sender (user id), conv (the internal key), since / until (timestamps), files_only, and
+        before (a message id, for the next page)."""
+        where, args = ["m.deleted=0", "m.kind<>'sticker'",
+                       "(m.sender_id=? OR m.recipient_id=? OR m.room_id IN"
+                       " (SELECT room_id FROM room_members WHERE user_id=?))"], [user_id, user_id, user_id]
+        if query:
+            like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            where.append("(m.body LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\')")
+            args += [like, like]
+        for sql, value in (("m.sender_id=?", sender), ("m.conv=?", conv), ("m.created_at>=?", since),
+                           ("m.created_at<?", until), ("m.id<?", before)):
+            if value not in (None, ""):
+                where.append(sql)
+                args.append(value)
+        if files_only:
+            where.append("m.file_id IS NOT NULL")
         return self._all(
             "SELECT m.*, f.name AS file_name, f.size AS file_size, f.purged AS file_purged"
-            " FROM messages m LEFT JOIN files f ON f.id=m.file_id"
-            " WHERE m.deleted=0 AND m.kind<>'sticker' AND (m.body LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') AND ("
-            "   m.sender_id=? OR m.recipient_id=? OR m.room_id IN"
-            "   (SELECT room_id FROM room_members WHERE user_id=?))"
-            " ORDER BY m.id DESC LIMIT ?", like, like, user_id, user_id, user_id, limit)
+            " FROM messages m LEFT JOIN files f ON f.id=m.file_id WHERE " + " AND ".join(where) +
+            " ORDER BY m.id DESC LIMIT ?", *args, limit)
 
     def mark_delivered(self, recipient_id: int):
         """Mark all pending direct messages to a user delivered.
@@ -1031,23 +1136,29 @@ class Database:
     def recent_conversations(self, user_id: int):
         """Latest message + unread count for every conversation of a user."""
         out = []
-        rows = self._all(
-            "SELECT conv, MAX(id) AS last_id FROM messages WHERE recipient_id IS NOT NULL"
-            " AND (sender_id=? OR recipient_id=?) GROUP BY conv", user_id, user_id)
+        # Two index reads (sent / received) instead of one "sender OR recipient" scan of every message
+        # in the studio: that scan took seconds on a big server, for each of 50 PCs signing in at once.
+        last = {}
+        for sql in ("SELECT conv, MAX(id) FROM messages WHERE sender_id=? AND recipient_id IS NOT NULL"
+                    f" AND {IN_CHAT} GROUP BY conv",
+                    f"SELECT conv, MAX(id) FROM messages WHERE recipient_id=? AND {IN_CHAT} GROUP BY conv"):
+            for conv, last_id in self._all(sql, user_id):
+                last[conv] = max(last_id, last.get(conv, 0))
+        # sender_id<>recipient_id: notes to myself ("My space") are not unread messages
         unread = dict(self._all(
             "SELECT sender_id, COUNT(*) FROM messages WHERE recipient_id=? AND read_at IS NULL AND deleted=0"
-            " GROUP BY sender_id", user_id))
-        for r in rows:
-            _, a, b = r["conv"].split(":")
+            f" AND sender_id<>recipient_id AND {IN_CHAT} GROUP BY sender_id", user_id))
+        for conv, last_id in last.items():
+            _, a, b = conv.split(":")
             other = int(b) if int(a) == user_id else int(a)
-            out.append(("u", other, r["last_id"], unread.get(other, 0)))
+            out.append(("u", other, last_id, unread.get(other, 0)))
         rows = self._all(
             "SELECT m.room_id, m.last_read,"
-            " (SELECT MAX(id) FROM messages WHERE room_id=m.room_id) AS last_id,"
-            " (SELECT COUNT(*) FROM messages WHERE room_id=m.room_id AND id>m.last_read"
-            "  AND sender_id<>? AND deleted=0) AS unread"
+            f" (SELECT MAX(id) FROM messages WHERE room_id=m.room_id AND {IN_CHAT}) AS last_id,"
+            " (SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE room_id=m.room_id AND id>m.last_read"
+            f"  AND sender_id<>? AND deleted=0 AND {IN_CHAT} LIMIT ?)) AS unread"
             " FROM room_members m JOIN rooms r ON r.id=m.room_id"
-            " WHERE m.user_id=? AND r.deleted=0", user_id, user_id)
+            " WHERE m.user_id=? AND r.deleted=0", user_id, UNREAD_CAP, user_id)
         for r in rows:
             out.append(("r", r["room_id"], r["last_id"], r["unread"]))
         return out

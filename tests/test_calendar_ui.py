@@ -39,7 +39,7 @@ class CalendarUiTest(unittest.TestCase):
         for name in ("information", "warning", "critical", "question"):
             setattr(QMessageBox, name, staticmethod(lambda *a, **k: QMessageBox.Yes))
         cls.core = c = ServerCore(os.path.join(cls.tmp, "server"))
-        c.config.update(tcp_port=PORT, discovery_port=PORT + 1, admin_review_enabled=False)
+        c.config.update(tcp_port=PORT, discovery_port=PORT + 1)
         c.start()
         c.call(c.admin_save_department, name="Compositing")
         cls.ann = c.call(c.admin_create_user, must_change=False, username="ann", password="Artist2026",

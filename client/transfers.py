@@ -12,6 +12,11 @@ from common.files import replace_file
 from client.network import make_socket, peer_fingerprint
 
 HIGH_WATER = 4 * P.CHUNK      # keep at most this many bytes queued in the socket
+MAX_RESUMES = 5               # an upload the network interrupts carries on by itself this many times
+
+# Errors that another try would only repeat: the upload stops and says so.
+_FINAL_UPLOAD_ERRORS = ("too large", "disk space", "storage is not available", "Cannot open file",
+                        "Could not read", "identity does not match", "changed on disk")
 
 
 class Transfer(QObject):
@@ -115,7 +120,12 @@ class Transfer(QObject):
 
 
 class Upload(Transfer):
-    """Uploads a local file; emits finished with .file_id set on success."""
+    """Uploads a local file; emits finished with .file_id set on success.
+
+    When the connection drops part-way, the upload waits and carries on from what the server already has
+    (resume_wanted asks the manager to start it again), instead of starting a 10 GB file from zero."""
+
+    resume_wanted = Signal(object)
 
     def __init__(self, path, conv, caption=""):
         super().__init__("upload", os.path.basename(path), os.path.getsize(path), conv)
@@ -127,18 +137,49 @@ class Upload(Transfer):
         self.sock.bytesWritten.connect(self._pump)
         self.sock.encryptedBytesWritten.connect(self._pump)
         self.sent = 0
+        self.resumes = 0
 
     def start(self, conn):
-        if not self.file.open(QIODevice.ReadOnly):
+        try:
+            stamp = (os.path.getsize(self.path), os.path.getmtime(self.path))
+        except OSError:
+            stamp = None
+        if self.file_id and stamp != getattr(self, "stamp", None):
+            # saved again since the first try (a re-render of the same size): carrying on would glue the
+            # new end onto the old beginning - send it whole instead
+            self.file_id = None
+            if stamp and stamp[0] != self.size:
+                self._fail("The file changed on disk - send it again")
+                return
+        self.stamp = stamp
+        if not self.file.isOpen() and not self.file.open(QIODevice.ReadOnly):
             self._fail(f"Cannot open file: {self.file.errorString()}")
             return
         self.state = "running"
+        self.error = ""
+        self.header_done = False
+        self.buf = b""
         self.token = conn.token
         self.stall.start()
         self.open_connection(conn)
 
     def _on_ready(self):
-        self.sock.write(P.encode({"op": "upload", "token": self.token, "name": self.name, "size": self.size}))
+        header = {"op": "upload", "token": self.token, "name": self.name, "size": self.size}
+        if self.file_id:
+            header["resume"] = self.file_id          # the server continues from what it already has
+        self.sock.write(P.encode(header))
+
+    def _fail(self, error):
+        if self.active and self.resumes < MAX_RESUMES and not any(k in error for k in _FINAL_UPLOAD_ERRORS):
+            self.resumes += 1
+            self.sock.abort()
+            self._cleanup()
+            self.state = "waiting"
+            self.error = f"Connection lost - carrying on ({self.resumes}/{MAX_RESUMES})..."
+            self.progress.emit(self)
+            self.resume_wanted.emit(self)
+            return
+        super()._fail(error)
 
     def _on_ready_read(self):
         while True:
@@ -155,7 +196,14 @@ class Upload(Transfer):
                 self.finished.emit(self)
                 return
             self.file_id = msg["file_id"]
+            offset = max(0, min(int(msg.get("offset") or 0), self.size))
+            if not self.file.seek(offset):
+                self._fail("Could not read the file")
+                return
+            self.sent = self.done = offset
+            self._last = (time.time(), offset)
             self.header_done = True
+            self.progress.emit(self)
             self._pump()
 
     def _pump(self, written=0):
@@ -165,7 +213,8 @@ class Upload(Transfer):
             acked = max(0, min(self.sent - self._queued(), self.size))
             if acked > self.done:
                 self._tick(acked - self.done)
-        while self.sent < self.size and self._queued() < HIGH_WATER:
+        # re-checked on every turn: anything reacting to the progress above may have stopped the upload
+        while self.state == "running" and self.sent < self.size and self._queued() < HIGH_WATER:
             chunk = self.file.read(P.CHUNK)
             if not chunk:
                 self._fail("Could not read the file")
@@ -310,8 +359,27 @@ class TransferManager(QObject):
 
     def upload(self, path, conv, caption=""):
         t = Upload(path, conv, caption)
+        t.resume_wanted.connect(self._resume_later)
         self._start(t)
         return t
+
+    def _resume_later(self, t):
+        """An upload lost its connection: try again in a few seconds, or once signed in again."""
+        def go():
+            if t.state != "waiting":
+                return                              # cancelled meanwhile
+            if self.conn.online:
+                t.start(self.conn)
+            else:
+                self.conn.logged_in.connect(once)
+
+        def once(*_):
+            try:
+                self.conn.logged_in.disconnect(once)
+            except (RuntimeError, TypeError):
+                pass
+            QTimer.singleShot(1000, go)
+        QTimer.singleShot(3000 * t.resumes, go)
 
     def download(self, file_info, dest_path=None, conv=None, hidden=False):
         """hidden=True: background download (image previews), not listed in File transfers."""
@@ -355,6 +423,8 @@ class TransferManager(QObject):
             if not os.path.isfile(t.path):
                 return None
             new = self.upload(t.path, t.conv, t.caption)
+            new.file_id = t.file_id                     # "Retry" carries on from what the server has too
+            new.stamp = getattr(t, "stamp", None)       # ... unless the file changed since (Upload.start)
             if getattr(t, "temp_file", None):       # the packed folder's zip now belongs to the new try
                 new.temp_file, t.temp_file = t.temp_file, None
             return new

@@ -27,7 +27,7 @@ DEFAULTS = {
     "password_block_weak": False,    # refuse 123456, password, the username, ...
     "force_password_change": False,  # new accounts and resets must choose their own password at first sign-in
     "password_max_age_days": 0,      # 0 = never expires
-    "settings_version": 2,
+    "settings_version": 3,
     # automatic database backup
     "backup_enabled": True,
     "backup_dir": "",                # empty = <data dir>/backups
@@ -37,21 +37,23 @@ DEFAULTS = {
     "safe_copy_enabled": True,
     "safe_copy_dir": "",             # empty = <shared files folder>/Quillo server data (when that is elsewhere)
     "safe_copy_minutes": 5,
-    # readable chat backup + how long messages stay in the app (older ones live only in the chat logs)
+    # readable chat backup + how long messages stay in the app (older ones live only in the chat backup)
     "chat_log_enabled": True,        # append each day's messages to text files every night
-    "chat_log_dir": "",              # empty = <backup folder>/Chat logs
+    "chat_log_dir": "",              # empty = <central folder>/Chat backup (see archive.log_dir)
     "log_dir": "",                   # server.log; empty = <data dir>
-    "message_retention_days": 90,    # 0 = keep every message in the app forever
+    "message_retention_days": 0,     # 0 = keep every message in the app forever
     # "buzz": shake the other person's window, even when they are busy
     "buzz_enabled": True,
     # people may change their own display name (Profile); admins can always change it in the console
     "allow_name_change": True,
-    # admins may open any conversation from the console (users are told at sign-in)
-    "admin_review_enabled": True,
+    # network links in chat (a server share or a mapped drive) to these computers / drives open with one click; any
+    # other computer asks first. One per line or comma-separated, e.g. "fileserver, nas01, Z:"
+    "trusted_link_hosts": "",
 }
 
 # Settings of older versions that no longer do anything; dropped when an old config.json is read.
-REMOVED = {"auto_department_rooms", "auto_section_rooms"}
+REMOVED = {"auto_department_rooms", "auto_section_rooms",
+           "admin_review_enabled"}        # 1.9.0: administrators can no longer read people's chats
 
 
 def app_dir() -> str:
@@ -144,6 +146,11 @@ class ServerConfig:
             if loaded.get("password_require_mix") is True:
                 self.values["password_require_mix"] = False
             self.values["settings_version"] = 2
+        if version < 3:
+            # 1.9.0: chats stay in the app for good. Old servers dropped them after 90 days (they lived on only
+            # in the text backup), which studios found out the hard way; every server now keeps them.
+            self.values["message_retention_days"] = 0
+            self.values["settings_version"] = 3
 
     def __getitem__(self, key):
         return self.values[key]

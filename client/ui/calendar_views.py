@@ -549,8 +549,11 @@ class _AgendaBody(QWidget):
 
 # ======================================================================= small month (Home)
 class MiniMonth(QWidget):
-    """A small month with a dot under days that have something; click a day to open it."""
+    """A small month with a dot under days that have something; click a day to open it.
+
+    The mouse wheel over it asks for the previous or next month (month_step: -1 / +1)."""
     day_clicked = Signal(object)
+    month_step = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -626,3 +629,12 @@ class MiniMonth(QWidget):
     def mouseMoveEvent(self, e):
         over = any(r.contains(e.position()) for r, _d in self._cells)
         self.setCursor(Qt.PointingHandCursor if over else Qt.ArrowCursor)
+
+    def wheelEvent(self, e):
+        # A touchpad sends many small steps: move one month per full notch, not per step.
+        self._wheel = getattr(self, "_wheel", 0) + e.angleDelta().y()
+        while abs(self._wheel) >= 120:
+            step = -1 if self._wheel > 0 else 1
+            self._wheel -= -120 * step
+            self.month_step.emit(step)
+        e.accept()

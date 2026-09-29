@@ -124,7 +124,71 @@ def open_link(url):
 
 # ------------------------------------------------------------------ studio paths
 _SEQUENCE = re.compile(r"(#+|@+|%0?\d*d|\$F\d?)", re.I)     # frame placeholders: ####, %04d, @@@, $F4
-_RUNNABLE = {".exe", ".bat", ".cmd", ".com", ".msi", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".scr", ".lnk", ".reg"}
+# Programs, scripts, shortcuts and disk images: never started from a chat (shown in their folder instead).
+_RUNNABLE = {".exe", ".bat", ".cmd", ".com", ".msi", ".msp", ".mst", ".ps1", ".psm1", ".psc1", ".ps1xml", ".vbs",
+             ".vbe", ".vb", ".js", ".jse", ".wsf", ".wsh", ".wsc", ".sct", ".scr", ".lnk", ".url", ".reg", ".hta",
+             ".cpl", ".msc", ".jar", ".pif", ".appref-ms", ".application", ".scf", ".library-ms", ".search-ms",
+             ".settingcontent-ms", ".iso", ".img", ".vhd", ".vhdx", ".inf", ".ins", ".isp", ".chm", ".hlp",
+             ".gadget", ".xll", ".dll", ".sys", ".cab", ".xbap", ".shb", ".diagcab"}
+
+# The studio's own file servers, from the server's settings: links to them open without asking.
+_TRUSTED = {"hosts": set(), "config": None}
+
+
+def set_link_policy(hosts, config=None):
+    """hosts: the server's list of studio file servers; config: where "don't ask again" is remembered."""
+    _TRUSTED["hosts"] = {h.strip().lower().lstrip("\\/") for h in hosts if h and h.strip()}
+    _TRUSTED["config"] = config
+
+
+def unc_host(path):
+    """'fileserver' for a \\\\fileserver\\share path, '' for anything else (a drive letter, this PC)."""
+    p = windows_path(path)
+    if not p.startswith("\\\\"):
+        return ""
+    return p[2:].split("\\")[0].lower()
+
+
+def link_host_trusted(host):
+    if not host:
+        return True
+    import socket
+    config = _TRUSTED["config"]
+    allowed = set(_TRUSTED["hosts"]) | {h.lower() for h in (config["trusted_link_hosts"] if config else [])}
+    allowed |= {"localhost", "127.0.0.1", socket.gethostname().lower()}
+    return host in allowed or host.split(".")[0] in allowed
+
+
+def _confirm_host(host, parent=None):
+    """A link to a computer that is not a studio file server: opening it lets that computer see your Windows
+    sign-in, so ask first (and offer not to ask again for it)."""
+    from PySide6.QtWidgets import QCheckBox, QMessageBox
+    box = QMessageBox(QMessageBox.Warning, "Open a link to another computer?",
+                      f"This link points to \\\\{host}, which is not one of your studio's file servers.\n\n"
+                      "Opening it lets that computer see your Windows sign-in. Open it only if you trust "
+                      "whoever sent it.", QMessageBox.Open | QMessageBox.Cancel, parent)
+    box.setDefaultButton(QMessageBox.Cancel)
+    again = QCheckBox(f"Don't ask again for {host}")
+    box.setCheckBox(again)
+    if box.exec() != QMessageBox.Open:
+        return False
+    config = _TRUSTED["config"]
+    if again.isChecked() and config is not None:
+        config["trusted_link_hosts"] = sorted(set(config["trusted_link_hosts"]) | {host})
+        config.save()
+    return True
+
+
+def open_file(path):
+    """Open a received or linked file with its program - but never start a program or script from a chat."""
+    if os.path.splitext(path)[1].lower() in _RUNNABLE:
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.showText(QCursor.pos(), "Programs and scripts are not started from Quillo - "
+                                         "it is shown in its folder instead.")
+        show_in_folder(path)
+        return
+    open_path(path)
 
 
 def windows_path(path):
@@ -147,6 +211,9 @@ def path_menu(path, parent=None):
     from PySide6.QtGui import QCursor, QGuiApplication
     from PySide6.QtWidgets import QMenu
     from common.icons import icon
+    host = unc_host(path)
+    if not link_host_trusted(host) and not _confirm_host(host, parent):
+        return                       # nothing is looked up on an untrusted computer until you say so
     target, sequence = path_target(path)
     ext = os.path.splitext(target)[1].lower()
     looks_like_file = bool(ext) and not sequence
@@ -154,7 +221,7 @@ def path_menu(path, parent=None):
     m.addAction(icon("folder", T.TEXT, 16), "Show frames in Explorer" if sequence else
                 ("Show in Explorer" if looks_like_file else "Open folder"), lambda: _reveal(target, looks_like_file))
     if looks_like_file and ext not in _RUNNABLE:
-        m.addAction(icon("open", T.TEXT, 16), "Open file", lambda: _check_then(target, open_path))
+        m.addAction(icon("open", T.TEXT, 16), "Open file", lambda: _check_then(target, open_file))
     m.addSeparator()
     m.addAction(icon("copy", T.TEXT, 16), "Copy path", lambda: QGuiApplication.clipboard().setText(windows_path(path)))
     m.exec(QCursor.pos())

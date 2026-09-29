@@ -66,7 +66,7 @@ class ArchiveTest(unittest.TestCase):
         self.assertGreaterEqual(result["messages"], 4)
         self.assertEqual(result["removed"], 2)                 # the two old ones
         text = ""
-        for path in glob.glob(os.path.join(result["folder"], "*", "*.txt")):
+        for path in glob.glob(os.path.join(result["folder"], "*", "*", "*.txt")):
             with open(path, encoding="utf-8") as f:
                 text += f.read()
         self.assertIn("Ann Rao: Old news", text)
@@ -74,7 +74,9 @@ class ArchiveTest(unittest.TestCase):
         self.assertIn("Fresh message", text)
         self.assertIn("[poll] Lunch?", text)
         self.assertIn("Thali (1)", text)
-        self.assertTrue(any("Room - Comp Team" in p for p in glob.glob(os.path.join(result["folder"], "*", "*"))))
+        month = time.strftime("%Y-%m")
+        self.assertTrue(os.path.isfile(os.path.join(result["folder"], "Rooms", "Comp Team", month + ".txt")))
+        self.assertTrue(os.path.isfile(os.path.join(result["folder"], "People", "Ann Rao + Ben Das", month + ".txt")))
 
         hist = a.request("history", conv=f"u:{self.b}")["messages"]
         ids = [m["id"] for m in hist]
@@ -87,7 +89,7 @@ class ArchiveTest(unittest.TestCase):
         again = self.core.call(self.core.chat_backup_now)
         self.assertEqual(again["messages"], 1)
         text = ""
-        for path in glob.glob(os.path.join(result["folder"], "*", "*.txt")):
+        for path in glob.glob(os.path.join(result["folder"], "*", "*", "*.txt")):
             with open(path, encoding="utf-8") as f:
                 text += f.read()
         self.assertEqual(text.count("Fresh message"), 1)
@@ -102,6 +104,46 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(result["removed"], 0)
         self.assertIn(m["id"], [x["id"] for x in a.request("history", conv=f"u:{self.b}")["messages"]])
         a.close()
+
+    def test_layout_rooms_and_people(self):
+        """Rooms/<room>/<month>.txt and People/<A + B>/<month>.txt; a renamed room keeps its folder; the
+        1.8 month folders are kept as 'Before 1.9.0'."""
+        c = self.core
+        old = os.path.join(c.config.backup_dir, "Chat logs", "2026-01")
+        os.makedirs(old)
+        with open(os.path.join(old, "Room - Old (r1).txt"), "w", encoding="utf-8") as f:
+            f.write("2026-01-05 10:00  Ann Rao: from the old layout\n")
+        a = Client("ann")
+        room = a.request("create_room", name="Lighting", members=[self.b])["room_id"]
+        a.request("send", conv=f"r:{room}", text="first")
+        a.request("send", conv=f"u:{self.a}", text="note to myself")
+        first = c.call(c.chat_backup_now)
+        root, month = first["folder"], time.strftime("%Y-%m")
+        self.assertEqual(os.path.basename(root), "Chat backup")
+        self.assertTrue(os.path.isfile(os.path.join(root, "Rooms", "Lighting", month + ".txt")))
+        self.assertTrue(os.path.isfile(os.path.join(root, "People", "Ann Rao - My space", month + ".txt")))
+        with open(os.path.join(root, "Before 1.9.0", "2026-01", "Room - Old (r1).txt"), encoding="utf-8") as f:
+            self.assertIn("from the old layout", f.read())
+        c.call(c.admin_save_room, room, "Lighting Dept", "", [self.a, self.b])
+        a.request("send", conv=f"r:{room}", text="after the rename")
+        c.call(c.chat_backup_now)
+        with open(os.path.join(root, "Rooms", "Lighting", month + ".txt"), encoding="utf-8") as f:
+            self.assertIn("after the rename", f.read())
+        self.assertFalse(os.path.exists(os.path.join(root, "Rooms", "Lighting Dept")))
+        a.close()
+
+    def test_user_list_is_written(self):
+        c = self.core
+        result = c.call(c.user_list_async)
+        self.assertTrue(result["ok"], result)
+        with open(os.path.join(result["folder"], "Users.csv"), encoding="utf-8-sig") as f:
+            text = f.read()
+        self.assertIn("Username,Name", text)
+        self.assertIn("ann,Ann Rao", text)
+        self.assertTrue(os.path.isfile(os.path.join(result["folder"], "Users.xlsx")))
+        from server import excel_users
+        names = [r["username"] for r in excel_users.read_rows(os.path.join(result["folder"], "Users.xlsx"))]
+        self.assertIn("ben", names)                             # the sheet can be imported again
 
 
 if __name__ == "__main__":

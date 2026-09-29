@@ -115,23 +115,14 @@ class SecurityTest(unittest.TestCase):
         self.assertGreater(con.execute("SELECT COUNT(*) FROM users").fetchone()[0], 0)
         con.close()
 
-    def test_chat_review_is_audited_and_can_be_disabled(self):
+    def test_administrators_cannot_read_chats(self):
+        """1.9.0: there is no way to open someone's conversation from the console any more."""
         c = self.core
-        other = c.call(c.admin_create_user, must_change=False, username="rev2", password="Review2026")
+        for fn in ("admin_review_conversations", "admin_review_history"):
+            self.assertFalse(hasattr(c, fn))
+            self.assertNotIn(fn, c.ADMIN_API)
         a = Client("artist")
-        self.assertTrue(a.login.get("review_notice"))
-        a.request("send", conv=f"u:{other}", text="private note")
-        convs = c.call(c.admin_review_conversations, self.artist)
-        key = next(x["key"] for x in convs if "rev2" in x["title"])
-        msgs = c.call(c.admin_review_history, key)
-        self.assertEqual(msgs[-1]["body"], "private note")
-        self.assertTrue(any(e["action"] == "chat reviewed" for e in c.call(c.admin_audit)))
-        c.config.update(admin_review_enabled=False)
-        try:
-            with self.assertRaises(ValueError):
-                c.call(c.admin_review_history, key)
-        finally:
-            c.config.update(admin_review_enabled=True)
+        self.assertNotIn("review_notice", a.login)
         a.close()
 
     def test_report(self):

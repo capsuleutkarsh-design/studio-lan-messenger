@@ -120,7 +120,7 @@ class DepartmentsTest(unittest.TestCase):
         lite.close()
         kept = rooms_by_name(c)["Lighting"]
         self.assertEqual((kept["id"], kept["auto"], set(kept["members"])), (room["id"], False, {a, b}))
-        self.assertEqual(c.call(c.admin_review_history, f"r:{room['id']}")[-1]["body"], "render done")
+        self.assertEqual(c.call(c.db.history, f"r:{room['id']}", None, 1)[-1]["body"], "render done")
 
         # ticking again continues the same room
         c.call(c.admin_set_department_room, light, True)
@@ -223,7 +223,7 @@ class MigrationTest(unittest.TestCase):
         for rid in (self.dept_room, self.sect_room):                 # still there, now normal rooms
             self.assertFalse(rooms[rid]["auto"])
             self.assertEqual(set(rooms[rid]["members"]), {self.u1, self.u2})
-        self.assertEqual(c.call(c.admin_review_history, f"r:{self.dept_room}")[-1]["body"], "old history")
+        self.assertEqual(c.call(c.db.history, f"r:{self.dept_room}", None, 1)[-1]["body"], "old history")
         # ticking Chat room picks up the old room again, with its history
         c.call(c.admin_set_department_room, tops["Comp"]["id"], True)
         c.call(c.admin_set_department_room, sects[0]["id"], True)

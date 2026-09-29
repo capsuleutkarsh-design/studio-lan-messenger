@@ -416,13 +416,15 @@ begin
   else
     Intro := 'SERVER DATA holds the database (all accounts and messages) and the settings. It must be on a disk ' +
       'of THIS PC (not a network drive).' + #13#10 +
-      'The other folders may be on another disk or a network share - use a \\server\share path for those, ' +
-      'not a mapped drive letter (Z:), which the background service can''t see.';
+      'SHARED FILES should be on your file server: Quillo also keeps everything a new server PC needs there ' +
+      '(Quillo server data: a copy of the database, the chat backup, the user list and the daily backups), so ' +
+      'nothing is lost when this PC breaks or is replaced. Use a \\server\share path, not a mapped drive ' +
+      'letter (Z:), which the background service can''t see.';
   PathsPage := CreateInputDirPage(wpSelectTasks, 'Where to keep the data',
     'Choose where the server stores its database, shared files, backups and log.', Intro, False, '');
   PathsPage.Add('Server data (database and settings) - local disk:');
-  PathsPage.Add('Shared files:');
-  PathsPage.Add('Database backups and readable chat backups:');
+  PathsPage.Add('Shared files - on your file server (the central folder):');
+  PathsPage.Add('Database backups (used only when shared files are on this PC):');
   PathsPage.Add('Server log:');
   PathsPage.Values[0] := DataDirValue;
   if Upgrading then

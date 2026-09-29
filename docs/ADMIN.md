@@ -39,8 +39,8 @@ The setup installs to `C:\Program Files\Quillo Server` (all users) or `%LOCALAPP
 | Folder | Default | Where it may be |
 |---|---|---|
 | Server data (database, settings, certificate) | `C:\ProgramData\LAN Messenger Server` (all users) or `%LOCALAPPDATA%\LAN Messenger Server` (just for me) | a **local disk** only (a database on a network share can get damaged) |
-| Shared files | `<data>\files` | any disk, or a share `\\server\share\...` |
-| Database backups + readable chat backups | `<data>\backups` | any disk, or a share (another disk is recommended) |
+| Shared files (**the central folder**) | `<data>\files` | your **file server**: a share `\\server\share\...` |
+| Database backups | `<data>\backups` | used only when the shared files are on the server PC itself |
 | Server log | `<data>` | any disk, or a share |
 
 Use `\\server\share\...` paths, not mapped letters like `Z:` (the background service can't see those). The service
@@ -53,13 +53,24 @@ In service mode the data folder is readable only by Administrators and SYSTEM. O
 to delete the data folder (files and backups kept elsewhere are never deleted). If you keep it, the next install
 finds it again.
 
-**Safe copy for reinstalls.** When the shared files are on a share or another disk, the server keeps a copy of
-its own data in `<shared files>\Quillo server data`: the database (every account and chat), the settings, the
-certificate and profile photos. It is updated every 5 minutes when something changed, and when the server stops.
-On a **new install** (new PC, or after deleting the data), choose the same shared-files folder: setup finds the
-copy and offers to **restore everything**. The PCs keep trusting the server (same certificate). Folder and
-interval: console → *Settings → Safe copy*; the Dashboard shows when the last copy was made. The copy holds every
-chat and the password hashes: give only administrators and the server access to that share.
+**The central folder: nothing important stays only on the server PC.** When the shared files are on your file
+server (or another disk), the server keeps everything a new server PC needs in `<shared files>\Quillo server data`:
+
+| In the central folder | What | Updated |
+|---|---|---|
+| `messenger.db`, `config.json`, `tls\`, `avatars\` | the database (every account and chat), settings, certificate, profile photos | every 5 minutes when something changed, and when the server stops |
+| `Chat backup\Rooms\<room>\2026-09.txt` | a room's messages, one text file per month | every night |
+| `Chat backup\People\<A + B>\2026-09.txt` | a direct chat between two people (`<name> - My space` for notes to yourself) | every night |
+| `User list\Users.xlsx`, `Users.csv` | everyone, with department, designation and reports-to. The .xlsx can be imported into any Quillo server | when people change, and daily |
+| `Database backups\` | the nightly database backups (14 days) | every night |
+
+On a **new install** (the server PC broke, or went back), choose the same shared-files folder: setup finds the copy
+and offers to **restore everything**, and the PCs keep trusting the server (same certificate). Folder and interval:
+console → *Settings → Central folder*; the Dashboard shows the last copy, the user list and whether the folder is locked.
+
+The central folder holds every chat. On a disk of the server PC, Quillo locks it to Administrators and the Quillo
+service. **On a network share, set that on the file server:** give the share (or the `Quillo server data` folder)
+access for administrators and the server's account only - artists should not be able to open it.
 
 ## 2. First-time setup
 
@@ -76,8 +87,8 @@ can also connect to a server on another PC (admin / IT login).
    is saved. New departments and sections are created; an empty cell keeps the current value, `-` clears it;
    new people without a password get a random one - the console saves a list of first passwords for you to
    hand out, and they choose their own at first sign-in. Or add people one by one with **Add user**.
-5. **Settings**: backup folder (ideally another disk), password rules, file size and clean-up, pipeline API,
-   chat review.
+5. **Settings**: the central folder, password rules, file size and clean-up, pipeline API, and **Studio file
+   servers** (links in chats to these computers open with one click; links to any other computer ask first).
 6. Use **Rooms → New room** for projects.
 6a. **Holidays**: India's public and festival holidays are listed up to 2035. Tick the days your studio is
    closed (national days are ticked already). Festival dates follow the lunar calendar - the ones marked
@@ -174,7 +185,7 @@ Data folder (default `C:\ProgramData\LAN Messenger Server`; Start menu → *Serv
 | `messenger.db` | accounts, messages, rooms (SQLite) |
 | `files\` | shared files |
 | `avatars\` | profile photos |
-| `backups\` | nightly database backups (retention set in Settings) |
+| `backups\` | nightly database backups when there is no central folder (retention set in Settings) |
 | `updates\` | client setups offered to the PCs |
 | `tls\` | the server certificate. **Keep it**; a new one makes every PC show "server identity changed" |
 | `config.json`, `server.log` | settings and log |
@@ -194,8 +205,8 @@ Console → **Settings**:
 
 | Setting | Default | What it does |
 |---|---|---|
-| *Write a readable chat backup every night* | on | At the backup time, new messages are appended to text files, one per chat per month: `Chat logs\2026-09\Room - Falcon Comp (r12).txt`. Grep-able, open in Notepad. |
-| *Keep messages in the app for* | 90 days | Older messages leave the live database (the app stays fast) — **only after** they are in the chat backup. *Forever* keeps everything. |
+| *Write a readable chat backup every night* | on | At the backup time, new messages are appended to text files: a folder per room and per pair of people, one file per month - `Chat backup\Rooms\Falcon Comp\2026-09.txt`, `Chat backup\People\Alice Mathew + Bob Fernandes\2026-09.txt`. A renamed room keeps its folder. Replies in a thread are marked *[in the thread of ...]*. Grep-able, open in Notepad. Servers upgraded from 1.8 keep their old month folders as `Chat backup\Before 1.9.0`. |
+| *Keep messages in the app for* | Forever | Messages stay in the app for good. If you choose a number of days, older messages leave the live database — **only after** they are in the chat backup. Servers upgraded from 1.8 (which used 90 days) are switched to *Forever*. |
 | *Delete shared files after* | 3 days (new installs) | Files are removed from the server's file storage; the file card tells people "available until …". Point *File storage folder* at a separate (temp) drive if you like. Upgraded servers keep their old value — change it here. |
 | *Delete files nobody downloaded after* | never | Extra clean-up for forgotten uploads. |
 
@@ -266,9 +277,12 @@ The server setup allows the server program through Windows Firewall, which cover
   people choose their own password at first sign-in and after a reset, expiry. Always on: a 60-second lock-out
   after 5 wrong passwords. Remembered passwords are encrypted with
   Windows DPAPI.
-- **Audit log** of users, designations, rooms, settings, password resets, photo removals and chat reviews.
-- **Chat review** (for HR / policy cases): an administrator can read a user's conversations. Every review is logged,
-  users are told once at sign-in, and it can be switched off in Settings.
+- **Audit log** of users, designations, rooms, settings, password resets and photo removals.
+- **Administrators cannot read people's chats in Quillo.** (Chat review was removed in 1.9.0.) The chat backup
+  text files are the only copy outside the app: keep the central folder for administrators only.
+- **Links to other computers.** A `\\computer\share` link to a machine that is not in *Settings → Studio file
+  servers* asks before Quillo even looks at it (opening it lets that computer see the person's Windows sign-in).
+  Programs, scripts and shortcuts are never started from a chat: Quillo shows them in their folder instead.
 - **Screen sharing** always needs the consent of the person whose screen is shown, and a red bar stays visible.
 - IT/HR can remove an inappropriate profile photo: Users → right-click → *Remove profile photo*.
 

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.8.0-1d3a7a?style=for-the-badge"></a>
+  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.9.0-1d3a7a?style=for-the-badge"></a>
   <a href="../../actions/workflows/build.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/capsuleutkarsh-design/studio-lan-messenger/build.yml?branch=main&style=for-the-badge&label=tests"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
@@ -20,7 +20,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest release</b></a> ·
   <a href="docs/ADMIN.md"><b>Admin & IT guide</b></a> ·
-  <a href="docs/releases/v1.8.0.md"><b>What's new in 1.8.0</b></a>
+  <a href="docs/releases/v1.9.0.md"><b>What's new in 1.9.0</b></a>
 </p>
 
 <p align="center">
@@ -34,10 +34,11 @@
 <td width="33%" valign="top">
 
 ### 💬 Chat that fits a studio
-Direct chats and rooms, **department and section rooms** you switch on per department, reply, edit, delete, forward, pin,
+Direct chats and rooms, **department and section rooms** you switch on per department, **threads**, reply, edit, delete, forward, pin,
 **@mentions** (people, @everyone, @here, @Department), read receipts and "seen by", **emoji reactions**, **polls** for the everyday
 "which dailies slot?" questions, **reminders**, **scheduled messages** (type *mon 9:30* or *in 2h*), and **Buzz** (a person or a whole room) to reach someone who is
-busy (it even pops a minimised app up on screen).
+busy (it even pops a minimised app up on screen). Messages typed while the server is away **wait and go out
+when it's back**, and search has filters (person, chat, dates, files).
 
 </td>
 <td width="33%" valign="top">
@@ -82,8 +83,10 @@ and Christmas.
 <td valign="top">
 
 ### 🔒 Private by design
-Everything stays on your LAN, over **TLS**, with server-identity checks, password rules, lock-out, an
-**audit log**, nightly **backups** plus a readable **chat backup**, and a Windows **service** that runs without
+Everything stays on your LAN, over **TLS**, with server-identity checks, password rules, lock-out and an
+**audit log**. **Administrators can't read your chats.** Everything a new server PC needs - a copy of the
+database, a readable **chat backup** (a folder per room and per person), the **user list** and nightly
+**backups** - is kept in one **central folder** on your file server, and a Windows **service** runs without
 anyone logged in.
 
 </td>

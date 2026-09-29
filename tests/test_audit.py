@@ -105,7 +105,7 @@ class AuditTest(unittest.TestCase):
         result = self.core.call(self.core.chat_backup_now)
         self.assertEqual(result["removed"], 1)
         text = ""
-        for path in glob.glob(os.path.join(result["folder"], "*", "*")):
+        for path in glob.glob(os.path.join(result["folder"], "*", "*", "*.txt")):
             with open(path, encoding="utf-8") as f:
                 text += f.read()
         self.assertIn("Delivery on Friday", text)
@@ -161,7 +161,7 @@ class AuditTest(unittest.TestCase):
         def add():
             db.add_file("f" * 32, "left.bin", 10, self.a, path)
             db.complete_file("f" * 32)
-            db._exec("UPDATE files SET created_at=? WHERE id=?", time.time() - 3 * 86400, "f" * 32)
+            db._exec("UPDATE files SET created_at=? WHERE id=?", time.time() - 4 * 86400, "f" * 32)
         self.run_db(add)
         self.core.call(self.core.purge_files)
         self.assertFalse(os.path.exists(path))

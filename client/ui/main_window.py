@@ -67,6 +67,11 @@ class MainWindow(QMainWindow):
         self.store = store
         self.transfers = transfers
         self.config = config
+        from client.outbox import Outbox
+        self.outbox = Outbox(conn, store, self)
+        self.outbox.refused.connect(self._outbox_refused)
+        if conn.online:                     # the first sign-in happened just before this window was made
+            self.outbox._on_logged_in()
         self.quitting = False
         self.compact = False
         self._normal_geometry = None
@@ -199,6 +204,11 @@ class MainWindow(QMainWindow):
         for w in (self.home, self.chat, self.announcements, self.transfers_page, self.directory, self.calendar):
             self.stack.addWidget(w)
         body.addWidget(self.stack, 1)
+        from client.ui.thread_panel import ThreadPanel
+        self.thread_panel = ThreadPanel(self)
+        body.addWidget(self.thread_panel)
+        self.stack.currentChanged.connect(
+            lambda _i: self.stack.currentWidget() is not self.chat and self.thread_panel.close_thread())
 
         self.toast_label = plain(QLabel(self))
         self.toast_label.setStyleSheet(f"background: {T.TOOLTIP}; color: #eef0f5; border-radius: 16px;"
@@ -215,6 +225,7 @@ class MainWindow(QMainWindow):
         store.unread_changed.connect(self._update_unread)
         store.announcements_changed.connect(self._update_unread)
         store.message_added.connect(self._on_message)
+        store.thread_message.connect(self._on_thread_message)
         store.announcement.connect(self._on_announcement)
         store.room_removed.connect(self._room_removed)
         store.users_changed.connect(self._check_open_conv)
@@ -389,6 +400,8 @@ class MainWindow(QMainWindow):
                 and self.isActiveWindow() and not self.isMinimized())
 
     def _on_logged_in(self, boot):
+        from client.ui.widgets import set_link_policy
+        set_link_policy(boot.get("trusted_link_hosts", []), self.config)
         self.banner.hide()
         self.home.set_name(self.store.me.get("name", ""), self.store.server_name)
         self.setWindowTitle(f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}")
@@ -524,8 +537,16 @@ class MainWindow(QMainWindow):
         self.sidebar.set_active(conv)
         self.stack.setCurrentWidget(self.chat)
         self._compact_show("content")
+        if self.thread_panel.conv not in (None, conv):
+            self.thread_panel.close_thread()            # a thread belongs to its chat
         self.chat.open(conv)
         self.store.mark_read(conv)
+
+    def open_thread(self, conv, root_id):
+        """Show a thread in the panel on the right (its chat is opened too)."""
+        if self.chat.conv != conv or self.stack.currentWidget() is not self.chat:
+            self.open_conv(conv)
+        self.thread_panel.open_thread(conv, root_id)
 
     def changeEvent(self, e):
         super().changeEvent(e)
@@ -534,6 +555,24 @@ class MainWindow(QMainWindow):
                 self.store.mark_read(self.chat.conv)
 
     # ===================================================== notifications
+    def _on_thread_message(self, msg, is_new):
+        """A reply in a thread: told only to the people in it (who started it, or replied), or @mentioned."""
+        if not is_new or msg["sender_id"] == self.store.my_id or msg.get("thread_broadcast"):
+            return                              # a reply also sent to the chat is announced as a chat message
+        root_id = msg["thread_root"]
+        if self.thread_panel.showing(root_id) and self.isActiveWindow():
+            return
+        root = self.store.conversation(msg["conv"]).messages.get(root_id)
+        mention = self.store.mentions_me(msg)
+        involved = root_id in self.store.my_threads or (root and root["sender_id"] == self.store.my_id)
+        if not (involved or mention):
+            return
+        if not mention and (self.store.is_muted(msg["conv"]) or self.store.me.get("status") == "busy"):
+            return
+        sender = self.store.user_name(msg["sender_id"])
+        where = "" if msg["conv"].startswith("u:") else f" in {self.store.title(msg['conv'])}"
+        self.notify(f"{sender} replied in a thread{where}", stickers.summary(msg), msg["conv"])
+
     def _on_message(self, msg, is_new):
         if not is_new or msg["sender_id"] == self.store.my_id or msg["kind"] == "system":
             return
@@ -784,12 +823,23 @@ class MainWindow(QMainWindow):
                 card.refresh()
 
     def _upload_done(self, t):
-        def done(reply):
-            if reply.get("ok"):
-                self.store.add_message(reply["message"])
-            else:
-                self.toast(f"File not sent: {reply.get('error')}")
-        self.conn.request("send", done, conv=t.conv, text=t.caption, file_id=t.file_id)
+        # Through the outbox: if the chat connection is down right now (it reconnects separately from the
+        # upload), the file is posted when it is back - not "File not sent" after a 20 GB upload.
+        self.outbox.add(t.conv, text=t.caption, file_id=t.file_id, label=f"📎 {t.name}",
+                        thread_root=getattr(t, "thread_root", None))
+
+    def _outbox_refused(self, item, error):
+        """The server would not take a message: say so, and put the text back in its own chat."""
+        what = "File" if item.get("file_id") else "Sticker" if item.get("sticker") else "Message"
+        self.toast(f"{what} to {self.store.title(item['conv'])} not sent: {error}")
+        text = item.get("text", "")
+        if not text or item.get("file_id") or item.get("sticker"):
+            return
+        c = self.store.conversation(item["conv"])
+        if self.chat.conv == item["conv"] and not self.chat.input.toPlainText():
+            self.chat.input.setPlainText(text)
+        elif not c.draft:
+            c.draft = text                  # waiting in that chat's box, not in the one open now
 
     def download_file(self, info, conv=None):
         existing = self.config.downloaded_path(info["id"])
@@ -1145,6 +1195,9 @@ class MainWindow(QMainWindow):
         if server:
             server.close()                    # let the new copy become the single instance
         args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        # A copy started with Windows carries --minimized. Passing it on brought the restarted
+        # Quillo back hidden in the tray, so it looked as if it never restarted.
+        args = [a for a in args if a != "--minimized"]
         QProcess.startDetached(sys.executable, args)
 
     def _repaint_avatars(self):

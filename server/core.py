@@ -8,6 +8,7 @@ GUI uses :meth:`ServerCore.call` to run functions there.
 import asyncio
 import base64
 import binascii
+import inspect
 import json
 import logging
 import os
@@ -147,6 +148,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "set_status": self.h_set_status,
             "create_room": self.h_create_room,
             "room_update": self.h_room_update,
+            "thread": self.h_thread,
             "room_leave": self.h_room_leave,
             "change_password": self.h_change_password,
             "announce": self.h_announce,
@@ -248,6 +250,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
             log.info("Server stopped")
 
     async def _startup(self):
+        # Stop / Start in the console reuses this object with a new event loop: nothing of the old loop's
+        # jobs and locks may carry over (a job still "running" there would never run again).
+        self._jobs, self._locks, self._locked = {}, {}, set()
         self.storage_error = ""
         try:
             os.makedirs(self.config.storage_dir, exist_ok=True)
@@ -259,6 +264,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             # an empty file would silently become a brand-new database (and admin/admin)
             raise sqlite3.DatabaseError("messenger.db is empty (0 bytes) - the file is damaged")
         self.db = Database(db_path)
+        self.db.remove_stale_snapshots()
         if self.db.user_count() == 0:
             uid = self.db.create_user("admin", "admin", "Administrator", is_admin=True, can_broadcast=True)
             self.db.set_must_change(uid, True)
@@ -337,6 +343,13 @@ class ServerCore(PlannerMixin, CalendarMixin):
             await self.server.wait_closed()
         self.maintenance_task.cancel()
         self.planner_task.cancel()
+        # a backup or copy still running finishes first (its worker thread can't be interrupted anyway)
+        running = [t for t in self.__dict__.get("_jobs", {}).values() if not t.done()]
+        if running:
+            done, pending = await asyncio.wait(running, timeout=60)
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
         await asyncio.sleep(0.1)
         try:                         # the last minutes before a stop / reinstall go into the safe copy too
             if safecopy.folder(self.config) and self._safe_copy_mark() != getattr(self, "_safe_copied", None):
@@ -362,9 +375,16 @@ class ServerCore(PlannerMixin, CalendarMixin):
             raise RuntimeError("Server is not running")
 
         async def runner():
-            return fn(*args, **kwargs)
-        slow = fn in (self.backup_now, self.chat_backup_now, self.safe_copy_now)
-        return asyncio.run_coroutine_threadsafe(runner(), self.loop).result(900 if slow else 30)
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):      # slow admin work runs in the background of the loop
+                result = await result
+            return result
+        slow = fn in (self.backup_now, self.chat_backup_now, self.safe_copy_now, self.admin_import_users)
+        import concurrent.futures
+        try:
+            return asyncio.run_coroutine_threadsafe(runner(), self.loop).result(900 if slow else 30)
+        except concurrent.futures.TimeoutError:
+            raise ValueError("The server is still busy with this - look at the dashboard again in a while")
 
     def _emit(self, event: str):
         for cb in self.listeners:
@@ -383,24 +403,48 @@ class ServerCore(PlannerMixin, CalendarMixin):
             if hourly:
                 self._prune_login_failures()
             steps = [("statuses", self.expire_statuses, lambda: True),
-                     ("safe copy", "safe copy", self._safe_copy_due),
-                     ("backup", "backup", self._backup_due),
-                     ("chat backup", None, lambda: archive.due(self.db, self.config)),
                      ("updates", self._check_updates, lambda: True),
                      ("file purge", self.purge_files, lambda: hourly)]
             for name, step, when in steps:     # each step on its own: one failure must not stop the rest
                 try:
                     if when():
-                        if step is None:
-                            await self.chat_backup_async()
-                        elif step == "backup":
-                            await self.backup_async()
-                        elif step == "safe copy":
-                            await self.safe_copy_async()
-                        else:
-                            step()
+                        step()
                 except Exception:  # noqa: BLE001
                     log.exception("maintenance step '%s' failed", name)
+            # The slow copies run as jobs of their own: a safe copy to a slow network folder must not hold up
+            # the nightly backup, the chat backup or anything above (it used to, for as long as it took).
+            jobs = [("safe copy", self.safe_copy_async, self._safe_copy_due),
+                    ("backup", self.backup_async, self._backup_due),
+                    ("chat backup", self.chat_backup_async, lambda: archive.due(self.db, self.config)),
+                    ("user list", self.user_list_async, self._user_list_due)]
+            for name, job, when in jobs:
+                try:
+                    if when():
+                        self._start_job(name, job)
+                except Exception:  # noqa: BLE001
+                    log.exception("maintenance job '%s' failed to start", name)
+
+    def _start_job(self, name, job):
+        """Run `job()` (a coroutine function) in the background unless it is still running from last time."""
+        jobs = self.__dict__.setdefault("_jobs", {})
+        running = jobs.get(name)
+        if running and not running.done():
+            return running
+
+        async def run():
+            try:
+                await job()
+            except Exception:  # noqa: BLE001
+                log.exception("maintenance job '%s' failed", name)
+        jobs[name] = self.loop.create_task(run())
+        return jobs[name]
+
+    def _lock(self, name):
+        """One asyncio lock per kind of copy: two safe copies must never write the same files at once."""
+        locks = self.__dict__.setdefault("_locks", {})
+        if name not in locks:
+            locks[name] = asyncio.Lock()
+        return locks[name]
 
     def purge_files(self):
         days = float(self.config["file_retention_days"] or 0)
@@ -411,7 +455,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
             seen = {r["id"] for r in rows}
             rows += [r for r in self.db.unclaimed_files(time.time() - unclaimed * 86400) if r["id"] not in seen]
         seen = {r["id"] for r in rows}
-        rows += [r for r in self.db.orphan_files(time.time() - 86400) if r["id"] not in seen]
+        # a finished upload waits up to three days for its message: the sender's outbox posts it when the
+        # server is back (client/outbox.py)
+        rows += [r for r in self.db.orphan_files(time.time() - 3 * 86400) if r["id"] not in seen]
         removed, freed = self._delete_stored(rows)
         if removed:
             log.info("Purged %d stored files (%s)", removed, P.human_size(freed))
@@ -624,9 +670,30 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 raise ClientError(f"Unknown request: {req.get('op')}")
             if session.must_change and req.get("op") not in ("change_password", "ping"):
                 raise ClientError("Please change your password first")
-            result = handler(session, req) or {}
+            result = handler(session, req)
+            if inspect.isawaitable(result):
+                # slow work (a backup, an import): reply when it is done, keep serving everyone meanwhile
+                self.loop.create_task(self._dispatch_later(session, req, result))
+                return
+            result = result or {}
             if rid is not None:
                 session.send({"op": "reply", "rid": rid, "ok": True, **result})
+        except Exception as e:  # noqa: BLE001 - sorted out in _reply_error
+            self._reply_error(session, req, e)
+
+    async def _dispatch_later(self, session, req, pending):
+        rid = req.get("rid")
+        try:
+            result = await pending or {}
+            if rid is not None:
+                session.send({"op": "reply", "rid": rid, "ok": True, **result})
+        except Exception as e:  # noqa: BLE001
+            self._reply_error(session, req, e)
+
+    def _reply_error(self, session, req, e):
+        rid = req.get("rid")
+        try:
+            raise e
         except ClientError as e:
             if rid is not None:
                 session.send({"op": "reply", "rid": rid, "ok": False, "error": str(e)})
@@ -754,6 +821,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     def push_directory(self):
         """Send every connected user their (possibly changed) user list and permissions."""
+        self._directory_version = getattr(self, "_directory_version", 0) + 1     # the user list file is due
         self.invalidate_org()
         for uid in list(self.sessions):
             row = self.db.get_user(uid)
@@ -881,6 +949,15 @@ class ServerCore(PlannerMixin, CalendarMixin):
             d["edited"] = True
         if row["forwarded"]:
             d["forwarded"] = True
+        if row["thread_root"]:
+            d["thread_root"] = row["thread_root"]
+            if row["thread_broadcast"]:
+                d["thread_broadcast"] = True
+        if row["thread_count"]:
+            d["thread_count"] = row["thread_count"]
+            d["thread_last"] = row["thread_last"]
+        if row["client_id"] and sender == viewer_id:
+            d["client_id"] = row["client_id"]
         extras = self._extras(row) if extras is None else extras
         if "poll" in extras:
             d["poll"] = self._poll_view(*extras["poll"], viewer_id)
@@ -973,9 +1050,10 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "recent": recent,
             "announcements": anns[:100],
             "muted": self.db.muted_convs(uid),
-            "review_notice": bool(self.config["admin_review_enabled"]),
             "update": self.update_info(),
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
+            "trusted_link_hosts": self.trusted_link_hosts(),
+            "my_threads": self.db.my_threads(uid),
             "file_retention_days": float(self.config["file_retention_days"] or 0),
             **self.planner_boot(uid),
             **self.calendar_boot(uid),
@@ -1021,6 +1099,14 @@ class ServerCore(PlannerMixin, CalendarMixin):
             kind, target = P.parse_conv(req.get("conv"))
         except ValueError as e:
             raise ClientError(str(e))
+        # Sent again by the outbox after a lost connection, but the first try had arrived: the same message
+        # back, not a second copy.
+        client_id = req.get("client_id")
+        client_id = str(client_id)[:64] if client_id else None
+        if client_id:
+            before = self.db.message_by_client_id(s.user_id, client_id)
+            if before:
+                return {"message": self.msg_for(before, s.user_id), "duplicate": True}
         text = req.get("text") or ""
         if not isinstance(text, str):
             raise ClientError("Invalid message")
@@ -1048,11 +1134,21 @@ class ServerCore(PlannerMixin, CalendarMixin):
             if not q or q["conv"] != conv_key:
                 raise ClientError("The message you reply to is not in this conversation")
             reply_to = q["id"]
+        thread_root = req.get("thread_root")
+        if thread_root:
+            root = self.db.get_message(int(thread_root))
+            if not root or root["conv"] != conv_key:
+                raise ClientError("That thread is not in this conversation")
+            if root["deleted"]:
+                raise ClientError("The message that started this thread was deleted")
+            thread_root = root["thread_root"] or root["id"]          # a reply to a reply stays in the thread
         forwarded = bool(req.get("forwarded"))
-        return self._post(s, kind, target, conv_key, text, msg_kind, file_id, reply_to, forwarded)
+        return self._post(s, kind, target, conv_key, text, msg_kind, file_id, reply_to, forwarded,
+                          client_id=client_id, thread_root=thread_root or None,
+                          thread_broadcast=bool(thread_root and req.get("also_chat")))
 
     def _post(self, s, kind, target, conv_key, text, msg_kind, file_id=None, reply_to=None, forwarded=False,
-              on_created=None):
+              on_created=None, client_id=None, thread_root=None, thread_broadcast=False):
         """Store a new message and deliver it; on_created(message_id) runs before anyone sees it."""
         if kind == "u":
             other = self.db.get_user(target)
@@ -1060,7 +1156,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 raise ClientError("User not found")
             online = bool(self.sessions.get(target))
             mid = self.db.add_message(conv_key, s.user_id, text, msg_kind, file_id, recipient_id=target,
-                                      delivered=online, reply_to=reply_to, forwarded=forwarded)
+                                      delivered=online, reply_to=reply_to, forwarded=forwarded,
+                                      client_id=client_id, thread_root=thread_root,
+                                      thread_broadcast=thread_broadcast)
             if on_created:
                 on_created(mid)
             row = self.db.get_message(mid)
@@ -1069,10 +1167,12 @@ class ServerCore(PlannerMixin, CalendarMixin):
         else:
             self._require_room(target, s.user_id)
             mid = self.db.add_message(conv_key, s.user_id, text, msg_kind, file_id, room_id=target,
-                                      reply_to=reply_to, forwarded=forwarded)
+                                      reply_to=reply_to, forwarded=forwarded, client_id=client_id,
+                                      thread_root=thread_root, thread_broadcast=thread_broadcast)
             if on_created:
                 on_created(mid)
-            self.db.mark_room_read(target, s.user_id, mid)
+            if not thread_root or thread_broadcast:
+                self.db.mark_room_read(target, s.user_id, mid)
             row = self.db.get_message(mid)
             # a room message looks the same to every member: build and encode it once
             data = P.encode({"op": "message", "message": self.msg_for(row, s.user_id)})
@@ -1082,7 +1182,29 @@ class ServerCore(PlannerMixin, CalendarMixin):
                         sess.send_bytes(data)
         mine = self.msg_for(row, s.user_id)
         self.push_user(s.user_id, {"op": "message", "message": mine}, exclude=s)
+        if thread_root:                       # "3 replies" under the first message, for everyone in the chat
+            root = self.db.get_message(thread_root)
+            if root:
+                self._push_message_update(root)
         return {"message": mine}
+
+    def trusted_link_hosts(self):
+        """The studio's file servers (Settings): links to them open without asking on every PC."""
+        return [h for h in re.split(r"[\s,;]+", str(self.config["trusted_link_hosts"] or "")) if h]
+
+    def h_thread(self, s, req):
+        """A thread: the message that started it and every reply."""
+        root = self.db.get_message(int(req.get("id") or 0))
+        if root and root["thread_root"]:
+            root = self.db.get_message(root["thread_root"])
+        if not root:
+            raise ClientError("Message not found")
+        if root["room_id"]:
+            self._require_room(root["room_id"], s.user_id)
+        elif s.user_id not in (root["sender_id"], root["recipient_id"]):
+            raise ClientError("Message not found")
+        return {"root": self.msg_for(root, s.user_id),
+                "messages": [self.msg_for(r, s.user_id) for r in self.db.thread(root["id"])]}
 
     def _internal_conv(self, s, conv):
         try:
@@ -1787,36 +1909,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 pass
             share["subs"].discard(writer)
 
-    # ---------------------------------------------------- chat review (admin)
-    def _review_allowed(self):
-        if not self.config["admin_review_enabled"]:
-            raise ValueError("Chat review is switched off in Settings > Privacy")
-
-    def _conv_title(self, key):
-        if key.startswith("r:"):
-            room = self.db._one("SELECT name FROM rooms WHERE id=?", int(key[2:]))
-            return f"# {room['name']}" if room else key
-        _, a, b = key.split(":")
-        return f"{self._user_name(int(a))}  ↔  {self._user_name(int(b))}"
-
-    def admin_review_conversations(self, user_id):
-        self._review_allowed()
-        return [{"key": r[0], "title": self._conv_title(r[0]), "messages": r[1], "last": r[2]}
-                for r in self.db.user_conversations(int(user_id))]
-
-    def admin_review_history(self, key, before=None, limit=200):
-        """Messages of one conversation (oldest first). Every call is written to the audit log."""
-        self._review_allowed()
-        rows = self.db.history(str(key), int(before) if before else None, min(int(limit), 1000))
-        self.audit(None, "chat reviewed", self._conv_title(str(key)), f"{len(rows)} messages")
-        out = []
-        for r in rows:
-            out.append({"id": r["id"], "ts": r["created_at"], "sender": self._user_name(r["sender_id"])
-                        if r["sender_id"] else "Administrator", "kind": r["kind"],
-                        "body": "(deleted)" if r["deleted"] else r["body"],
-                        "file": r["file_name"] if r["file_id"] else "", "edited": bool(r["edited_at"])})
-        return out
-
     # ---------------------------------------------------- reports (admin)
     def admin_report(self, days=30):
         since = time.time() - float(days) * 86400
@@ -1980,8 +2072,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                  "admin_save_room", "admin_delete_room", "admin_sessions", "admin_kick", "admin_stats",
                  "admin_announce", "admin_audit", "admin_config", "admin_update_config", "admin_server_info",
                  "admin_log_tail", "backup_now", "purge_files", "sync_auto_rooms",
-                 "admin_announcements", "admin_announcement_reads", "admin_review_conversations",
-                 "admin_review_history", "admin_report", "admin_updates", "admin_remove_avatar",
+                 "admin_announcements", "admin_announcement_reads", "admin_report", "admin_updates", "admin_remove_avatar",
                  "chat_backup_now", "admin_departments", "admin_save_department", "admin_set_department_room",
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
                  "admin_check_updates", "admin_import_users", "admin_holidays", "admin_holiday_save",
@@ -2004,18 +2095,54 @@ class ServerCore(PlannerMixin, CalendarMixin):
             raise ClientError("Invalid request")
         self._actor = row["username"]
         try:
-            return {"result": getattr(self, fn)(*args, **kwargs)}
+            result = getattr(self, fn)(*args, **kwargs)
         finally:
             self._actor = ServerCore._actor
+        if not inspect.isawaitable(result):
+            return {"result": result}
+        actor = row["username"]
+
+        async def later():                     # a backup or an import: the chats keep flowing meanwhile
+            self._actor = actor
+            try:
+                return {"result": await result}
+            finally:
+                self._actor = ServerCore._actor
+        return later()
 
     def h_announcement_read(self, s, req):
         self.db.mark_announcement_read(int(req.get("id") or 0), s.user_id)
 
+    SEARCH_PAGE = 200
+
     def h_search(self, s, req):
+        """Search what this person can see. Filters (all optional): from (user id), conv, since / until
+        ('YYYY-MM-DD'), files (only messages with a file); before: a message id, for the next page."""
         query = str(req.get("query", "")).strip()[:200]
-        if len(query) < 2:
-            raise ClientError("Type at least 2 characters")
-        return {"messages": [self.msg_for(r, s.user_id) for r in self.db.search(s.user_id, query)]}
+        sender = int(req["from"]) if req.get("from") else None
+        conv = None
+        if req.get("conv"):
+            _kind, _target, conv = self._internal_conv(s, req["conv"])
+
+        def day(value, end=False):
+            if not value:
+                return None
+            import datetime
+            try:
+                d = datetime.date.fromisoformat(str(value)[:10])
+            except ValueError:
+                raise ClientError("Dates look like 2026-09-30")
+            if end:
+                d += datetime.timedelta(days=1)
+            return time.mktime(d.timetuple())
+        since, until = day(req.get("since")), day(req.get("until"), end=True)
+        files_only = bool(req.get("files"))
+        if len(query) < 2 and not (sender or conv or since or until or files_only):
+            raise ClientError("Type at least 2 characters, or choose a filter")
+        rows = self.db.search(s.user_id, query, self.SEARCH_PAGE + 1, sender=sender, conv=conv, since=since,
+                              until=until, files_only=files_only, before=req.get("before"))
+        more = len(rows) > self.SEARCH_PAGE
+        return {"messages": [self.msg_for(r, s.user_id) for r in rows[:self.SEARCH_PAGE]], "more": more}
 
     # ======================================================= file transfer
     async def _handle_upload(self, reader, writer, msg):
@@ -2029,8 +2156,34 @@ class ServerCore(PlannerMixin, CalendarMixin):
             writer.write(P.encode({"ok": False, "error": f"File too large (max {P.human_size(max_size)})"}))
             return
         name = safe_filename(msg.get("name", "file"))
-        file_id = uuid.uuid4().hex
-        folder = os.path.join(self.config.storage_dir, time.strftime("%Y-%m"))
+        uploads = self.__dict__.setdefault("_uploads", {})
+        reserved = self.__dict__.setdefault("_reserved", [0])
+        receiving = self.__dict__.setdefault("_receiving", {})         # file_id -> writer of its upload
+        old = receiving.get(str(msg.get("resume") or ""))
+        if old is not None:
+            # the connection that dropped may still be waiting to time out: it gives way to the resume
+            try:
+                old.transport.abort()
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(0.05)
+        if uploads.get(uid, 0) >= MAX_UPLOADS:
+            writer.write(P.encode({"ok": False, "error": f"At most {MAX_UPLOADS} uploads at a time - "
+                                                         "wait for one to finish"}))
+            return
+        # Carry on with an upload the network interrupted: the part already here is kept (see below)
+        resumed = self._resumable_upload(msg.get("resume"), uid, size)
+        if resumed:
+            file_id, path = resumed["id"], resumed["path"]
+            try:
+                offset = min(os.path.getsize(path), size)
+            except OSError:
+                offset = 0
+            folder = os.path.dirname(path)
+        else:
+            file_id, offset = uuid.uuid4().hex, 0
+            folder = os.path.join(self.config.storage_dir, time.strftime("%Y-%m"))
+            path = os.path.join(folder, file_id)
         try:
             os.makedirs(folder, exist_ok=True)
             free = shutil.disk_usage(folder).free
@@ -2039,51 +2192,63 @@ class ServerCore(PlannerMixin, CalendarMixin):
             writer.write(P.encode({"ok": False, "error": "The server's file storage is not available. "
                                                          "Please tell your administrator."}))
             return
-        uploads = self.__dict__.setdefault("_uploads", {})
-        reserved = self.__dict__.setdefault("_reserved", [0])
-        if uploads.get(uid, 0) >= MAX_UPLOADS:
-            writer.write(P.encode({"ok": False, "error": f"At most {MAX_UPLOADS} uploads at a time - "
-                                                         "wait for one to finish"}))
-            return
-        if free < size + reserved[0] + 200 * 1024 * 1024:          # keep 200 MB spare for the database
-            log.error("Not enough disk space for '%s' (%s needed, %s free)", name, P.human_size(size),
+        needed = size - offset
+        if free < needed + reserved[0] + 200 * 1024 * 1024:          # keep 200 MB spare for the database
+            log.error("Not enough disk space for '%s' (%s needed, %s free)", name, P.human_size(needed),
                       P.human_size(free))
             writer.write(P.encode({"ok": False, "error": "The server is out of disk space. "
                                                          "Please tell your administrator."}))
             return
-        path = os.path.join(folder, file_id)
-        self.db.add_file(file_id, name, size, uid, path)
+        if not resumed:
+            self.db.add_file(file_id, name, size, uid, path)
         uploads[uid] = uploads.get(uid, 0) + 1
-        reserved[0] += size
+        reserved[0] += needed
+        receiving[file_id] = writer
         try:
-            await self._receive_upload(reader, writer, file_id, name, size, uid, path)
+            await self._receive_upload(reader, writer, file_id, name, size, uid, path, offset)
         finally:
             uploads[uid] -= 1
-            reserved[0] -= size
+            reserved[0] -= needed
+            if receiving.get(file_id) is writer:
+                del receiving[file_id]
 
-    async def _receive_upload(self, reader, writer, file_id, name, size, uid, path):
-        writer.write(P.encode({"ok": True, "file_id": file_id}))
+    def _resumable_upload(self, file_id, uid, size):
+        """The unfinished upload `file_id` of this person, of this size, still on disk - or None."""
+        if not file_id:
+            return None
+        f = self.db.get_file(str(file_id))
+        if not f or f["complete"] or f["purged"] or f["uploader_id"] != uid or f["size"] != size:
+            return None
+        return f if os.path.exists(f["path"]) else None
+
+    async def _receive_upload(self, reader, writer, file_id, name, size, uid, path, offset=0):
+        writer.write(P.encode({"ok": True, "file_id": file_id, "offset": offset}))
         await writer.drain()
-        remaining = size
+        remaining = size - offset
+        # Disk writes happen in a worker thread: several big uploads to a shared folder on the network used
+        # to hold up every chat while each chunk was written.
+        fh = await self.loop.run_in_executor(None, open, path, "r+b" if offset else "wb")
         try:
-            with open(path, "wb") as fh:
-                while remaining:
-                    chunk = await asyncio.wait_for(reader.read(min(P.CHUNK, remaining)), 120)
-                    if not chunk:
-                        raise ConnectionError("upload interrupted")
-                    fh.write(chunk)
-                    remaining -= len(chunk)
+            if offset:
+                await self.loop.run_in_executor(None, fh.truncate, offset)
+                fh.seek(offset)
+            while remaining:
+                chunk = await asyncio.wait_for(reader.read(min(P.CHUNK, remaining)), 120)
+                if not chunk:
+                    raise ConnectionError("upload interrupted")
+                await self.loop.run_in_executor(None, fh.write, chunk)
+                remaining -= len(chunk)
         except BaseException:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            self.db.delete_file_row(file_id)
+            # The part received so far stays: the client carries on from here when it reconnects.
+            # Unfinished uploads nobody comes back for are removed after a day (purge_files).
+            await self.loop.run_in_executor(None, fh.close)
             raise
+        await self.loop.run_in_executor(None, fh.close)
         self.db.complete_file(file_id)
         writer.write(P.encode({"ok": True, "done": True, "file_id": file_id}))
         await writer.drain()
-        log.info("Stored file '%s' (%s) from user %s", name, P.human_size(size), uid)
+        log.info("Stored file '%s' (%s) from user %s%s", name, P.human_size(size), uid,
+                 f" (resumed at {P.human_size(offset)})" if offset else "")
 
     async def _handle_download(self, writer, msg):
         uid = self._token_uid(msg.get("token"))
@@ -2194,6 +2359,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
             row = self.db.get_user(uid)
             if row and (row["disabled"] or row["deleted"]):
                 self.kick(uid)
+        if getattr(self, "_bulk_users", False):
+            return                       # an import: done once when it ends
         self.sync_auto_rooms()
         self.push_directory()
         self._emit("users")
@@ -2209,7 +2376,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
         return "".join(secrets.choice(letters) for _ in range(5)) + "-" + \
             "".join(secrets.choice("23456789") for _ in range(4))
 
-    def admin_import_users(self, rows, dry_run=False):
+    async def admin_import_users(self, rows, dry_run=False):
         """The Excel/CSV user list in one go: new usernames are created, existing ones updated.
 
         Rows are dicts (username, display_name, department, section, designation, reports_to, title, password,
@@ -2242,8 +2409,24 @@ class ServerCore(PlannerMixin, CalendarMixin):
                     if not dry_run and parent:
                         self.admin_save_department(name=sect, parent_id=parent["id"])
         report["new_departments"] = sorted(set(report["new_departments"]), key=str.lower)
+        # Everyone's user list is sent once at the end, not after each row: 100 rows used to mean 100 full
+        # lists to every PC online, and each new password takes a moment to hash - between rows the server
+        # gets on with the chats.
+        self._bulk_users = not dry_run
+        try:
+            await self._import_people(clean, dry_run, report)
+        finally:
+            self._bulk_users = False
+        if not dry_run:
+            self.sync_auto_rooms()
+            self.push_directory()
+            self._emit("users")
+        return report
+
+    async def _import_people(self, clean, dry_run, report):
         # people: pass 1 without "reports to" (leads may come later in the sheet), pass 2 links them
         for n, row in clean:
+            await asyncio.sleep(0)                  # let the chats through between people
             existing = self.db.get_user_by_name(row["username"])
             fields = {}
             for key in self.IMPORT_FIELDS:
@@ -2296,6 +2479,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 report["errors"].append(f"Row {n} ({row['username']}): {e}")
         if not dry_run:
             for n, row in clean:
+                await asyncio.sleep(0)
                 if row.get("reports_to"):
                     user = self.db.get_user_by_name(row["username"])
                     try:
@@ -2306,7 +2490,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
                         report["errors"].append(f"Row {n} ({row['username']}): {e}")
             self.audit(None, "users imported", f"{len(report['created'])} created, {len(report['updated'])} updated",
                        f"{len(report['errors'])} rows skipped")
-        return report
 
     def admin_create_user(self, must_change=None, **kw):
         kw = self._resolve_user_fields(None, dict(kw))
@@ -2504,7 +2687,11 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 "discovery_error": getattr(self, "discovery_error", ""),
                 "storage_error": getattr(self, "storage_error", ""),
                 "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config),
-                "last_safe_copy": self.last_safe_copy, "safe_copy_dir": safecopy.folder(self.config)}
+                "last_safe_copy": self.last_safe_copy, "safe_copy_dir": safecopy.folder(self.config),
+                "central_network": bool(safecopy.folder(self.config))
+                and safecopy.is_network(safecopy.folder(self.config)),
+                "last_lock": self.last_lock, "last_user_list": self.last_user_list,
+                "user_list_dir": self.user_list_folder(), "backup_dir": self.backup_folder()}
 
     def admin_log_tail(self, lines=400):
         try:
@@ -2518,9 +2705,18 @@ class ServerCore(PlannerMixin, CalendarMixin):
     last_safe_copy = None    # {"time": ts, "folder": ..., "ok": bool, "size"/"error": ...}
 
     def _backup_plan(self):
-        folder = self.config.backup_dir
+        folder = self.backup_folder()
         stamp = time.strftime("%Y-%m-%d_%H%M")
         return folder, stamp, os.path.join(folder, f"messenger_{stamp}.db"), max(1, int(self.config["backup_keep"]))
+
+    def backup_folder(self):
+        """Where the nightly database backups go. With a central folder, backups that would sit on the server
+        PC itself go there instead: a rented or broken PC must not take the history with it."""
+        folder = self.config.backup_dir
+        central = safecopy.folder(self.config)
+        if central and safecopy.inside(folder, self.config.data_dir):
+            return os.path.join(central, "Database backups")
+        return folder
 
     def _backup_copy(self, folder, stamp, path, keep, config_path):
         """The slow part (safe in a worker thread): copy the database + settings, prune old copies."""
@@ -2553,10 +2749,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
             self.audit("server", "backup failed", folder, result["error"])
         return result
 
-    def backup_now(self):
-        """Copy the database + settings into the backup folder and prune old copies (waits for it)."""
-        folder, stamp, path, keep = self._backup_plan()
-        return self._backup_done(self._backup_copy(folder, stamp, path, keep, self.config.path), folder)
+    async def backup_now(self):
+        """'Back up now' in the console: the copy runs in a worker thread, the chats keep flowing."""
+        return await self.backup_async()
 
     # ---- safe copy of the server's own data in the central folder (server/safecopy.py)
     def _safe_copy_mark(self):
@@ -2596,25 +2791,79 @@ class ServerCore(PlannerMixin, CalendarMixin):
         target = safecopy.folder(self.config)
         if not target:
             return None
-        mark, info = self._safe_copy_mark(), self._safe_copy_info()
-        result = await self.loop.run_in_executor(None, safecopy.write, self.db, self.config, target, info)
-        return self._safe_copy_done(result, mark)
+        async with self._lock("safe copy"):
+            mark, info = self._safe_copy_mark(), self._safe_copy_info()
+            result = await self.loop.run_in_executor(None, safecopy.write, self.db, self.config, target, info)
+            await self._lock_central()
+            return self._safe_copy_done(result, mark)
 
-    def safe_copy_now(self):
-        """'Copy now' in the console (waits for it)."""
-        target = safecopy.folder(self.config)
-        if not target:
+    async def safe_copy_now(self):
+        """'Copy now' in the console (in the background of the server)."""
+        if not safecopy.folder(self.config):
             raise ValueError("The safe copy is off, or the shared files are inside the data folder - choose a "
                              "safe copy folder in Settings")
-        mark = self._safe_copy_mark()
-        return self._safe_copy_done(safecopy.write(self.db, self.config, target, self._safe_copy_info()), mark)
+        return await self.safe_copy_async()
 
     async def backup_async(self):
         """The nightly backup: the copy runs in a worker thread, so chats never stall while it runs."""
-        folder, stamp, path, keep = self._backup_plan()
-        result = await self.loop.run_in_executor(None, self._backup_copy, folder, stamp, path, keep,
-                                                 self.config.path)
-        return self._backup_done(result, folder)
+        async with self._lock("backup"):
+            folder, stamp, path, keep = self._backup_plan()
+            result = await self.loop.run_in_executor(None, self._backup_copy, folder, stamp, path, keep,
+                                                     self.config.path)
+            await self._lock_central()
+            return self._backup_done(result, folder)
+
+    # ---- the central folder is for administrators only (it holds every chat and the server's key)
+    last_lock = None       # {"folder", "ok", "network", "error"}
+
+    async def _lock_central(self):
+        """Lock the central folder (and a chat backup folder elsewhere) to administrators, once per folder.
+
+        A folder on this PC's own disks is locked with Windows permissions. A network folder cannot be locked
+        from here safely (its permissions are the file server's), so the dashboard asks IT to do it."""
+        done = self.__dict__.setdefault("_locked", set())
+        for folder in {safecopy.folder(self.config), archive.log_dir(self.config)}:
+            if not folder or folder in done:
+                continue
+            # lock_folder looks at the folder in a worker thread: a file server that is down must not
+            # stall the chats while Windows waits for it
+            result = await self.loop.run_in_executor(None, safecopy.lock_folder, folder)
+            if result.get("missing"):
+                continue                                  # tried again after the next copy
+            done.add(folder)
+            self.last_lock = result
+            if not self.last_lock["ok"] and not self.last_lock.get("network"):
+                log.warning("Could not lock %s to administrators: %s", folder, self.last_lock.get("error"))
+
+    # ---- a readable list of everyone, in the central folder (server/userlist.py)
+    last_user_list = None
+
+    def _user_list_due(self):
+        return self._user_list_mark() != getattr(self, "_user_list_written", None)
+
+    def _user_list_mark(self):
+        """Written when people change, and once a day (it shows who was online last)."""
+        return (getattr(self, "_directory_version", 0), time.strftime("%Y-%m-%d"))
+
+    def user_list_folder(self):
+        central = safecopy.folder(self.config)
+        return os.path.join(central or self.backup_folder(), "User list")
+
+    async def user_list_async(self):
+        from server import userlist
+        async with self._lock("user list"):
+            mark = self._user_list_mark()
+            data = (self.admin_users(), self.admin_departments(), self.admin_roles())   # quick, on the loop
+            folder = self.user_list_folder()
+            result = await self.loop.run_in_executor(None, userlist.write, folder, data,
+                                                     self.config["server_name"])
+            self.last_user_list = result
+            if result["ok"]:
+                self._user_list_written = mark
+                await self._lock_central()
+            else:
+                log.error("User list not written to %s: %s", folder, result["error"])
+            return result
 
     # ---- storage: who uses the space, per-room file retention, manual clean-up
     def admin_storage(self):
@@ -2658,32 +2907,34 @@ class ServerCore(PlannerMixin, CalendarMixin):
     # ---- readable chat backup + message retention (see server/archive.py)
     last_chat_backup = None
 
-    def chat_backup_now(self, batches=None):
-        """Append new messages to the chat log files, then drop messages older than the retention period.
+    async def chat_backup_now(self):
+        """Append new messages to the chat backup files, then drop messages older than the retention period.
 
-        With `batches`, stop after that many 5000-message batches (result["more"] is then True)."""
-        try:
-            result = archive.export_chat_logs(self.db, self.config, batches)
-            if not result.get("more"):
+        The export reads through its own database connection in a worker thread: a big first export (every
+        message, when a server moves to the Rooms / People layout) must not stall the chats."""
+        async with self._lock("chat backup"):
+            def export():
+                reader = self.db.reader()
+                try:
+                    return archive.export_chat_logs(reader, self.config)
+                finally:
+                    reader.close()
+            try:
+                result = await self.loop.run_in_executor(None, export)
                 result["removed"] = archive.apply_retention(self.db, self.config)
-            result.update(time=time.time(), ok=True)
-        except Exception as e:  # noqa: BLE001 - reported on the dashboard, retried tomorrow
-            log.exception("Chat backup failed")
-            result = {"time": time.time(), "ok": False, "error": str(e), "folder": archive.log_dir(self.config)}
-            archive.mark_run(self.db)
-        self.last_chat_backup = result
-        return result
+                result.update(time=time.time(), ok=True)
+                await self._lock_central()
+            except Exception as e:  # noqa: BLE001 - reported on the dashboard, retried tomorrow
+                log.exception("Chat backup failed")
+                result = {"time": time.time(), "ok": False, "error": str(e),
+                          "folder": archive.log_dir(self.config)}
+                archive.mark_run(self.db)
+            self.last_chat_backup = result
+            return result
 
     async def chat_backup_async(self):
-        """The nightly run: a batch at a time, so chat keeps flowing during a big first export."""
-        exported = 0
-        while True:
-            result = self.chat_backup_now(batches=1)
-            exported += result.get("messages", 0)
-            if not result.get("more"):
-                result["messages"] = exported
-                return result
-            await asyncio.sleep(0.05)
+        """The nightly run."""
+        return await self.chat_backup_now()
 
     def _backup_due(self) -> bool:
         if not self.config["backup_enabled"]:
@@ -2693,7 +2944,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
         today = time.strftime("%Y-%m-%d")
         if self.last_backup and time.strftime("%Y-%m-%d", time.localtime(self.last_backup["time"])) == today:
             return False
-        folder = self.config.backup_dir
+        folder = self.backup_folder()
         try:
             return not any(f.startswith(f"messenger_{today}") for f in os.listdir(folder))
         except OSError:

@@ -20,7 +20,8 @@ from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
 from client.ui.widgets import (
-    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_link, open_path, plain, rich_safe,
+    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_file, open_link, open_path, plain,
+    rich_safe,
     show_in_folder,
 )
 
@@ -207,7 +208,7 @@ class FileCard(QFrame):
 
     def open(self):
         if self.local_path():
-            open_path(self.local_path())
+            open_file(self.local_path())
 
     def folder(self):
         if self.local_path():
@@ -307,7 +308,7 @@ class ImagePreview(QLabel):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and self.path:
-            open_path(self.path)
+            open_file(self.path)
 
 
 _NUKE_RE = re.compile(r"^(set cut_paste_input|version \d+|Root \{|push \$|[A-Z][A-Za-z0-9]+ \{$)", re.M)
@@ -632,12 +633,13 @@ class PollCard(QWidget):
 class MessageRow(QWidget):
     """One message: a bubble (text, quote, image, file) or a sticker, aligned left or right."""
 
-    def __init__(self, ctx, msg, mine, show_name, show_avatar, is_room):
+    def __init__(self, ctx, msg, mine, show_name, show_avatar, is_room, in_thread=False):
         super().__init__()
         self.ctx = ctx
         self.msg = msg
         self.mine = mine
         self.is_room = is_room
+        self.in_thread = in_thread          # shown in the thread panel, not in the chat
         self.first = show_name
         self.seen = ""
         outer = QHBoxLayout(self)
@@ -716,6 +718,14 @@ class MessageRow(QWidget):
 
         if msg.get("reactions") and not deleted:
             b.addWidget(ReactionBar(ctx, msg))
+        if not in_thread and msg.get("thread_broadcast"):
+            b.addWidget(self._thread_link("↳ also a reply in a thread", msg["thread_root"]))
+        if not in_thread and msg.get("thread_count"):
+            last = datetime.datetime.fromtimestamp(msg.get("thread_last") or msg["ts"])
+            day = {0: "today", 1: "yesterday"}.get((datetime.date.today() - last.date()).days, f"{last:%d %b}")
+            n = msg["thread_count"]
+            b.addWidget(self._thread_link(f"💬 {n} {'reply' if n == 1 else 'replies'}  ·  last {day} {last:%H:%M}",
+                                          msg["id"]))
 
         self.meta = QLabel()
         self.meta.setTextFormat(Qt.RichText)
@@ -742,6 +752,15 @@ class MessageRow(QWidget):
                 outer.addWidget(av, 0, Qt.AlignTop)
             outer.addWidget(self.bubble)
             outer.addStretch(1)
+
+    def _thread_link(self, text, root_id):
+        link = QPushButton(text)
+        T.polish(link, flat=True)
+        link.setCursor(Qt.PointingHandCursor)
+        link.setStyleSheet(f"QPushButton {{ color: {T.ACCENT}; font-size: 9pt; font-weight: 700; text-align: left;"
+                           f" padding: 2px 0; background: transparent; border: none; }}")
+        link.clicked.connect(lambda: self.ctx.open_thread(self.msg["conv"], root_id))
+        return link
 
     def _bubble_style(self, flash=False):
         if self.sticker:
@@ -803,12 +822,13 @@ class MessageRow(QWidget):
             self.text.setMinimumWidth(min(self._ideal, w - 24))
 
     def enterEvent(self, e):
-        if not self.msg.get("deleted"):
+        if not self.msg.get("deleted") and not self.in_thread:
             self.ctx.chat.hover_bar.attach(self)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        QTimer.singleShot(60, self.ctx.chat.hover_bar.maybe_hide)
+        if not self.in_thread:
+            QTimer.singleShot(60, self.ctx.chat.hover_bar.maybe_hide)
         super().leaveEvent(e)
 
     def contextMenuEvent(self, e):
@@ -823,7 +843,12 @@ class MessageRow(QWidget):
         m = QMenu(self)
         chat = ctx.chat
         m.addAction(icon("smile", T.TEXT, 16), "React...", lambda: chat.react_menu(msg, QCursor.pos()))
-        m.addAction(icon("reply", T.TEXT, 16), "Reply", lambda: chat.start_reply(msg))
+        if not self.in_thread:
+            m.addAction(icon("reply", T.TEXT, 16), "Reply", lambda: chat.start_reply(msg))
+        if msg["kind"] != "system":
+            m.addAction(icon("chat", T.TEXT, 16), "Open the thread" if msg.get("thread_count") or self.in_thread
+                        else "Reply in a thread",
+                        lambda: ctx.open_thread(msg["conv"], msg.get("thread_root") or msg["id"]))
         from client.ui.planner_ui import when_menu
         m.addMenu(when_menu(m, "Remind me about this",
                             lambda ts: ctx.add_reminder(ts, "", msg["conv"], msg["id"])))
@@ -858,7 +883,7 @@ class MessageRow(QWidget):
         if f:
             path = ctx.config.downloaded_path(f["id"])
             if path:
-                m.addAction(icon("open", T.TEXT, 16), "Open file", lambda: open_path(path))
+                m.addAction(icon("open", T.TEXT, 16), "Open file", lambda: open_file(path))
                 m.addAction(icon("folder", T.TEXT, 16), "Show in folder", lambda: show_in_folder(path))
             elif not f.get("purged"):
                 m.addAction(icon("download", T.TEXT, 16), "Download", lambda: ctx.download_file(f, msg["conv"]))
@@ -1271,6 +1296,62 @@ class UploadStrip(QFrame):
         self.setVisible(bool(self.rows))
 
 
+class OutboxStrip(QFrame):
+    """Messages of this chat that wait for the server: greyed, with a clock, and a way to take them back.
+
+    A message that goes out at once never shows here (a moment's grace), so a normal send does not flicker."""
+
+    GRACE_MS = 1200
+
+    def __init__(self, ctx):
+        super().__init__()
+        self.ctx = ctx
+        self.conv = None
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(12, 0, 12, 4)
+        self.lay.setSpacing(3)
+        self._timer = QTimer(self, singleShot=True, timeout=self.refresh)
+        ctx.outbox.changed.connect(lambda conv: conv == self.conv and self.refresh())
+        ctx.conn.logged_in.connect(lambda *_: self.refresh())
+        ctx.conn.connection_lost.connect(lambda *_: self.refresh())
+        self.hide()
+
+    def set_conv(self, conv):
+        self.conv = conv
+        self.refresh()
+
+    def refresh(self):
+        while self.lay.count():
+            w = self.lay.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        now = time.time()
+        items = self.ctx.outbox.pending(self.conv) if self.conv else []
+        shown = [i for i in items if not self.ctx.conn.online or now - i["created"] > self.GRACE_MS / 1000]
+        if len(shown) < len(items):
+            self._timer.start(self.GRACE_MS)
+        for item in shown:
+            row = QFrame()
+            row.setStyleSheet(f"background: {T.PANEL}; border-radius: 10px;")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(10, 5, 6, 5)
+            ic = QLabel()
+            ic.setPixmap(pixmap("clock", T.FAINT, 15))
+            h.addWidget(ic)
+            text = (item.get("label") or "").replace("\n", " ")
+            label = plain(QLabel(esc(text[:160]) + ("…" if len(text) > 160 else "")))
+            label.setStyleSheet(f"color: {T.MUTED}; background: transparent;")
+            h.addWidget(label, 1)
+            why = QLabel("waiting for the server" if not self.ctx.conn.online else "sending…")
+            why.setStyleSheet(f"color: {T.FAINT}; font-size: 8pt; background: transparent;")
+            h.addWidget(why)
+            cancel = IconButton("close", "Don't send", 26, 13)
+            cancel.clicked.connect(lambda _=False, cid=item["client_id"]: self.ctx.outbox.cancel(cid))
+            h.addWidget(cancel)
+            self.lay.addWidget(row)
+        self.setVisible(bool(shown))
+
+
 # ============================================================ chat view
 class ChatView(QWidget):
     back = Signal()
@@ -1390,6 +1471,8 @@ class ChatView(QWidget):
 
         self.uploads = UploadStrip(ctx)
         lay.addWidget(self.uploads)
+        self.outbox_strip = OutboxStrip(ctx)
+        lay.addWidget(self.outbox_strip)
 
         # composer: reply/edit strip on top of a rounded input card
         comp_wrap = QWidget()
@@ -1549,6 +1632,7 @@ class ChatView(QWidget):
         self.update_header()
         self._update_scheduled_bar()
         self.uploads.set_conv(conv)
+        self.outbox_strip.set_conv(conv)
         self._stick_bottom = True
         self.render_all()
         if not c.history_requested:
@@ -1808,11 +1892,11 @@ class ChatView(QWidget):
         text = self.input.toPlainText().strip()
         if not text or not self.conv:
             return
-        if not self.ctx.conn.online:
-            self.ctx.toast("Not connected — your message was not sent.")
-            return
         conv = self.conv
         if self.editing:
+            if not self.ctx.conn.online:
+                self.ctx.toast("Not connected — the change was not saved.")
+                return
             msg = self.editing
             self.cancel_action()
             self.input.clear()
@@ -1832,15 +1916,10 @@ class ChatView(QWidget):
         self.cancel_action()
         self.input.clear()
         self.last_typing_sent = 0
-
-        def done(reply):
-            if reply.get("ok"):
-                self.store.add_message(reply["message"])
-            else:
-                self.ctx.toast(f"Message not sent: {reply.get('error')}")
-                if not self.input.toPlainText():
-                    self.input.setPlainText(text)
-        self.ctx.conn.request("send", done, conv=conv, text=text, reply_to=reply_to)
+        # the outbox sends it now, or when the server is back; a refusal goes back into this chat's box
+        self.ctx.outbox.add(conv, text=text, reply_to=reply_to)
+        if not self.ctx.conn.online:
+            self.ctx.toast("The server is not reachable — your message is sent as soon as it is back.")
         self._stick_bottom = True
 
     def send_text_as_file(self, text):
@@ -2097,21 +2176,12 @@ class ChatView(QWidget):
     def send_sticker(self, sticker_id):
         if not self.conv:
             return
-        if not self.ctx.conn.online:
-            self.ctx.toast("Not connected — the sticker was not sent.")
-            return
         from client import stickers
         stickers.remember(self.ctx.config, sticker_id)
         reply_to = self.reply_to["id"] if self.reply_to else None
         if self.reply_to:
             self.cancel_action()
-
-        def done(reply):
-            if reply.get("ok"):
-                self.store.add_message(reply["message"])
-            else:
-                self.ctx.toast(f"Sticker not sent: {reply.get('error')}")
-        self.ctx.conn.request("send", done, conv=self.conv, sticker=sticker_id, reply_to=reply_to)
+        self.ctx.outbox.add(self.conv, sticker=sticker_id, reply_to=reply_to, label="Sticker")
         self._stick_bottom = True
         self.input.setFocus()
 

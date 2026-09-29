@@ -64,6 +64,7 @@ class Store(QObject):
     reminder_fired = Signal(dict)          # a reminder is due now
     planner_changed = Signal()             # reminders / scheduled messages list changed
     calendar_changed = Signal()            # something on the calendar changed: fetch again
+    thread_message = Signal(dict, bool)    # a reply in a thread (message, arrived just now)
     event_invite = Signal(dict)            # someone invited me to a meeting
 
     def __init__(self, conn):
@@ -73,6 +74,7 @@ class Store(QObject):
         self.users: dict[int, dict] = {}
         self.rooms: dict[int, dict] = {}
         self.convs: dict[str, Conversation] = {}
+        self.my_threads: set[int] = set()   # threads I replied in (their first message's id)
         self.announcements: list[dict] = []
         self.names: dict[int, str] = {}           # sender names seen in messages (incl. deleted users)
         self.muted: set[str] = set()
@@ -192,6 +194,7 @@ class Store(QObject):
         self.users, self.rooms, self.convs, self.names = {}, {}, {}, {}
         self.announcements, self.reminders, self.scheduled = [], [], []
         self.muted = set()
+        self.my_threads = set()
 
     def load(self, boot):
         """Apply a login_ok payload. Also used after reconnecting."""
@@ -206,6 +209,8 @@ class Store(QObject):
         self.me = boot["me"]
         self.server_name = boot.get("server_name", "")
         self.max_file_size = boot.get("max_file_size", 0)
+        self.trusted_link_hosts = boot.get("trusted_link_hosts", [])
+        self.my_threads = set(boot.get("my_threads", []))
         self.file_retention_days = boot.get("file_retention_days", 0)
         self.buzz_enabled = boot.get("buzz_enabled", False)
         self.allow_name_change = boot.get("allow_name_change", False)
@@ -219,12 +224,12 @@ class Store(QObject):
         for item in boot["recent"]:
             c = self.conversation(item["conv"])
             c.unread = item["unread"]
-            if item["last"]:
-                self.remember_name(item["last"])
-                c.add(item["last"])
+            last = item["last"]
+            if last and not (last.get("thread_root") and not last.get("thread_broadcast")):
+                self.remember_name(last)
+                c.add(last)
         self.announcements = boot.get("announcements", [])
         self.muted = set(boot.get("muted", []))
-        self.review_notice = bool(boot.get("review_notice"))
         if boot.get("update"):
             self.update_available.emit(boot["update"])
         self.me_changed.emit()
@@ -241,6 +246,9 @@ class Store(QObject):
         elif op == "message_update":
             m = ev["message"]
             self.remember_name(m)
+            if m.get("thread_root") and not m.get("thread_broadcast"):
+                self.thread_message.emit(m, False)          # it lives in the thread panel, not the chat
+                return
             c = self.conversation(m["conv"])
             if m["id"] in c.messages or (c.last and c.last["id"] == m["id"]):
                 c.messages[m["id"]] = m
@@ -338,6 +346,13 @@ class Store(QObject):
 
     def add_message(self, msg, live=False):
         self.remember_name(msg)
+        root = msg.get("thread_root")
+        if root:
+            if msg["sender_id"] == self.my_id:
+                self.my_threads.add(root)
+            self.thread_message.emit(msg, live)
+            if not msg.get("thread_broadcast"):
+                return                     # it lives in the thread: not in the chat, not unread there
         c = self.conversation(msg["conv"])
         is_new = msg["id"] not in c.messages
         c.add(msg)

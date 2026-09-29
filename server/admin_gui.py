@@ -329,6 +329,29 @@ class DashboardPage(Page):
         else:
             chat_backup = f"<span style='color:{T.DANGER}'>Failed: {cb.get('error', '')}</span>"
         sc = info.get("last_safe_copy")
+        if running and not info.get("safe_copy_dir"):
+            warn.append("There is no central folder: chats, backups and the user list are only on this PC. If it "
+                        "breaks or goes back, they go with it. Choose a folder on the file server in Settings > "
+                        "Central folder.")
+            self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
+            self.warnings.setVisible(True)
+        lock = info.get("last_lock") or {}
+        if running and info.get("central_network"):
+            locked = (f"<span style='color:{T.MUTED}'>on a network share - make sure only administrators can "
+                      "open it (set this on the file server)</span>")
+        elif lock.get("ok"):
+            locked = f"<span style='color:{T.ACCENT}'>locked to administrators</span>"
+        elif lock.get("chosen"):
+            locked = (f"<span style='color:{T.MUTED}'>a folder you chose: make sure only administrators can "
+                      "open it</span>")
+        elif lock.get("error"):
+            locked = f"<span style='color:{T.DANGER}'>could not be locked: {lock['error']}</span>"
+        else:
+            locked = ""
+        ul = info.get("last_user_list") or {}
+        user_list = (f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(ul['time'])} ({ul.get('people', 0)} people)"
+                     if ul.get("ok") else f"<span style='color:{T.DANGER}'>Failed: {ul.get('error', '')}</span>"
+                     if ul else "—")
         if not info.get("safe_copy_dir"):
             safe = f"<span style='color:{T.MUTED}'>Off - choose a folder in Settings</span>"
         elif not sc:
@@ -347,7 +370,8 @@ class DashboardPage(Page):
         rows = [("Address", f"<b>{', '.join(info['ips'])}</b>"),
                 ("Ports", f"{info['tcp_port']} chat &amp; files &nbsp;·&nbsp; {info['discovery_port']} discovery"),
                 ("Encryption", encryption), ("Last backup", backup), ("Last chat backup", chat_backup),
-                ("Safe copy", safe),
+                ("Safe copy", safe), ("User list", user_list),
+                ("Central folder", (f"{info['safe_copy_dir']}<br>{locked}" if info.get("safe_copy_dir") else "—")),
                 ("Data folder", info["data_dir"]), ("File storage", info["storage_dir"])]
         if info.get("fingerprint"):
             rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.MUTED}'>"
@@ -1337,101 +1361,6 @@ class AnnouncePage(Page):
         self.refresh()
 
 
-# ============================================================ chat review
-class ReviewPage(Page):
-    def __init__(self, win):
-        super().__init__("Chat review", "For policy / HR investigations. Every conversation you open here is "
-                                        "recorded in the audit log, and users are told at sign-in that chats may "
-                                        "be reviewed. Switch it off in Settings > Privacy.")
-        self.win = win
-        from PySide6.QtWidgets import QSplitter
-        bar = QHBoxLayout()
-        self.user = QComboBox()
-        self.user.setMinimumWidth(320)
-        self.user.currentIndexChanged.connect(lambda _: self.load_convs())
-        bar.addWidget(QLabel("Person"))
-        bar.addWidget(self.user, 1)
-        self.export_btn = btn("Export conversation", "upload")
-        self.export_btn.clicked.connect(self.export)
-        bar.addWidget(self.export_btn)
-        self.lay.addLayout(bar)
-        split = QSplitter()
-        self.convs = QListWidget()
-        self.convs.setMaximumWidth(340)
-        self.convs.currentItemChanged.connect(lambda *_: self.load_messages())
-        self.view = QPlainTextEdit()
-        self.view.setReadOnly(True)
-        self.view.setFont(QFont("Segoe UI", 10))
-        split.addWidget(self.convs)
-        split.addWidget(self.view)
-        split.setStretchFactor(1, 1)
-        self.lay.addWidget(split, 1)
-        self.messages = []
-        self._users_loaded = False
-
-    def refresh(self):
-        if not self.win.api.running or self._users_loaded:
-            return
-        current = self.user.currentData()
-        self.user.blockSignals(True)
-        self.user.clear()
-        self.user.addItem("— choose a person —", None)
-        for u in sorted(self.win.api.call("admin_users"), key=lambda u: u["display_name"].lower()):
-            extra = " · ".join(x for x in (u["department"], u["designation"]) if x)
-            self.user.addItem(f"{u['display_name']}  ({u['username']})" + (f"   {extra}" if extra else ""), u["id"])
-        self.user.setCurrentIndex(max(0, self.user.findData(current)))
-        self.user.blockSignals(False)
-        self._users_loaded = True
-
-    def showEvent(self, e):
-        self._users_loaded = False
-        super().showEvent(e)
-
-    def load_convs(self):
-        self.convs.clear()
-        self.view.clear()
-        uid = self.user.currentData()
-        if not uid:
-            return
-        try:
-            for c in self.win.api.call("admin_review_conversations", uid):
-                it = QListWidgetItem(f"{c['title']}\n{c['messages']} messages · last {fmt_time(c['last'])}")
-                it.setData(Qt.UserRole, c["key"])
-                self.convs.addItem(it)
-        except ValueError as e:
-            QMessageBox.information(self, "Chat review", str(e))
-
-    def load_messages(self):
-        it = self.convs.currentItem()
-        if not it:
-            return
-        try:
-            self.messages = self.win.api.call("admin_review_history", it.data(Qt.UserRole), None, 1000)
-        except ValueError as e:
-            QMessageBox.information(self, "Chat review", str(e))
-            return
-        lines = []
-        for m in self.messages:
-            when = datetime.datetime.fromtimestamp(m["ts"]).strftime("%d %b %Y %H:%M")
-            body = {"sticker": f"[sticker: {m['body']}]", "poll": f"[poll] {m['body']}"}.get(m.get("kind"), m["body"])
-            if m["file"]:
-                body = (body + "  " if body else "") + f"[file: {m['file']}]"
-            if m["edited"]:
-                body += "  (edited)"
-            lines.append(f"[{when}] {m['sender']}: {body}")
-        self.view.setPlainText("\n".join(lines) or "(no messages)")
-
-    def export(self):
-        it = self.convs.currentItem()
-        if not it or not self.messages:
-            return
-        path, _ = QFileDialog.getSaveFileName(self, "Export conversation", "conversation.txt", "Text files (*.txt)")
-        if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(f"{it.text().splitlines()[0]}\nExported {fmt_time(time.time())}\n\n")
-                f.write(self.view.toPlainText())
-
-
 # ================================================================ reports
 class ReportsPage(Page):
     def __init__(self, win):
@@ -1987,9 +1916,10 @@ class SettingsPage(Page):
         T.polish(hint, muted=True)
         form.addRow("", hint)
 
-        section("Safe copy (for reinstalls)")
-        self.sc_enabled = QCheckBox("Keep a copy of accounts, chats, settings and the certificate in a central "
-                                    "folder")
+        section("Central folder (for a new server PC)")
+        self.sc_enabled = QCheckBox("Keep everything a new server PC needs in a central folder: accounts, chats, "
+                                    "settings, the certificate, the chat backup, the user list and the database "
+                                    "backups")
         sc_row = QHBoxLayout()
         self.sc_dir = QLineEdit()
         self.sc_browse = btn("Browse", "folder")
@@ -2006,20 +1936,22 @@ class SettingsPage(Page):
         sc_now.addWidget(self.sc_now)
         sc_now.addWidget(self.sc_status, 1)
         form.addRow("", self.sc_enabled)
-        form.addRow("Safe copy folder", sc_row)
+        form.addRow("Central folder", sc_row)
         form.addRow("Update it every", self.sc_minutes)
         form.addRow("", sc_now)
-        sc_hint = QLabel("Empty folder = 'Quillo server data' inside the shared files folder (when that is a "
-                         "network share or another disk). It is updated when something changed and when the "
-                         "server stops. On a new install, setup finds it there and offers to restore everything. "
-                         "It holds every chat and the password hashes: keep the share open to admins and the "
-                         "server only.")
+        sc_hint = QLabel("Empty = 'Quillo server data' inside the shared files folder (when that is on the file "
+                         "server or another disk). The copy of the database is updated when something changed and "
+                         "when the server stops; the chat backup (Chat backup\\Rooms, Chat backup\\People), the "
+                         "user list and the daily database backups go in there too. On a new install, setup finds "
+                         "it and offers to restore everything. It holds every chat: on this PC's own disks Quillo "
+                         "locks it to administrators; on a network share, set that on the file server.")
         sc_hint.setWordWrap(True)
         T.polish(sc_hint, muted=True)
         form.addRow("", sc_hint)
 
         section("Chat backup & history")
-        self.cl_enabled = QCheckBox("Write a readable chat backup every night (text files, one per chat per month)")
+        self.cl_enabled = QCheckBox("Write a readable chat backup every night (text files: a folder per room and "
+                                    "per person, one file per month)")
         cl_row = QHBoxLayout()
         self.cl_dir = QLineEdit()
         self.cl_browse = btn("Browse", "folder")
@@ -2039,9 +1971,10 @@ class SettingsPage(Page):
         form.addRow("Chat backup folder", cl_row)
         form.addRow("Keep messages in the app for", self.msg_days)
         form.addRow("", cl_now)
-        cl_hint = QLabel("Older messages disappear from the app but stay in the chat backup files; a message is "
-                         "only removed after it has been written there. The backup runs at the database backup "
-                         "time above.")
+        cl_hint = QLabel("Empty folder = 'Chat backup' in the central folder. Messages stay in the app for good "
+                         "unless you choose a number of days; older ones then live only in the chat backup (a "
+                         "message is only removed after it has been written there). The backup runs at the "
+                         "database backup time above.")
         cl_hint.setWordWrap(True)
         T.polish(cl_hint, muted=True)
         form.addRow("", cl_hint)
@@ -2070,11 +2003,16 @@ class SettingsPage(Page):
         form.addRow("Example", self.api_example)
 
         section("Privacy")
-        self.review = QCheckBox("Administrators may review any conversation from this console "
-                                "(users are told at sign-in)")
-        form.addRow("", self.review)
         self.buzz = QCheckBox("Allow Buzz (shakes the other person's window and rings, even when they are busy)")
         form.addRow("", self.buzz)
+        self.trusted = QLineEdit()
+        self.trusted.setPlaceholderText("e.g.  fileserver, nas01, render-store")
+        form.addRow("Studio file servers", self.trusted)
+        trusted_hint = QLabel("Links in chats to these computers open with one click. A link to any other computer "
+                              "asks first: opening it lets that computer see the person's Windows sign-in.")
+        trusted_hint.setWordWrap(True)
+        T.polish(trusted_hint, muted=True)
+        form.addRow("", trusted_hint)
         self.rename = QCheckBox("People can change their own display name (in their Profile)")
         form.addRow("", self.rename)
 
@@ -2122,13 +2060,13 @@ class SettingsPage(Page):
         self.bk_dir.setPlaceholderText(cfg["_backup_dir"])
         self.bk_hour.setValue(int(cfg["backup_hour"]))
         self.bk_keep.setValue(int(cfg["backup_keep"]))
-        self.review.setChecked(bool(cfg["admin_review_enabled"]))
         self.buzz.setChecked(bool(cfg.get("buzz_enabled", True)))
         self.rename.setChecked(bool(cfg.get("allow_name_change", True)))
         self.cl_enabled.setChecked(bool(cfg.get("chat_log_enabled", True)))
         self.cl_dir.setText(cfg.get("chat_log_dir", ""))
         self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
         self.msg_days.setValue(int(cfg.get("message_retention_days", 0)))
+        self.trusted.setText(cfg.get("trusted_link_hosts", ""))
         # Browse shows THIS PC's folders: fine unless the console manages a server on another PC
         remote = self.win.api.remote and getattr(self.win.api, "host", "").lower() not in (
             "127.0.0.1", "localhost", "::1", socket.gethostname().lower())
@@ -2214,12 +2152,12 @@ class SettingsPage(Page):
             backup_hour=self.bk_hour.value(), backup_keep=self.bk_keep.value(),
             safe_copy_enabled=self.sc_enabled.isChecked(), safe_copy_dir=self.sc_dir.text().strip(),
             safe_copy_minutes=self.sc_minutes.value(),
-            admin_review_enabled=self.review.isChecked(), unclaimed_file_days=self.unclaimed.value(),
+            unclaimed_file_days=self.unclaimed.value(),
             api_enabled=self.api_enabled.isChecked(), api_port=self.api_port.value(),
             api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot",
             chat_log_enabled=self.cl_enabled.isChecked(), chat_log_dir=self.cl_dir.text().strip(),
             message_retention_days=self.msg_days.value(), buzz_enabled=self.buzz.isChecked(),
-            allow_name_change=self.rename.isChecked())
+            allow_name_change=self.rename.isChecked(), trusted_link_hosts=self.trusted.text().strip())
         if (values["message_retention_days"] and not values["chat_log_enabled"]
                 and QMessageBox.question(self, "Chat history",
                                          "The nightly chat backup is off, so messages older than "
@@ -2475,7 +2413,6 @@ class ServerWindow(QMainWindow):
             ("Online now", "signal", OnlinePage(self)),
             ("Announcement", "megaphone", AnnouncePage(self)),
             ("Reports", "chart", ReportsPage(self)),
-            ("Chat review", "search", ReviewPage(self)),
             ("Audit log", "list", AuditPage(self)),
             ("Updates", "download", UpdatesPage(self)),
             ("Storage", "folder", StoragePage(self)),
@@ -2497,7 +2434,7 @@ class ServerWindow(QMainWindow):
         nav_scroll.setWidget(nav_list)
         groups = [("Overview", ("Dashboard", "Online now", "Reports")),
                   ("People", ("Users", "Departments", "Designations", "Org chart")),
-                  ("Messaging", ("Rooms", "Announcement", "Holidays", "Chat review")),
+                  ("Messaging", ("Rooms", "Announcement", "Holidays")),
                   ("System", ("Settings", "Storage", "Updates", "Audit log", "Server log"))]
         index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
         order = [t for _g, titles in groups for t in titles if t in index]

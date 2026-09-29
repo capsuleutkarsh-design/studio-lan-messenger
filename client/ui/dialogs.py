@@ -5,7 +5,7 @@ import datetime
 import os
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
@@ -638,11 +638,9 @@ class SettingsDialog(Dialog):
                   f"{esc(ctx.conn.fingerprint[:47])}<br>{esc(ctx.conn.fingerprint[48:])}</span>"
                   if ctx.conn.fingerprint else
                   f"<span style='color:{T.DANGER}'>Connection is NOT encrypted</span>")
-        policy = ("<br><span style='color:#ff9955'>Administrators can review conversations "
-                  "(studio policy).</span>" if getattr(ctx.store, "review_notice", False) else "")
         from common.version import APP_VERSION, LICENSE_LINE
         info = QLabel(f"Connected to <b>{esc(ctx.store.server_name)}</b> at {esc(ctx.conn.host)}:{ctx.conn.port}"
-                      f" as <b>{esc(ctx.store.me.get('username', ''))}</b><br>{secure}{policy}"
+                      f" as <b>{esc(ctx.store.me.get('username', ''))}</b><br>{secure}"
                       f"<br><span style='color:{T.FAINT}'>Version {APP_VERSION}  ·  {esc(LICENSE_LINE)}</span>")
         info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         T.polish(info, muted=True)
@@ -882,12 +880,16 @@ class ReadReceiptsDialog(Dialog):
 
 
 class SearchDialog(Dialog):
+    """Search what you can see, by text or file name - narrowed to a person, a chat, some days, or files."""
     open_conv = Signal(str)
 
     def __init__(self, ctx):
-        super().__init__(ctx, "Search messages", 560)
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QDateEdit
+        super().__init__(ctx, "Search messages", 640)
         self.ctx = ctx
-        self.setMinimumHeight(480)
+        self.setMinimumHeight(520)
+        self.results = []
         row = QHBoxLayout()
         self.query = QLineEdit()
         self.query.setPlaceholderText("Search text or file names in all your chats...")
@@ -898,6 +900,49 @@ class SearchDialog(Dialog):
         row.addWidget(self.query, 1)
         row.addWidget(go)
         self.lay.addLayout(row)
+
+        store = ctx.store
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.who = QComboBox()
+        self.who.addItem("From anyone", None)
+        self.who.addItem("From me", store.my_id)
+        for uid, u in sorted(store.users.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
+            self.who.addItem(f"From {u.get('name') or u.get('username')}", uid)
+        self.where = QComboBox()
+        self.where.addItem("In all chats", None)
+        chats = [c for c in store.convs if store.conv_exists(c)]
+        for conv in sorted(chats, key=lambda c: store.title(c).lower()):
+            self.where.addItem(("# " if conv.startswith("r:") else "") + store.title(conv), conv)
+        if ctx.chat.conv and self.where.findData(ctx.chat.conv) < 0 and store.conv_exists(ctx.chat.conv):
+            self.where.addItem(store.title(ctx.chat.conv), ctx.chat.conv)
+        for combo in (self.who, self.where):
+            combo.setMaxVisibleItems(18)
+            filters.addWidget(combo, 1)
+        self.files = QCheckBox("Files only")
+        filters.addWidget(self.files)
+        self.lay.addLayout(filters)
+
+        days = QHBoxLayout()
+        days.setSpacing(8)
+        self.use_dates = QCheckBox("Between")
+        days.addWidget(self.use_dates)
+        today = QDate.currentDate()
+        self.since = QDateEdit(today.addMonths(-1))
+        self.until = QDateEdit(today)
+        for d in (self.since, self.until):
+            d.setCalendarPopup(True)
+            d.setDisplayFormat("dd MMM yyyy")
+            d.setMinimumWidth(150)
+            d.setEnabled(False)
+        self.use_dates.toggled.connect(self.since.setEnabled)
+        self.use_dates.toggled.connect(self.until.setEnabled)
+        days.addWidget(self.since)
+        days.addWidget(plain(QLabel("and")))
+        days.addWidget(self.until)
+        days.addStretch(1)
+        self.lay.addLayout(days)
+
         self.status = plain(QLabel())
         T.polish(self.status, muted=True)
         self.lay.addWidget(self.status)
@@ -906,32 +951,64 @@ class SearchDialog(Dialog):
         self.list.itemActivated.connect(self._open)
         self.list.itemDoubleClicked.connect(self._open)
         self.lay.addWidget(self.list, 1)
+        self.more = QPushButton("Show older results")
+        self.more.clicked.connect(lambda: self.search(more=True))
+        self.more.hide()
+        self.lay.addWidget(self.more)
 
-    def search(self):
+    def _filters(self):
+        f = {}
+        if self.who.currentData():
+            f["from"] = self.who.currentData()
+        if self.where.currentData():
+            f["conv"] = self.where.currentData()
+        if self.files.isChecked():
+            f["files"] = True
+        if self.use_dates.isChecked():
+            first, last = sorted((self.since.date(), self.until.date()))
+            f["since"], f["until"] = first.toString("yyyy-MM-dd"), last.toString("yyyy-MM-dd")
+        return f
+
+    def search(self, more=False):
         q = self.query.text().strip()
-        if len(q) < 2:
+        filters = self._filters()
+        if len(q) < 2 and not filters:
+            self.status.setText("Type at least 2 characters, or choose a filter.")
             return
+        if more and self.results:
+            filters["before"] = self.results[-1]["id"]
+        else:
+            self.results = []
+            self.list.clear()
         self.status.setText("Searching...")
 
         def done(reply):
-            self.list.clear()
             if not reply.get("ok"):
                 self.status.setText(reply.get("error", "Search failed"))
                 return
             msgs = reply["messages"]
-            self.status.setText(f"{len(msgs)} result(s)" + (" (showing the latest 100)" if len(msgs) >= 100 else ""))
+            self.results += msgs
+            self.status.setText(f"{len(self.results)} result(s)" + (" so far" if reply.get("more") else ""))
+            self.more.setVisible(bool(reply.get("more")))
             store = self.ctx.store
             for m in msgs:
                 where = store.title(m["conv"]) if store.conv_exists(m["conv"]) else "?"
                 text = stickers.summary(m)
-                it = QListWidgetItem(f"{store.user_name(m['sender_id'])}  →  {where}   ·  {fmt_list_time(m['ts'])}\n"
-                                     f"{text[:300]}")
-                it.setData(Qt.UserRole, m["conv"])
+                thread = "  ·  in a thread" if m.get("thread_root") else ""
+                it = QListWidgetItem(f"{store.user_name(m['sender_id'])}  →  {where}   ·  {fmt_list_time(m['ts'])}"
+                                     f"{thread}\n{text[:300]}")
+                it.setData(Qt.UserRole, m)
                 self.list.addItem(it)
-        self.ctx.conn.request("search", done, query=q)
+        self.ctx.conn.request("search", done, query=q, **filters)
 
     def _open(self, it):
-        conv = it.data(Qt.UserRole)
-        if self.ctx.store.conv_exists(conv):
+        m = it.data(Qt.UserRole)
+        conv = m["conv"]
+        if not self.ctx.store.conv_exists(conv):
+            return
+        if m.get("thread_root"):
+            self.ctx.open_thread(conv, m["thread_root"])
+        else:
             self.ctx.open_conv(conv)
-            self.accept()
+            QTimer.singleShot(300, lambda: self.ctx.chat.scroll_to(m["id"]))
+        self.accept()

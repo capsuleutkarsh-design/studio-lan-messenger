@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
 from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
-from client.ui.widgets import (IconButton, esc, first_name, linkify, open_link, open_path, plain, rich_safe,
-                               show_in_folder)
+from client.ui.widgets import (IconButton, esc, first_name, linkify, open_file, open_link, open_path, plain,
+                               rich_safe, show_in_folder)
 
 
 class PageHeader(QFrame):
@@ -143,6 +143,10 @@ class HomePage(QWidget):
         s.user_updated.connect(self.schedule)
         self._clock = QTimer(self, interval=60_000, timeout=self.schedule)
         self._clock.start()
+        # the month shown in the Calendar card, and the months already fetched for it
+        self._cal_month = datetime.date.today().replace(day=1)
+        self._cal_cache = {}
+        s.calendar_changed.connect(self._cal_cache.clear)
 
     def schedule(self, *_):
         if not self._timer.isActive():
@@ -467,10 +471,34 @@ class HomePage(QWidget):
         layers = {"meeting", "event", "note", "deadline", "holiday", "leave", "birthday", "anniversary"}
         entries = entries_from(data, layers, self.store.my_id)
         today = datetime.date.today()
+
+        # month bar: ‹ September 2026 ›  Today  (the mouse wheel over the month does the same)
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        prev = IconButton("back", "Previous month", 28, 14)
+        nxt = IconButton("next", "Next month", 28, 14)
+        label = QLabel()
+        label.setStyleSheet("font-weight: 700; background: transparent;")
+        back = QPushButton("Today")
+        T.polish(back, flat=True)
+        back.setStyleSheet(f"color: {T.ACCENT}; font-size: 9pt; padding: 2px 6px;")
+        back.setCursor(Qt.PointingHandCursor)
+        bar.addWidget(prev)
+        bar.addWidget(label)
+        bar.addWidget(nxt)
+        bar.addStretch(1)
+        bar.addWidget(back)
+        body.addLayout(bar)
+
         mini = MiniMonth()
-        mini.set_data(today, entries, {datetime.date.fromisoformat(h["day"]) for h in (data or {}).get("holidays", [])})
         mini.day_clicked.connect(lambda d: self.ctx.open_calendar(d))
         body.addWidget(mini)
+        self._cal_widgets = (mini, label, back)
+        prev.clicked.connect(lambda: self._cal_step(-1))
+        nxt.clicked.connect(lambda: self._cal_step(1))
+        mini.month_step.connect(self._cal_step)
+        back.clicked.connect(lambda: self._cal_step(0))
+        self._cal_show()
         soon = [e for e in entries if today <= e.start.date() <= today + datetime.timedelta(days=6)
                 or (e.all_day and e.start.date() <= today < e.end.date())][:4]
         if not soon:
@@ -495,6 +523,56 @@ class HomePage(QWidget):
             row.addWidget(t, 1)
             body.addLayout(row)
         return frame
+
+    # ---- the Calendar card's month: step through months without rebuilding the page
+    _CAL_LAYERS = {"meeting", "event", "note", "deadline", "holiday", "leave", "birthday", "anniversary"}
+
+    def _cal_step(self, step):
+        """step: -1 / +1 month, or 0 for this month."""
+        if step == 0:
+            self._cal_month = datetime.date.today().replace(day=1)
+        else:
+            months = self._cal_month.year * 12 + self._cal_month.month - 1 + step
+            self._cal_month = datetime.date(months // 12, months % 12 + 1, 1)
+        self._cal_show()
+
+    def _cal_show(self):
+        from client.ui.calendar_views import entries_from
+        widgets = getattr(self, "_cal_widgets", None)
+        if not widgets:
+            return
+        mini, label, back = widgets
+        try:
+            mini.objectName()
+        except RuntimeError:                   # the page was rebuilt meanwhile
+            return
+        month = self._cal_month
+        label.setText(f"{month:%B %Y}")
+        back.setVisible(month != datetime.date.today().replace(day=1))
+        data = self._cal_cache.get(month)
+        if data is None:
+            data = self.store.calendar         # what Home already has, until the month arrives
+            self._cal_fetch(month)
+        entries = entries_from(data, self._CAL_LAYERS, self.store.my_id)
+        holidays = {datetime.date.fromisoformat(h["day"]) for h in (data or {}).get("holidays", [])}
+        mini.set_data(month, entries, holidays)
+
+    def _cal_fetch(self, month):
+        """Ask the server for everything in the six weeks the small month shows."""
+        pending = self.__dict__.setdefault("_cal_pending", set())
+        if month in pending or not self.ctx.conn.online:
+            return
+        first = month - datetime.timedelta(days=month.weekday())
+        last = first + datetime.timedelta(days=41)
+        pending.add(month)
+
+        def done(reply):
+            pending.discard(month)
+            if reply.get("ok"):
+                self._cal_cache[month] = reply
+                if month == self._cal_month:
+                    self._cal_show()
+        self.ctx.conn.request("cal_range", done, start=first.isoformat(), end=last.isoformat())
 
     def _coming_up(self):
         """My next reminders and scheduled messages."""
@@ -763,7 +841,7 @@ class TransferRow(QFrame):
                     "Drop the file into the chat once more."))
         self.b_retry.clicked.connect(retry)
         self.b_open = IconButton("open", "Open", 32, 18, T.ACCENT, T.ACCENT)
-        self.b_open.clicked.connect(lambda: open_path(t.dest_path if t.kind == "download" else t.path))
+        self.b_open.clicked.connect(lambda: open_file(t.dest_path if t.kind == "download" else t.path))
         self.b_folder = IconButton("folder", "Show in folder", 32, 18)
         self.b_folder.clicked.connect(lambda: show_in_folder(t.dest_path if t.kind == "download" else t.path))
         for b in (self.b_cancel, self.b_retry, self.b_open, self.b_folder):

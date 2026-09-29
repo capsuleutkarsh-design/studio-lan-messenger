@@ -42,6 +42,7 @@ DEFAULTS = {
     "allow_buzz": True,
     "compact_mode": False,       # narrow window docked to the right edge of the screen
     "compact_on_top": False,     # ...and kept above other windows
+    "trusted_link_hosts": [],    # computers whose chat links open without asking ("don't ask again")
 }
 
 
