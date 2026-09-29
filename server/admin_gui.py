@@ -335,19 +335,6 @@ class DashboardPage(Page):
                         "Central folder.")
             self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
             self.warnings.setVisible(True)
-        lock = info.get("last_lock") or {}
-        if running and info.get("central_network"):
-            locked = (f"<span style='color:{T.MUTED}'>on a network share - make sure only administrators can "
-                      "open it (set this on the file server)</span>")
-        elif lock.get("ok"):
-            locked = f"<span style='color:{T.ACCENT}'>locked to administrators</span>"
-        elif lock.get("chosen"):
-            locked = (f"<span style='color:{T.MUTED}'>a folder you chose: make sure only administrators can "
-                      "open it</span>")
-        elif lock.get("error"):
-            locked = f"<span style='color:{T.DANGER}'>could not be locked: {lock['error']}</span>"
-        else:
-            locked = ""
         ul = info.get("last_user_list") or {}
         user_list = (f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(ul['time'])} ({ul.get('people', 0)} people)"
                      if ul.get("ok") else f"<span style='color:{T.DANGER}'>Failed: {ul.get('error', '')}</span>"
@@ -371,7 +358,7 @@ class DashboardPage(Page):
                 ("Ports", f"{info['tcp_port']} chat &amp; files &nbsp;·&nbsp; {info['discovery_port']} discovery"),
                 ("Encryption", encryption), ("Last backup", backup), ("Last chat backup", chat_backup),
                 ("Safe copy", safe), ("User list", user_list),
-                ("Central folder", (f"{info['safe_copy_dir']}<br>{locked}" if info.get("safe_copy_dir") else "—")),
+                ("Central folder", info.get("safe_copy_dir") or "—"),
                 ("Data folder", info["data_dir"]), ("File storage", info["storage_dir"])]
         if info.get("fingerprint"):
             rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.MUTED}'>"
@@ -1943,8 +1930,7 @@ class SettingsPage(Page):
                          "server or another disk). The copy of the database is updated when something changed and "
                          "when the server stops; the chat backup (Chat backup\\Rooms, Chat backup\\People), the "
                          "user list and the daily database backups go in there too. On a new install, setup finds "
-                         "it and offers to restore everything. It holds every chat: on this PC's own disks Quillo "
-                         "locks it to administrators; on a network share, set that on the file server.")
+                         "it and offers to restore everything.")
         sc_hint.setWordWrap(True)
         T.polish(sc_hint, muted=True)
         form.addRow("", sc_hint)

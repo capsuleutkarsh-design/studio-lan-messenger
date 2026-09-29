@@ -18,14 +18,11 @@ import os
 import shutil
 import socket
 import sqlite3
-import subprocess
-import sys
 import time
 
 from common.files import replace_file
 
 FOLDER_NAME = "Quillo server data"
-LOCKABLE = (FOLDER_NAME, "Chat backup")          # the folders lock_folder may lock
 INFO = "about.json"
 FILES = ("messenger.db", "config.json")
 FOLDERS = ("tls", "avatars")
@@ -37,73 +34,6 @@ def _inside(path, folder):
 
 
 inside = _inside
-
-
-def is_network(path) -> bool:
-    """A UNC path (two backslashes, a server, a share) or a mapped network drive."""
-    path = os.path.abspath(path)
-    if path.startswith("\\\\"):
-        return True
-    if sys.platform != "win32":
-        return False
-    import ctypes
-    drive = os.path.splitdrive(path)[0]
-    return bool(drive) and ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4     # DRIVE_REMOTE
-
-
-def _my_sid():
-    """The Windows account this server runs as (it must keep its own access to the folder)."""
-    try:
-        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
-                             timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-        sid = out.strip().rsplit(",", 1)[-1].strip().strip('"')
-        return sid if sid.startswith("S-1-") else ""
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
-def lock_folder(path) -> dict:
-    """Let only Administrators, SYSTEM (the Quillo service) and this server's own account open `path`.
-
-    The central folder holds every chat, every account and the server's private key. Only a folder on this
-    PC's own disks is locked: a network folder's permissions belong to the file server, and granting this
-    PC's groups there could lock the server out of its own copy - the dashboard asks IT to do it instead."""
-    result = {"folder": path, "ok": False, "network": False, "error": ""}
-    if sys.platform != "win32":
-        result["error"] = "only on Windows"
-        return result
-    if is_network(path):
-        result["network"] = True
-        return result
-    if not os.path.isdir(path):
-        result["missing"] = True
-        return result
-    # Only the folders Quillo makes and names itself. A folder an admin picked in an older version may be
-    # shared with HR or other programs (or be a whole drive): its permissions are theirs to set.
-    full = os.path.abspath(path)
-    if os.path.basename(full.rstrip("\\/")) not in LOCKABLE or os.path.dirname(full) == full:
-        result["error"] = "a folder you chose - set who may open it yourself"
-        result["chosen"] = True
-        return result
-    grants = ["*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]
-    sid = _my_sid()
-    if sid and sid != "S-1-5-18":
-        grants.append(f"*{sid}:(OI)(CI)F")
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    try:
-        # the folder gets its own list (no longer inherited from the share above it) ...
-        done = subprocess.run(["icacls", path, "/inheritance:r", "/grant:r", *grants, "/C", "/Q"],
-                              capture_output=True, text=True, timeout=120, creationflags=flags)
-        if done.returncode == 0 and os.listdir(path):
-            # ... and everything already inside takes it over (applying it to each file separately would
-            # leave files with no permissions at all: the "this folder and below" flags mean nothing on a file)
-            done = subprocess.run(["icacls", os.path.join(path, "*"), "/reset", "/T", "/C", "/Q"],
-                                  capture_output=True, text=True, timeout=600, creationflags=flags)
-        result["ok"] = done.returncode == 0
-        result["error"] = "" if result["ok"] else (done.stderr or done.stdout).strip()[:300]
-    except (OSError, subprocess.SubprocessError) as e:
-        result["error"] = str(e)
-    return result
 
 
 def folder(cfg) -> str:

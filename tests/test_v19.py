@@ -230,15 +230,6 @@ class V19Test(unittest.TestCase):
         self.assertEqual(archive._safe("com1.txt"), "com1.txt_")
         self.assertEqual(archive._safe("Comp"), "Comp")
 
-    def test_only_quillo_folders_are_locked(self):
-        from server import safecopy
-        chosen = os.path.join(self.tmp, "HR shared")
-        os.makedirs(chosen)
-        r = safecopy.lock_folder(chosen)
-        self.assertFalse(r["ok"])
-        self.assertTrue(r.get("chosen"))
-        self.assertTrue(safecopy.lock_folder(os.path.join(self.tmp, "gone", "Chat backup")).get("missing"))
-
     def test_thread_replies_are_never_the_last_message(self):
         a, b = Client("ann"), Client("ben")
         root = a.request("send", conv=f"u:{self.b}", text="Plates are in")["message"]

@@ -66,11 +66,7 @@ server (or another disk), the server keeps everything a new server PC needs in `
 
 On a **new install** (the server PC broke, or went back), choose the same shared-files folder: setup finds the copy
 and offers to **restore everything**, and the PCs keep trusting the server (same certificate). Folder and interval:
-console → *Settings → Central folder*; the Dashboard shows the last copy, the user list and whether the folder is locked.
-
-The central folder holds every chat. On a disk of the server PC, Quillo locks it to Administrators and the Quillo
-service. **On a network share, set that on the file server:** give the share (or the `Quillo server data` folder)
-access for administrators and the server's account only - artists should not be able to open it.
+console → *Settings → Central folder*; the Dashboard shows the last copy and the user list.
 
 ## 2. First-time setup
 
@@ -279,7 +275,7 @@ The server setup allows the server program through Windows Firewall, which cover
   Windows DPAPI.
 - **Audit log** of users, designations, rooms, settings, password resets and photo removals.
 - **Administrators cannot read people's chats in Quillo.** (Chat review was removed in 1.9.0.) The chat backup
-  text files are the only copy outside the app: keep the central folder for administrators only.
+  text files in the central folder are the only copy outside the app.
 - **Links to other computers.** A `\\computer\share` link to a machine that is not in *Settings → Studio file
   servers* asks before Quillo even looks at it (opening it lets that computer see the person's Windows sign-in).
   Programs, scripts and shortcuts are never started from a chat: Quillo shows them in their folder instead.

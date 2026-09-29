@@ -8,7 +8,7 @@ people, one file per month:
     <chat backup>/People/Alice Mathew - My space/2026-09.txt
 
 The chat backup lives in the central folder (see server/safecopy.py) when there is one, so it stays with
-the studio when the server PC goes, and that folder is locked to administrators. A room keeps its folder
+the studio when the server PC goes. A room keeps its folder
 when it is renamed (folders.json remembers which folder is whose).
 
 Messages older than ``message_retention_days`` (0 = never, the default) are then removed from the

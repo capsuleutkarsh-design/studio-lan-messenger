@@ -252,7 +252,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
     async def _startup(self):
         # Stop / Start in the console reuses this object with a new event loop: nothing of the old loop's
         # jobs and locks may carry over (a job still "running" there would never run again).
-        self._jobs, self._locks, self._locked = {}, {}, set()
+        self._jobs, self._locks = {}, {}
         self.storage_error = ""
         try:
             os.makedirs(self.config.storage_dir, exist_ok=True)
@@ -2688,9 +2688,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 "storage_error": getattr(self, "storage_error", ""),
                 "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config),
                 "last_safe_copy": self.last_safe_copy, "safe_copy_dir": safecopy.folder(self.config),
-                "central_network": bool(safecopy.folder(self.config))
-                and safecopy.is_network(safecopy.folder(self.config)),
-                "last_lock": self.last_lock, "last_user_list": self.last_user_list,
+                "last_user_list": self.last_user_list,
                 "user_list_dir": self.user_list_folder(), "backup_dir": self.backup_folder()}
 
     def admin_log_tail(self, lines=400):
@@ -2794,7 +2792,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
         async with self._lock("safe copy"):
             mark, info = self._safe_copy_mark(), self._safe_copy_info()
             result = await self.loop.run_in_executor(None, safecopy.write, self.db, self.config, target, info)
-            await self._lock_central()
             return self._safe_copy_done(result, mark)
 
     async def safe_copy_now(self):
@@ -2810,30 +2807,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             folder, stamp, path, keep = self._backup_plan()
             result = await self.loop.run_in_executor(None, self._backup_copy, folder, stamp, path, keep,
                                                      self.config.path)
-            await self._lock_central()
             return self._backup_done(result, folder)
-
-    # ---- the central folder is for administrators only (it holds every chat and the server's key)
-    last_lock = None       # {"folder", "ok", "network", "error"}
-
-    async def _lock_central(self):
-        """Lock the central folder (and a chat backup folder elsewhere) to administrators, once per folder.
-
-        A folder on this PC's own disks is locked with Windows permissions. A network folder cannot be locked
-        from here safely (its permissions are the file server's), so the dashboard asks IT to do it."""
-        done = self.__dict__.setdefault("_locked", set())
-        for folder in {safecopy.folder(self.config), archive.log_dir(self.config)}:
-            if not folder or folder in done:
-                continue
-            # lock_folder looks at the folder in a worker thread: a file server that is down must not
-            # stall the chats while Windows waits for it
-            result = await self.loop.run_in_executor(None, safecopy.lock_folder, folder)
-            if result.get("missing"):
-                continue                                  # tried again after the next copy
-            done.add(folder)
-            self.last_lock = result
-            if not self.last_lock["ok"] and not self.last_lock.get("network"):
-                log.warning("Could not lock %s to administrators: %s", folder, self.last_lock.get("error"))
 
     # ---- a readable list of everyone, in the central folder (server/userlist.py)
     last_user_list = None
@@ -2860,7 +2834,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
             self.last_user_list = result
             if result["ok"]:
                 self._user_list_written = mark
-                await self._lock_central()
             else:
                 log.error("User list not written to %s: %s", folder, result["error"])
             return result
@@ -2923,7 +2896,6 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 result = await self.loop.run_in_executor(None, export)
                 result["removed"] = archive.apply_retention(self.db, self.config)
                 result.update(time=time.time(), ok=True)
-                await self._lock_central()
             except Exception as e:  # noqa: BLE001 - reported on the dashboard, retried tomorrow
                 log.exception("Chat backup failed")
                 result = {"time": time.time(), "ok": False, "error": str(e),
