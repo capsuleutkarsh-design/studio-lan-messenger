@@ -75,6 +75,7 @@ class EventDialog(Dialog):
         self.date = QDateEdit(_qdate(start.date()))
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("ddd dd MMM yyyy")
+        self.date.setMinimumWidth(170)
         self.all_day = QCheckBox("All day")
         self.all_day.setChecked(bool(item["all_day"]) if item else kind == "note")
         self.t_start = QTimeEdit(QTime(start.hour, start.minute))
@@ -460,6 +461,17 @@ class LeaveDialog(Dialog):
         form.addRow("To", self.last)
         form.addRow("Note", self.reason)
         self.lay.addLayout(form)
+        # an automatic answer to direct messages, once a day per person
+        self.auto = QCheckBox("Answer direct messages automatically (once a day per person)")
+        self.auto.setChecked(True)
+        self.auto_text = QPlainTextEdit()
+        self.auto_text.setFixedHeight(64)
+        self.lay.addWidget(self.auto)
+        self.lay.addWidget(self.auto_text)
+        self.auto.toggled.connect(self.auto_text.setEnabled)
+        self._auto_default = ""
+        self.last.dateChanged.connect(self._fill_auto)
+        self._fill_auto()
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         T.polish(bb.button(QDialogButtonBox.Save), primary=True)
         bb.accepted.connect(self._save)
@@ -472,8 +484,20 @@ class LeaveDialog(Dialog):
                 self.accept()
             else:
                 QMessageBox.warning(self, "Leave", reply.get("error", "Not saved"))
+        auto = self.auto_text.toPlainText().strip() if self.auto.isChecked() else ""
         self.ctx.conn.request("cal_leave_add", done, first_day=_pydate(self.first.date()).isoformat(),
-                              last_day=_pydate(self.last.date()).isoformat(), note=self.reason.text())
+                              last_day=_pydate(self.last.date()).isoformat(), note=self.reason.text(),
+                              auto_reply=auto)
+
+    def _fill_auto(self, *_):
+        """'I'm on leave until Mon 05 Oct...' - follows the last day until the person writes their own."""
+        back = _pydate(self.last.date()) + datetime.timedelta(days=1)
+        while back.weekday() == 6:                 # the studio works Monday to Saturday
+            back += datetime.timedelta(days=1)
+        text = f"I'm on leave and back on {back:%a %d %b}. I'll reply then."
+        if self.auto_text.toPlainText() in ("", self._auto_default):
+            self.auto_text.setPlainText(text)
+        self._auto_default = text
 
 
 class HolidaysDialog(Dialog):

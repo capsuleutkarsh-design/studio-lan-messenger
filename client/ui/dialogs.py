@@ -7,8 +7,8 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
@@ -43,6 +43,7 @@ class Dialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         T.dark_title_bar(self)
+        T.tidy_forms(self)
 
 
 class MemberPicker(QWidget):
@@ -617,6 +618,8 @@ class SettingsDialog(Dialog):
         self.autostart.setChecked(cfg["start_with_windows"])
         self.allow_buzz = QCheckBox("Let people buzz me (shakes this window and rings, even on Do not disturb)")
         self.allow_buzz.setChecked(cfg["allow_buzz"])
+        self.meeting_status = QCheckBox("Show 📅 In a meeting as my status while a calendar meeting of mine runs")
+        self.meeting_status.setChecked(cfg["meeting_status"])
         self.meet_remind = QComboBox()
         for minutes in (0, 5, 10, 15, 30, 60):
             self.meet_remind.addItem("Don't remind me" if not minutes else f"{minutes} minutes before", minutes)
@@ -637,6 +640,7 @@ class SettingsDialog(Dialog):
         form.addRow("", self.sounds)
         form.addRow("", self.allow_buzz)
         form.addRow("Meetings", self.meet_remind)
+        form.addRow("", self.meeting_status)
         section(form, "Files")
         form.addRow("Download folder", row)
         section(form, "Startup & presence")
@@ -695,6 +699,7 @@ class SettingsDialog(Dialog):
         cfg["close_to_tray"] = self.close_to_tray.isChecked()
         cfg["auto_away_minutes"] = self.away.value()
         cfg["allow_buzz"] = self.allow_buzz.isChecked()
+        cfg["meeting_status"] = self.meeting_status.isChecked()
         cfg["meeting_reminder_min"] = self.meet_remind.currentData()
         if cfg["start_with_windows"] != self.autostart.isChecked():
             cfg["start_with_windows"] = self.autostart.isChecked()
@@ -849,7 +854,8 @@ class ForwardDialog(Dialog):
         seen = set()
         targets = [c.conv for c in recent]
         targets += [P.room_conv(r) for r in sorted(store.rooms, key=lambda r: store.rooms[r]["name"].lower())]
-        targets += [P.direct_conv(u) for u in sorted(store.users, key=lambda u: store.users[u]["name"].lower())]
+        targets += [P.direct_conv(u) for u in sorted(store.users, key=lambda u: store.users[u]["name"].lower())
+                    if not store.is_builtin(store.users[u])]
         for conv in targets:
             if conv in seen or conv == msg["conv"]:
                 continue
@@ -870,6 +876,67 @@ class ForwardDialog(Dialog):
     def target(self):
         it = self.list.currentItem()
         return it.data(Qt.UserRole) if it else None
+
+
+class SavedDialog(Dialog):
+    """Messages saved for later: double-click one to go to it."""
+
+    def __init__(self, ctx):
+        super().__init__(ctx, "Saved for later", 560)
+        self.ctx = ctx
+        self.setMinimumHeight(480)
+        self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.itemActivated.connect(self._open)
+        self.list.itemDoubleClicked.connect(self._open)
+        self.empty = QLabel()
+        self.lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        self.remove = QPushButton(" Remove from saved")
+        self.remove.setIcon(icon("trash", T.DANGER, 15))
+        self.remove.clicked.connect(self._remove)
+        row.addWidget(self.remove)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        self.lay.addLayout(row)
+        ctx.store.prefs_changed.connect(lambda k: k in ("", "saved") and self._fill())
+        self._fill()
+
+    def _fill(self):
+        try:
+            self.list.clear()
+        except RuntimeError:
+            return
+        store = self.ctx.store
+        items = store.saved()
+        for x in items:
+            where = store.title(x["conv"]) if store.conv_exists(x["conv"]) else "a chat you left"
+            it = QListWidgetItem(icon("bookmark", T.ACCENT, 16),
+                                 f"{store.user_name(x['sender_id'])}  →  {where}   ·  {fmt_list_time(x['ts'])}\n"
+                                 f"{x.get('snippet', '')}")
+            it.setData(Qt.UserRole, x)
+            self.list.addItem(it)
+        if not items:
+            it = QListWidgetItem("Nothing saved yet.\nRight-click a message → Save for later.")
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
+        self.remove.setEnabled(bool(items))
+
+    def _open(self, it):
+        x = it.data(Qt.UserRole)
+        if not x or not self.ctx.store.conv_exists(x["conv"]):
+            return
+        self.ctx.open_conv(x["conv"])
+        QTimer.singleShot(300, lambda: self.ctx.chat.scroll_to(x["id"]))
+        self.accept()
+
+    def _remove(self):
+        it = self.list.currentItem()
+        x = it.data(Qt.UserRole) if it else None
+        if x:
+            self.ctx.store.set_saved(x, False)
 
 
 class ReadReceiptsDialog(Dialog):
@@ -924,6 +991,8 @@ class SearchDialog(Dialog):
         self.who.addItem("From anyone", None)
         self.who.addItem("From me", store.my_id)
         for uid, u in sorted(store.users.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
+            if store.is_builtin(u):
+                continue
             self.who.addItem(f"From {u.get('name') or u.get('username')}", uid)
         self.where = QComboBox()
         self.where.addItem("In all chats", None)
@@ -971,9 +1040,56 @@ class SearchDialog(Dialog):
         self.more.clicked.connect(lambda: self.search(more=True))
         self.more.hide()
         self.lay.addWidget(self.more)
+        self.shot = None
+        from client.ui.widgets import shot_names
+        if query and shot_names(query) == [query]:
+            self._shot_header(query)
         if query:
             self.query.setText(query)
             QTimer.singleShot(0, self.search)
+
+    def _shot_header(self, shot):
+        """Searching a shot: its status on top, and a button to change it."""
+        self.shot = shot
+        box = QFrame()
+        box.setObjectName("shotbox")
+        box.setStyleSheet(f"#shotbox {{ background: {T.PANEL}; border-radius: 14px; }}")
+        row = QHBoxLayout(box)
+        row.setContentsMargins(14, 8, 8, 8)
+        self.shot_label = QLabel()
+        self.shot_label.setTextFormat(Qt.RichText)
+        row.addWidget(self.shot_label, 1)
+        change = QPushButton("Set status")
+        change.clicked.connect(lambda: self._status_menu(change))
+        row.addWidget(change)
+        self.lay.insertWidget(0, box)
+        self._show_shot()
+        self.ctx.store.shots_changed.connect(lambda s: s in ("", shot.upper()) and self._show_shot())
+
+    def _show_shot(self):
+        st = self.ctx.store.shot_status(self.shot)
+        if st and st[0] in P.SHOT_STATUS:
+            emoji, label = P.SHOT_STATUS[st[0]]
+            who = self.ctx.store.user_name(st[1]) if st[1] else ""
+            when = fmt_list_time(st[2]) if st[2] else ""
+            text = (f"<b style='font-size:12pt'>{esc(self.shot)}</b> &nbsp; {emoji} <b>{label}</b>"
+                    f"<span style='color:{T.MUTED}'> &nbsp;·&nbsp; {esc(who)} {esc(when)}</span>")
+        else:
+            text = (f"<b style='font-size:12pt'>{esc(self.shot)}</b>"
+                    f"<span style='color:{T.MUTED}'> &nbsp;·&nbsp; no status yet</span>")
+        try:
+            self.shot_label.setText(text)
+        except RuntimeError:                   # the dialog is gone
+            pass
+
+    def _status_menu(self, button):
+        m = QMenu(self)
+        current = (self.ctx.store.shot_status(self.shot) or (None,))[0]
+        for key, emoji, label in P.SHOT_STATUSES:
+            a = m.addAction(f"{emoji}  {label}", lambda k=key: self.ctx.set_shot_status(self.shot, k))
+            a.setCheckable(True)
+            a.setChecked(key == current)
+        m.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _filters(self):
         f = {}

@@ -15,6 +15,8 @@ SHORTCUTS = [
         ("Ctrl+F", "Search every message"),
         ("Ctrl+/  or  F1", "This list"),
         ("Ctrl+Shift+M", "Compact view (a narrow window on the right)"),
+        ("Alt+Shift+↓", "Next chat with unread messages"),
+        ("Alt+Shift+↑", "Previous chat with unread messages"),
     ]),
     ("Writing", [
         ("Enter", "Send"),

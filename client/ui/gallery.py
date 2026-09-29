@@ -4,8 +4,8 @@ where the arrow keys move through every picture of the chat."""
 import datetime
 import os
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QImageReader, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QRectF, QSize, QSizeF, Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -217,12 +217,17 @@ class GalleryRow(QWidget):
                        "to your download folder")
 
 
-class _Canvas(QWidget):
-    """Paints the picture as large as fits, centred (or a line of text while it loads)."""
+class _ViewCanvas(QWidget):
+    """Paints the picture as large as fits, centred (or a line of text while it loads). Compare mode: a second
+    picture under a wipe line you drag across, or both side by side."""
 
     def __init__(self):
         super().__init__()
         self.image = None
+        self.other = None                 # the version it is compared with
+        self.mode = ""                    # "" | "wipe" | "side"
+        self.split = 0.5
+        self.labels = ("", "")
         self.text = ""
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(10, 10)
@@ -231,6 +236,13 @@ class _Canvas(QWidget):
         self.image, self.text = image, text
         self.update()
 
+    def _fit(self, pm, area):
+        size = QSizeF(pm.size())
+        if size.width() > area.width() or size.height() > area.height():
+            size = size.scaled(area.size(), Qt.KeepAspectRatio)
+        return QRectF(area.x() + (area.width() - size.width()) / 2, area.y() + (area.height() - size.height()) / 2,
+                      size.width(), size.height())
+
     def paintEvent(self, _):
         p = QPainter(self)
         if self.image is None or self.image.isNull():
@@ -238,11 +250,56 @@ class _Canvas(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, self.text)
             return
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        size = self.image.size()
-        if size.width() > self.width() or size.height() > self.height():
-            size = size.scaled(self.size(), Qt.KeepAspectRatio)
-        x, y = (self.width() - size.width()) // 2, (self.height() - size.height()) // 2
-        p.drawPixmap(x, y, size.width(), size.height(), self.image)
+        p.setRenderHint(QPainter.Antialiasing)
+        other = self.other if self.mode and self.other is not None and not self.other.isNull() else None
+        if other is not None and self.mode == "side":
+            half = self.width() / 2
+            for i, pm in enumerate((self.image, other)):
+                r = self._fit(pm, QRectF(i * half + 6, 26, half - 12, self.height() - 32))
+                p.drawPixmap(r, pm, QRectF(pm.rect()))
+            self._labels(p, 6, half + 6)
+            return
+        r = self._fit(self.image, QRectF(self.rect()))
+        p.drawPixmap(r, self.image, QRectF(self.image.rect()))
+        if other is not None:                      # wipe: the other version right of the line
+            x = r.x() + r.width() * self.split
+            p.save()
+            p.setClipRect(QRectF(x, r.y(), r.right() - x, r.height()))
+            p.drawPixmap(r, other, QRectF(other.rect()))
+            p.restore()
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.drawLine(int(x), int(r.y()), int(x), int(r.bottom()))
+            p.setBrush(QColor(T.ACCENT))
+            p.drawEllipse(QRectF(x - 13, r.center().y() - 13, 26, 26))
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRectF(x - 13, r.center().y() - 13, 26, 26), Qt.AlignCenter, "⇆")
+            self._labels(p, r.x() + 8, r.right() - 8, right_aligned=True, top=r.y() + 8)
+
+    def _labels(self, p, x1, x2, right_aligned=False, top=4):
+        f = p.font()
+        f.setBold(True)
+        p.setFont(f)
+        for text, x, align in ((self.labels[0], x1, Qt.AlignLeft), (self.labels[1], x2, Qt.AlignRight
+                                                                    if right_aligned else Qt.AlignLeft)):
+            if not text:
+                continue
+            w = p.fontMetrics().horizontalAdvance(text) + 16
+            box = QRectF(x - (w if align == Qt.AlignRight else 0), top, w, 22)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 160))
+            p.drawRoundedRect(box, 8, 8)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(box, Qt.AlignCenter, text)
+
+    def mousePressEvent(self, e):
+        self.mouseMoveEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self.mode == "wipe" and self.image is not None and e.buttons() & Qt.LeftButton:
+            r = self._fit(self.image, QRectF(self.rect()))
+            if r.width():
+                self.split = max(0.0, min(1.0, (e.position().x() - r.x()) / r.width()))
+                self.update()
 
 
 class ImageViewer(QDialog):
@@ -273,11 +330,24 @@ class ImageViewer(QDialog):
         self.counter.setStyleSheet("color: #9aa2b5; font-size: 10pt; font-weight: 700; background: transparent;"
                                    " padding: 0 12px;")
         tl.addWidget(self.counter)
-        for name, tip, fn in (("open", "Open in its program", self._open), ("download", "Save as...", self._save),
+        for name, tip, fn in (("compare", "Compare with the next picture: drag the line (C)", self.toggle_compare),
+                              ("pen", "Draw on it and send it to the chat", self._draw),
+                              ("open", "Open in its program", self._open), ("download", "Save as...", self._save),
                               ("copy", "Copy the picture", self._copy), ("close", "Close (Esc)", self.close)):
             b = IconButton(name, tip, 36, 18, "#c9cedb", "#ffffff")
             b.clicked.connect(fn)
             tl.addWidget(b)
+            if name == "compare":
+                self.b_compare = b
+        self.side = QPushButton("Side by side")
+        self.side.setCheckable(True)
+        self.side.setStyleSheet("QPushButton { background: rgba(255,255,255,0.08); color: #e8eaf0; border: none;"
+                                " border-radius: 10px; padding: 6px 12px; } QPushButton:checked { background: "
+                                f"{T.ACCENT}; color: {T.ACCENT_TEXT}; }}")
+        self.side.toggled.connect(self._side)
+        self.side.hide()
+        tl.insertWidget(2, self.side)
+        self.cmp_index = None
         lay.addWidget(top)
 
         mid = QHBoxLayout()
@@ -286,7 +356,7 @@ class ImageViewer(QDialog):
         self.prev.clicked.connect(lambda: self.go(self.i - 1))
         self.next = IconButton("next", "Next (→)", 48, 24, "#c9cedb", "#ffffff")
         self.next.clicked.connect(lambda: self.go(self.i + 1))
-        self.view = _Canvas()
+        self.view = _ViewCanvas()
         mid.addWidget(self.prev)
         mid.addWidget(self.view, 1)
         mid.addWidget(self.next)
@@ -318,6 +388,7 @@ class ImageViewer(QDialog):
         lay.addWidget(self.strip_area)
 
         ctx.previews.ready.connect(self._ready)
+        ctx.thumbs.ready.connect(lambda fid, size, path: size == 1280 and self._ready(fid, path))
         win = ctx.frameGeometry() if ctx.isVisible() else QGuiApplication.primaryScreen().availableGeometry()
         self.setGeometry(win)
         self._fill_strip()
@@ -325,11 +396,14 @@ class ImageViewer(QDialog):
 
     # ------------------------------------------------------------------ pictures
     def _path(self, m):
-        return self.ctx.previews.request(m["file"])
+        if is_previewable(m["file"]):
+            return self.ctx.previews.request(m["file"])
+        return self.ctx.thumbs.request(m["file"], 1280)       # EXR / MOV...: the server's larger preview
 
     def _fill_strip(self):
         for k, m in enumerate(self.msgs):
-            path = self.ctx.previews.path_for(m["file"])
+            path = (self.ctx.previews.path_for(m["file"]) if is_previewable(m["file"])
+                    else self.ctx.thumbs.path_for(m["file"], 320))
             pm = square(path, 54) if os.path.exists(path) else None
             if pm:
                 self.strip[k].setPixmap(pm)
@@ -337,7 +411,9 @@ class ImageViewer(QDialog):
 
     def _mark(self, k):
         on = k == self.i
-        self.strip[k].setStyleSheet(f"border: 2px solid {T.ACCENT if on else 'transparent'}; border-radius: 12px;"
+        other = k == getattr(self, "cmp_index", None)
+        color = T.ACCENT if on else ("#ffcc33" if other else "transparent")
+        self.strip[k].setStyleSheet(f"border: 2px solid {color}; border-radius: 12px;"
                                     " background: rgba(255,255,255,0.06);")
 
     def _ready(self, file_id, _path):
@@ -346,6 +422,8 @@ class ImageViewer(QDialog):
                 self._fill_strip()
                 if k == self.i:
                     self.go(self.i)
+                elif k == self.cmp_index:
+                    self._update_compare()
 
     def go(self, k):
         if not self.msgs:
@@ -361,18 +439,76 @@ class ImageViewer(QDialog):
         self.counter.setText(f"{self.i + 1} / {len(self.msgs)}" if len(self.msgs) > 1 else "")
         self.prev.setEnabled(self.i > 0)
         self.next.setEnabled(self.i < len(self.msgs) - 1)
-        path = self._path(m)
-        self.image = None
-        if path:
-            reader = QImageReader(path)
-            reader.setAutoTransform(True)
-            screen = self.screen().availableGeometry().size() if self.screen() else QSize(2560, 1440)
-            s = reader.size()
-            if s.isValid() and (s.width() > screen.width() or s.height() > screen.height()):
-                reader.setScaledSize(s.scaled(screen, Qt.KeepAspectRatio))
-            img = reader.read()
-            self.image = None if img.isNull() else QPixmap.fromImage(img)
+        self.image = self._load(m)
+        if self.cmp_index is not None:
+            self._update_compare()
         self._fit()
+
+    def _load(self, m):
+        path = self._path(m)
+        if not path:
+            return None
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        screen = self.screen().availableGeometry().size() if self.screen() else QSize(2560, 1440)
+        s = reader.size()
+        if s.isValid() and (s.width() > screen.width() or s.height() > screen.height()):
+            reader.setScaledSize(s.scaled(screen, Qt.KeepAspectRatio))
+        img = reader.read()
+        return None if img.isNull() else QPixmap.fromImage(img)
+
+    # ------------------------------------------------------------------ compare two versions
+    def toggle_compare(self):
+        if len(self.msgs) < 2:
+            self.ctx.toast("Compare needs a second picture in this chat")
+            return
+        if self.cmp_index is None:
+            self.cmp_index = self.i + 1 if self.i + 1 < len(self.msgs) else self.i - 1
+            self.side.show()
+            self.view.mode = "side" if self.side.isChecked() else "wipe"
+        else:
+            self.cmp_index = None
+            self.side.hide()
+            self.view.mode = ""
+        self._update_compare()
+
+    def _side(self, on):
+        if self.cmp_index is not None:
+            self.view.mode = "side" if on else "wipe"
+            self.view.update()
+
+    def _update_compare(self):
+        if self.cmp_index is None:
+            self.view.other = None
+            self.view.labels = ("", "")
+        else:
+            if self.cmp_index == self.i:          # the arrows moved onto the other one: compare with the next
+                self.cmp_index = self.i + 1 if self.i + 1 < len(self.msgs) else self.i - 1
+            self.view.other = self._load(self.msgs[self.cmp_index])
+            name = lambda m: os.path.splitext(m["file"]["name"])[0]  # noqa: E731
+            self.view.labels = (name(self.msgs[self.i]), name(self.msgs[self.cmp_index]))
+        for k in range(len(self.strip)):
+            self._mark(k)
+        self.view.update()
+
+    # ------------------------------------------------------------------ draw on it
+    def _draw(self):
+        from client.ui.annotate import AnnotateDialog
+        m = self.msgs[self.i]
+        path = self._path(m)
+        if not path:
+            return
+        from PySide6.QtGui import QImage
+        img = QImage(path)
+        if img.isNull():
+            return
+        conv = m["conv"]
+        dlg = AnnotateDialog(self, img, self.ctx.store.title(conv))
+        if dlg.exec():
+            out = dlg.save("Notes on " + os.path.splitext(m["file"]["name"])[0])
+            if out:
+                self.ctx.send_file(conv, out, dlg.caption.text().strip())
+                self.ctx.toast("Sent to " + self.ctx.store.title(conv))
 
     def _fit(self):
         self.view.show_image(self.image, "Loading..." if self.ctx.conn.online else "Not available offline")
@@ -387,6 +523,8 @@ class ImageViewer(QDialog):
             self.go(0)
         elif key == Qt.Key_End:
             self.go(len(self.msgs) - 1)
+        elif key == Qt.Key_C:
+            self.toggle_compare()
         elif key == Qt.Key_Escape:
             self.close()
         else:
@@ -396,7 +534,8 @@ class ImageViewer(QDialog):
         self.go(self.i + (1 if e.angleDelta().y() < 0 else -1))
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton and not self.view.geometry().contains(e.position().toPoint()):
+        if e.button() == Qt.LeftButton and not self.view.geometry().contains(e.position().toPoint()) \
+                and not self.strip_area.geometry().contains(e.position().toPoint()):
             self.close()                             # a click on the dark area closes, like most viewers
 
     # ------------------------------------------------------------------ actions

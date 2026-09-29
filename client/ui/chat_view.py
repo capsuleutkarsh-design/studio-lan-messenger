@@ -72,15 +72,22 @@ class SystemLine(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 6, 0, 6)
         t = datetime.datetime.fromtimestamp(msg["ts"]).strftime("%H:%M")
-        lbl = plain(QLabel(f"{msg['body']}  ·  {t}"))
+        self.lbl = lbl = plain(QLabel(f"{msg['body']}  ·  {t}"))
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignCenter)
         lbl.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; background: {T.TINT}; border-radius: 10px;"
                           " padding: 3px 12px;")
+        lbl.ensurePolished()
+        self._ideal = lbl.fontMetrics().horizontalAdvance(lbl.text()) + 32
         lay.addStretch(1)
         lay.addWidget(lbl)
         lay.addStretch(1)
+        self.set_max_width(520)
 
     def set_max_width(self, w):
-        pass
+        widest = max(200, int(w / 0.72))                     # a narrow window wraps instead of cutting off
+        self.lbl.setMaximumWidth(widest)
+        self.lbl.setMinimumWidth(min(self._ideal, widest))
 
 
 class BuzzLine(QWidget):
@@ -311,6 +318,63 @@ class ImagePreview(QLabel):
                 self.ctx.chat.open_viewer(self.msg)
             else:
                 open_file(self.path)
+
+
+class ServerThumb(QLabel):
+    """Preview of an EXR, DPX, MOV... made by the server. A click opens the picture viewer."""
+
+    def __init__(self, ctx, msg):
+        super().__init__()
+        from client.previews import is_video
+        self.ctx, self.msg, self.info = ctx, msg, msg["file"]
+        self.video = is_video(self.info)
+        self.path = None
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(120, 80)
+        self.setStyleSheet(f"background: {T.TINT}; border-radius: 12px; color: {T.FAINT};")
+        self.setText("Loading preview...")
+        ctx.thumbs.ready.connect(self._ready)
+        ctx.thumbs.failed.connect(self._failed)
+        path = ctx.thumbs.request(self.info, 320)
+        if path:
+            self._show(path)
+
+    def _ready(self, file_id, size, path):
+        if file_id == self.info["id"] and size == 320:
+            self._show(path)
+
+    def _failed(self, file_id, size):
+        if file_id == self.info["id"] and size == 320 and not self.path:
+            self.hide()                          # an older server, or ffmpeg could not read it: the card stays
+
+    def _show(self, path):
+        pm = thumbnail(path)
+        if pm is None:
+            self.hide()
+            return
+        if self.video:                           # a play mark: it is a clip, not a still
+            from PySide6.QtGui import QPixmap, QPolygonF
+            pm = QPixmap(pm)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing)
+            c = pm.rect().center()
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 150))
+            p.drawEllipse(c, 24, 24)
+            p.setBrush(QColor("#ffffff"))
+            p.drawPolygon(QPolygonF([QPoint(c.x() - 7, c.y() - 11), QPoint(c.x() - 7, c.y() + 11),
+                                     QPoint(c.x() + 12, c.y())]))
+            p.end()
+        self.path = path
+        self.setStyleSheet("background: transparent;")
+        self.setPixmap(pm)
+        self.setFixedSize(pm.size())
+        self.setToolTip("Preview made by the server - click to view larger")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self.path:
+            self.ctx.chat.open_viewer(self.msg)
 
 
 class PathCard(QFrame):
@@ -764,8 +828,11 @@ class MessageRow(QWidget):
                 b.addWidget(q)
             f = msg.get("file")
             if f:
+                from client.previews import is_thumbable
                 if is_previewable(f):
                     b.addWidget(ImagePreview(ctx, f, msg))
+                elif is_thumbable(f) and getattr(ctx, "thumbs", None):
+                    b.addWidget(ServerThumb(ctx, msg))
                 b.addWidget(FileCard(ctx, f, msg["conv"], msg["ts"]))
             if msg.get("kind") == "poll" and msg.get("poll"):
                 b.addWidget(PollCard(ctx, msg))
@@ -934,6 +1001,19 @@ class MessageRow(QWidget):
         if poll and (poll["creator_id"] == ctx.store.my_id or ctx.store.me.get("is_admin")):
             m.addAction(icon("chart", T.TEXT, 16), "Reopen poll" if poll["closed"] else "Close poll (stop voting)",
                         lambda: ctx.conn.request("close_poll", None, poll_id=poll["id"], reopen=poll["closed"]))
+        saved = ctx.store.is_saved(msg["id"])
+        m.addAction(icon("bookmark", T.TEXT, 16), "Remove from saved" if saved else "Save for later",
+                    lambda: ctx.save_for_later(msg, not saved))
+        from client.ui.widgets import shot_names
+        shots = shot_names(msg.get("body") or "")[:3] if not self.sticker else []
+        for shot in shots:
+            sub = m.addMenu(icon("check", T.TEXT, 16), f"Shot status: {shot}" if len(shots) > 1 else
+                            f"Set {shot} status")
+            current = (ctx.store.shot_status(shot) or (None,))[0]
+            for key, emoji, label in P.SHOT_STATUSES:
+                a = sub.addAction(f"{emoji}  {label}", lambda s=shot, k=key: ctx.set_shot_status(s, k, msg["conv"]))
+                a.setCheckable(True)
+                a.setChecked(key == current)
         pinned = any(p["id"] == msg["id"] for p in ctx.store.conversation(msg["conv"]).pins)
         m.addAction(icon("pin", T.TEXT, 16), "Unpin" if pinned else "Pin to the top",
                     lambda: ctx.conn.request("pin", lambda r: None if r.get("ok") else ctx.toast(r.get("error")),
@@ -1709,6 +1789,11 @@ class ChatView(QWidget):
         self.seen_timer = QTimer(self, interval=15000, timeout=self._update_seen)
 
     # ------------------------------------------------------------ open
+    def save_draft(self):
+        """What is typed in the box, kept with its chat (the chat list shows it as a draft)."""
+        if self.conv and self.conv in self.store.convs:
+            self.store.conversation(self.conv).draft = self.input.toPlainText()
+
     def open(self, conv):
         if self.conv and self.conv in self.store.convs:
             prev = self.store.conversation(self.conv)
@@ -1917,7 +2002,7 @@ class ChatView(QWidget):
     def _apply_widths(self):
         w = self._bubble_width()
         for r in self.rows:
-            if isinstance(r, (MessageRow, GalleryRow)):
+            if isinstance(r, (MessageRow, GalleryRow, SystemLine)):
                 r.set_max_width(w)
 
     def resizeEvent(self, e):
@@ -1997,12 +2082,13 @@ class ChatView(QWidget):
 
     def open_viewer(self, msg):
         """The picture viewer, with every picture shown in this chat (← → move between them)."""
+        from client.previews import is_thumbable
         pics = []
         for r in self.rows:
             if isinstance(r, GalleryRow):
                 pics += r.msgs
-            elif isinstance(r, MessageRow) and r.msg.get("file") and is_previewable(r.msg["file"]) \
-                    and not r.msg.get("deleted"):
+            elif isinstance(r, MessageRow) and r.msg.get("file") and not r.msg.get("deleted") \
+                    and (is_previewable(r.msg["file"]) or is_thumbable(r.msg["file"])):
                 pics.append(r.msg)
         if not any(m["id"] == msg["id"] for m in pics):
             pics = [msg]
@@ -2062,7 +2148,7 @@ class ChatView(QWidget):
             return
         w = self._append(msg, last)
         self.rendered += 1
-        if isinstance(w, (MessageRow, GalleryRow)):
+        if isinstance(w, (MessageRow, GalleryRow, SystemLine)):
             w.set_max_width(self._bubble_width())
         self.loading.hide()
         if near_bottom:

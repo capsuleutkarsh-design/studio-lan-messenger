@@ -235,6 +235,20 @@ text backup (it is an archive).
   so they are in the safe copy and the backups too. The text size and the width of the chat list stay with each PC
   (they depend on its monitor).
 
+## 6c. Previews, the update tracker, leave replies (1.11.0)
+
+- **EXR / DPX / TIFF / MOV previews** are made by the server with FFmpeg (`ffmpeg.exe` next to the server
+  program; its licence note is `FFMPEG-LICENSE.txt`). Only people who can see the file get its preview. The
+  previews are kept in the file storage folder under `.thumbs` and are small (a few hundred KB each).
+- **Updates → people list**: everyone, the Quillo version they last signed in with and from which PC.
+  *Only who still needs the update* narrows it; **Remind them** shows the update bar again on every signed-in PC
+  that is behind. Someone who hasn't signed in since the server was updated shows as "not signed in yet".
+- **Reports → Not seen in 30 days**: people who haven't signed in for a month (disable their account if they
+  have left - Users → Enable / Disable).
+- **Shot status** is the same for the whole studio and every change is in the Audit log ("shot status").
+- **Leave auto-reply**: people write it themselves when they add leave; it answers direct messages once a day
+  per person and never counts as unread.
+
 ## 7. Pipeline API (render farm, scripts)
 
 Console → Settings → *Pipeline API*: tick *Allow*, click *New key*, save, restart the server. Then from any machine

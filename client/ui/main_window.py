@@ -192,6 +192,7 @@ class MainWindow(QMainWindow):
         self.sidebar.new_room.connect(self.new_room)
         self.sidebar.conv_menu.connect(self.conv_menu)
         self.sidebar.go_page.connect(lambda key: (self.rail[key].setChecked(True), self.rail_clicked(key)))
+        self.sidebar.show_saved.connect(self.show_saved)
         self._set_sidebar_width(config.get("sidebar_width", 330), save=False)
         body.addWidget(self.sidebar)
         from client.ui.sidebar import SidebarEdge
@@ -205,6 +206,8 @@ class MainWindow(QMainWindow):
         from client.previews import PreviewCache
         from client.folders import Extractor
         self.previews = PreviewCache(transfers, self)
+        from client.previews import ThumbCache
+        self.thumbs = ThumbCache(conn, self)
         from client.avatars import AvatarCache
         self.avatars = AvatarCache(conn, store, self)
         self._avatar_repaint = QTimer(self, singleShot=True, interval=120, timeout=self._repaint_avatars)
@@ -272,13 +275,22 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=lambda: self.set_compact(not self.compact))
         QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=lambda: self.chat.take_screenshot())
         QShortcut(QKeySequence("Ctrl+/"), self, activated=self.show_shortcuts)
+        QShortcut(QKeySequence("Alt+Shift+Down"), self, activated=self.next_unread)
+        QShortcut(QKeySequence("Alt+Shift+Up"), self, activated=lambda: self.next_unread(back=True))
         QShortcut(QKeySequence("F1"), self, activated=self.show_shortcuts)
         for keys, step in (("Ctrl+=", 1), ("Ctrl++", 1), ("Ctrl+-", -1), ("Ctrl+0", 0)):
             QShortcut(QKeySequence(keys), self, activated=lambda step=step: self.chat.zoom(step))
         from client.ui import chat_view
-        from client.ui.widgets import set_shot_handler
+        from client.ui.widgets import set_shot_handler, set_shot_statuses
         chat_view.ZOOM["pct"] = int(config.get("chat_zoom", 100) or 100)
         set_shot_handler(self.show_shot)
+        set_shot_statuses(lambda shot: (store.shot_status(shot) or (None,))[0])
+        # a shot's new status shows next to its name in the open chat
+        self._shots_redraw = QTimer(self, singleShot=True, interval=300,
+                                    timeout=lambda: self.chat.conv and self.chat.render_all())
+        store.shots_changed.connect(lambda _s: self._shots_redraw.start())
+        self._drafts_timer = QTimer(self, interval=15_000, timeout=self._save_drafts)
+        self._drafts_timer.start()
         from client.ui.popups import PopupStack
         self.popup_stack = PopupStack(store, self._quick_reply, self._popup_open)
         store.prefs_changed.connect(self._prefs_changed)
@@ -451,6 +463,7 @@ class MainWindow(QMainWindow):
 
     def _on_logged_in(self, boot):
         from client.ui.widgets import set_link_policy, set_shot_pattern
+        self._load_drafts()
         set_link_policy(boot.get("trusted_link_hosts", []), self.config)
         set_shot_pattern(self.store.shot_pattern)
         self._update_focus()
@@ -518,6 +531,7 @@ class MainWindow(QMainWindow):
         m.addMenu(self.focus_menu(m))
         m.addAction(icon("clock", T.TEXT, 16), "New reminder...", self.new_reminder)
         m.addSeparator()
+        m.addAction(icon("bookmark", T.TEXT, 16), "Saved for later", self.show_saved)
         m.addAction(icon("list", T.TEXT, 16), "Keyboard shortcuts   Ctrl+/", self.show_shortcuts)
         m.addAction(icon("info", T.TEXT, 16), "Welcome tour", self.show_tour)
         m.addSeparator()
@@ -586,6 +600,7 @@ class MainWindow(QMainWindow):
     def open_conv(self, conv):
         if not self.store.conv_exists(conv):
             return
+        self.chat.save_draft()                 # before the list redraws: the chat I leave shows its draft
         if not self.isVisible():
             self.show_normal()
         if self.rail_group.checkedButton() in (self.rail["announcements"], self.rail["transfers"],
@@ -916,6 +931,82 @@ class MainWindow(QMainWindow):
         elif pinned:
             self.toast(f"📌 {self.store.title(conv)} stays at the top of your chats")
 
+    def next_unread(self, back=False):
+        """Alt+Shift+↓: the next chat with unread messages, in the order of the chat list (muted ones last)."""
+        s = self.store
+        order = s.pinned_chats() + [c.conv for c in sorted(s.convs.values(), key=lambda c: -c.last_ts)]
+        seen, convs = set(), []
+        for conv in order:
+            if conv not in seen and s.conv_exists(conv) and s.conversation(conv).unread:
+                seen.add(conv)
+                convs.append(conv)
+        convs.sort(key=lambda c: s.is_muted(c))            # stable: keeps the list order otherwise
+        if not convs:
+            self.toast("✅ No unread messages")
+            return
+        current = self.chat.conv if self.stack.currentWidget() is self.chat else None
+        if back:
+            convs.reverse()
+        target = convs[0] if current not in convs else convs[(convs.index(current) + 1) % len(convs)]
+        self.rail["chats"].setChecked(True)
+        self.sidebar.show_page("chats")
+        self.open_conv(target)
+
+    def save_for_later(self, msg, saved):
+        self.store.set_saved(msg, saved)
+        self.toast("🔖 Saved for later — find it with the bookmark above your chats" if saved
+                   else "Removed from saved")
+
+    def show_saved(self):
+        from client.ui.dialogs import SavedDialog
+        SavedDialog(self).exec()
+
+    def set_shot_status(self, shot, status, conv=""):
+        def done(reply):
+            if not reply.get("ok"):
+                self.toast(f"Status not set: {reply.get('error')}")
+        self.conn.request("shot_status_set", done, shot=shot, status=status, conv=conv or "")
+
+    # ---- drafts: half-typed text stays with its chat, even across a restart
+    def _drafts_key(self):
+        return f"{self.conn.host}:{self.store.me.get('username', '')}"
+
+    def _load_drafts(self):
+        saved = (self.config.get("drafts") or {}).get(self._drafts_key(), {})
+        for conv, text in saved.items():
+            c = self.store.conversation(conv)
+            if text and not c.draft:
+                c.draft = text
+
+    def _save_drafts(self):
+        if not self.store.me:
+            return
+        self.chat.save_draft()
+        drafts = {c.conv: c.draft for c in self.store.convs.values() if (c.draft or "").strip()}
+        all_drafts = dict(self.config.get("drafts") or {})
+        if all_drafts.get(self._drafts_key(), {}) != drafts:
+            all_drafts[self._drafts_key()] = drafts
+            self.config["drafts"] = all_drafts
+            self.config.save()
+
+    # ---- "In a meeting" while a calendar meeting of mine runs
+    def _meeting_status(self, data, now):
+        if not self.config.get("meeting_status", True) or not self.conn.online:
+            return
+        me = self.store.me
+        ongoing = [i for i in data.get("items", []) if i["kind"] == "meeting" and not i["all_day"]
+                   and i.get("my_rsvp") != "no" and i["start"] <= now < i["end"]]
+        auto = getattr(self, "_auto_meeting", None)
+        if ongoing and not auto and not me.get("status_msg") and me.get("status") in ("online", "away"):
+            end = max(i["end"] for i in ongoing)
+            self._auto_meeting = end
+            self.conn.send("set_status", status=me.get("status", "online"), status_msg="In a meeting",
+                           status_emoji="📅", status_until=end)
+        elif auto and not ongoing:
+            self._auto_meeting = None
+            if me.get("status_msg") == "In a meeting":           # ended early / was deleted: clear it now
+                self.conn.send("set_status", status=me.get("status", "online"), status_msg="", status_emoji="")
+
     def show_shot(self, name):
         """A shot name (FAL_030) was clicked: everything said about it, in every chat I can see."""
         SearchDialog(self, name).exec()
@@ -1152,9 +1243,11 @@ class MainWindow(QMainWindow):
         """Remind me a few minutes before a meeting (Settings: how many), once per meeting."""
         minutes = int(self.config.get("meeting_reminder_min", 10) or 0)
         data = self.store.calendar or {}
+        now = time.time()
+        if data:
+            self._meeting_status(data, now)
         if not minutes or not data:
             return
-        now = time.time()
         if not hasattr(self, "_upcoming_fetched") or now - self._upcoming_fetched > 1800:
             self._upcoming_fetched = now
             self._refresh_upcoming()
@@ -1458,6 +1551,7 @@ class MainWindow(QMainWindow):
 
     def signed_out(self):
         """Sign-out: close everything that belongs to this account so the next person sees none of it."""
+        self._save_drafts()
         self.screens.stop()
         for w in list(self.reminder_cards.values()) + list(self.popups.values()):
             w.close()
@@ -1482,6 +1576,7 @@ class MainWindow(QMainWindow):
                 self, "Quit", f"{len(active)} file transfer(s) are still running. Quit anyway?") != QMessageBox.Yes:
             return
         self.quitting = True
+        self._save_drafts()
         self.screens.stop()
         self.popup_stack.close_all()
         self.conn.logout()

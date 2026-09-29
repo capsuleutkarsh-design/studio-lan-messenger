@@ -48,6 +48,8 @@ DEFAULTS = {
     "sidebar_width": 330,        # the chat list; its edge can be dragged
     "quick_reply": True,         # new messages pop up in the corner, with a box to answer right there
     "tour_seen": [],             # "host:user" - the welcome tour, for servers that keep no personal settings
+    "meeting_status": True,      # my status says "📅 In a meeting" while a calendar meeting of mine runs
+    "drafts": {},                # "host:user" -> {conv: half-typed text}, kept across restarts
 }
 
 

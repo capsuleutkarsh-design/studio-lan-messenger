@@ -105,6 +105,9 @@ class CalendarMixin:
     # ------------------------------------------------------------ setup
     def calendar_setup(self):
         self.db.con.executescript(CALENDAR_SCHEMA)
+        cols = {r[1] for r in self.db.con.execute("PRAGMA table_info(leave)")}
+        if "auto_reply" not in cols:             # 1.11.0: "I'm on leave until Monday..." to direct messages
+            self.db.con.execute("ALTER TABLE leave ADD COLUMN auto_reply TEXT NOT NULL DEFAULT ''")
         if not self.db.get_meta("holidays_seeded"):
             for year in PRESET_YEARS:
                 self._seed_year(year)
@@ -464,8 +467,9 @@ class CalendarMixin:
         if last < first or (last - first).days > 366:
             raise ClientError("Check the dates")
         note = " ".join(str(req.get("note") or "").split())[:200]
-        self.db._exec("INSERT INTO leave(user_id, first_day, last_day, note, created_at) VALUES(?,?,?,?,?)",
-                      s.user_id, first.isoformat(), last.isoformat(), note, time.time())
+        auto = " ".join(str(req.get("auto_reply") or "").split())[:300]
+        self.db._exec("INSERT INTO leave(user_id, first_day, last_day, note, created_at, auto_reply)"
+                      " VALUES(?,?,?,?,?,?)", s.user_id, first.isoformat(), last.isoformat(), note, time.time(), auto)
         self._leave_changed(s.user_id)
 
     def h_cal_leave_delete(self, s, req):
@@ -483,6 +487,15 @@ class CalendarMixin:
         self._pub_cache.pop(uid, None)
         self._push_user(uid)
         self._cal_changed(None)
+
+    def leave_auto_reply(self, uid):
+        """The automatic reply of someone on leave today ("" when not on leave, or none was written)."""
+        if not self.on_leave_today(uid):
+            return ""
+        today = datetime.date.today().isoformat()
+        row = self.db._one("SELECT auto_reply FROM leave WHERE user_id=? AND first_day<=? AND last_day>=?"
+                           " AND auto_reply<>'' ORDER BY id DESC LIMIT 1", uid, today, today)
+        return row[0] if row else ""
 
     def on_leave_today(self, uid):
         today = datetime.date.today().isoformat()

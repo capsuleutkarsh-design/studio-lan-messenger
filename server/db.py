@@ -111,6 +111,15 @@ CREATE TABLE IF NOT EXISTS prefs(
     value TEXT NOT NULL,
     PRIMARY KEY(user_id, key)
 );
+CREATE TABLE IF NOT EXISTS shot_status(
+    shot TEXT NOT NULL COLLATE NOCASE,
+    status TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    ts REAL NOT NULL,
+    conv TEXT NOT NULL DEFAULT '',
+    message_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_shot_status ON shot_status(shot, ts);
 CREATE TABLE IF NOT EXISTS audit(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -218,6 +227,10 @@ MIGRATIONS = [
     ("messages", "thread_broadcast", "INTEGER NOT NULL DEFAULT 0"),      # "also send to the chat"
     ("messages", "thread_count", "INTEGER NOT NULL DEFAULT 0"),          # on the first message: replies
     ("messages", "thread_last", "REAL"),                                 # ... and when the last one came
+    # 1.11.0: which Quillo each person last signed in with, and from which PC (the console's update tracker)
+    ("users", "client_version", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "client_pc", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "client_seen", "REAL"),
 ]
 
 POST_MIGRATION_INDEXES = """
@@ -1069,6 +1082,24 @@ class Database:
 
     def muted_convs(self, user_id: int) -> list[str]:
         return [r[0] for r in self._all("SELECT conv FROM mutes WHERE user_id=?", user_id)]
+
+    # ------------------------------------------------ shot status
+    def add_shot_status(self, shot, status, user_id, conv="", message_id=None):
+        self._exec("INSERT INTO shot_status(shot, status, user_id, ts, conv, message_id) VALUES(?,?,?,?,?,?)",
+                   shot, status, user_id, time.time(), conv, message_id)
+
+    def shot_history(self, shot, limit=20):
+        return self._all("SELECT * FROM shot_status WHERE shot=? ORDER BY ts DESC, rowid DESC LIMIT ?", shot, limit)
+
+    def shot_statuses(self, limit=3000):
+        """The latest status of every shot (newest first)."""
+        return self._all("SELECT s.shot, s.status, s.user_id, s.ts FROM shot_status s JOIN"
+                         " (SELECT MAX(rowid) AS r FROM shot_status GROUP BY shot COLLATE NOCASE) m ON s.rowid=m.r"
+                         " ORDER BY s.ts DESC LIMIT ?", limit)
+
+    def set_client(self, user_id, version, pc):
+        self._exec("UPDATE users SET client_version=?, client_pc=?, client_seen=? WHERE id=?",
+                   version, pc, time.time(), user_id)
 
     # ------------------------------------------------ personal settings that follow a person to any PC
     def set_pref(self, user_id: int, key: str, value):

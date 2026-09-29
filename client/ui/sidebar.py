@@ -106,6 +106,7 @@ class Sidebar(QFrame):
     open_conv = Signal(str)
     new_room = Signal()
     conv_menu = Signal(str, object)
+    show_saved = Signal()
     go_page = Signal(str)                   # an empty list's button: "Find people" opens People
 
     PAGES = ("chats", "contacts", "rooms")
@@ -126,7 +127,15 @@ class Sidebar(QFrame):
         head.setContentsMargins(20, 0, 12, 0)
         self.heading = QLabel("Chats")
         self.heading.setStyleSheet("font-size: 16pt; font-weight: 800;")
+        self.heading.setMinimumHeight(36)          # the same height with or without the buttons beside it
         head.addWidget(self.heading, 1)
+        self.b_read_all = IconButton("check_all", "Mark every chat as read", 36, 18, T.TEXT, T.ACCENT, round_=False)
+        self.b_read_all.clicked.connect(self._read_all)
+        self.b_read_all.hide()
+        head.addWidget(self.b_read_all)
+        self.b_saved = IconButton("bookmark", "Saved for later", 36, 18, T.TEXT, T.ACCENT, round_=False)
+        self.b_saved.clicked.connect(self.show_saved.emit)
+        head.addWidget(self.b_saved)
         self.b_new_room = IconButton("plus", "New chat room", 36, 18, T.TEXT, T.ACCENT, round_=False)
         self.b_new_room.clicked.connect(self.new_room.emit)
         head.addWidget(self.b_new_room)
@@ -180,6 +189,7 @@ class Sidebar(QFrame):
         store.conv_changed.connect(self._conv_changed)
         store.typing.connect(self._typing)
         store.prefs_changed.connect(lambda key: key in ("", "pinned_chats") and self.schedule_rebuild())
+        store.unread_changed.connect(lambda *_: self._update_read_all())
 
     # ---------------------------------------------------------------- api
     def schedule_rebuild(self, *_):
@@ -187,7 +197,7 @@ class Sidebar(QFrame):
             self._rebuild_timer.start()
 
     def update_permissions(self):
-        self.b_new_room.setVisible(bool(self.store.perm("create_rooms")))
+        self.b_new_room.setVisible(bool(self.store.perm("create_rooms")) and self.page != "contacts")
 
     def set_filter(self, key):
         self.filter = key
@@ -195,18 +205,30 @@ class Sidebar(QFrame):
             b.setChecked(k == key)
         self.rebuild()
 
+    def _update_read_all(self):
+        self.b_read_all.setVisible(self.page == "chats" and self.store.total_unread() > 0)
+
+    def _read_all(self):
+        self.store.mark_all_read()
+        self._update_read_all()
+
     def show_page(self, name):
         self.page = name
+        self._update_read_all()
+        self.b_saved.setVisible(name == "chats")
         self.chips.setVisible(name == "chats")
         self.heading.setText({"chats": "Chats", "contacts": "People", "rooms": "Rooms"}[name])
+        self.update_permissions()                  # "+ new room" belongs to Chats and Rooms, not People
         self.stack.setCurrentWidget(self.lists[name])
         self.rebuild()
 
     def set_active(self, conv):
-        self.active_conv = conv
+        previous, self.active_conv = self.active_conv, conv
         for lst in self.lists.values():
             for c, item in lst.items.items():
                 item.set_active(c == conv)
+                if c in (previous, conv):
+                    self._fill_item(item)         # a draft shows once you leave the chat
 
     # ------------------------------------------------------------ building
     def _query_match(self, *texts):
@@ -251,14 +273,25 @@ class Sidebar(QFrame):
             else:
                 item.set_data(u.get("name", "?"), self._preview(conv), when, unread, status,
                               muted=s.is_muted(conv), pinned=self.page == "chats" and s.is_pinned(conv))
+                self._draft(item, c)
         else:
             room = s.rooms.get(target, {})
             sub = self._preview(conv) if self.page == "chats" else (
                 room.get("topic") or f"{len(room.get('members', []))} members")
             item.set_data(room.get("name", "Room"), sub, when, unread, room=True, muted=s.is_muted(conv),
                           pinned=self.page == "chats" and s.is_pinned(conv))
+            if self.page == "chats":
+                self._draft(item, c)
         item.typing = bool(self.typing.get(conv))
         item.set_active(conv == self.active_conv)
+
+    def _draft(self, item, c):
+        """Half-typed text left in a chat shows in the list, in red, until it is sent."""
+        text = (c.draft or "").strip() if c else ""
+        item.draft = bool(text) and item.conv != self.active_conv
+        if item.draft:
+            item.subtitle = text.replace("\n", " ")
+            item.update()
 
     def _make_item(self, conv):
         item = ConvItem(conv)
@@ -286,7 +319,7 @@ class Sidebar(QFrame):
 
             mine = P.direct_conv(s.my_id) if s.my_id else None
             pinned = [c for c in s.pinned_chats() if c != mine and wanted(c)]
-            convs = [c for c in s.convs.values() if c.last and s.conv_exists(c.conv)
+            convs = [c for c in s.convs.values() if (c.last or (c.draft or "").strip()) and s.conv_exists(c.conv)
                      and c.conv != mine and c.conv not in pinned and wanted(c.conv)]
             convs.sort(key=lambda c: c.last_ts, reverse=True)
             n = 0
@@ -321,7 +354,7 @@ class Sidebar(QFrame):
             def online(members):
                 return f"{sum(1 for u in members if u['status'] != 'offline')}/{len(members)} online"
 
-            matches = [u for u in s.users.values() if self._query_match(
+            matches = [u for u in s.users.values() if not s.is_builtin(u) and self._query_match(
                 u["name"], u["username"], u["department"], u.get("section"), u.get("designation"), u["title"])]
             team = [u for u in matches if u.get("manager_id") == s.my_id]
             if team:

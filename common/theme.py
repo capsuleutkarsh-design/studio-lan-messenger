@@ -276,6 +276,8 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDateTimeEdit:disable
 QComboBox::drop-down, QDateTimeEdit::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow, QDateTimeEdit::down-arrow {{ image: url("{arrow}"); width: 14px; height: 14px; }}
 QDateTimeEdit::up-button, QDateTimeEdit::down-button {{ width: 0; border: none; }}
+QTimeEdit::up-arrow, QTimeEdit::down-arrow, QTimeEdit::drop-down {{ image: none; width: 0; height: 0; }}
+QTimeEdit {{ padding-right: 12px; min-width: 64px; }}
 QCalendarWidget QWidget {{ background: {PANEL}; }}
 QCalendarWidget QToolButton {{ background: transparent; border: none; padding: 4px 8px; font-weight: 700; }}
 QCalendarWidget QAbstractItemView {{ selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT}; }}
@@ -307,6 +309,10 @@ QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 6px; backgroun
 QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
 QCheckBox:disabled {{ color: {FAINT}; }}
+QListView::indicator, QTreeView::indicator, QTableView::indicator {{ width: 16px; height: 16px; border-radius: 6px;
+    background: {SURFACE}; border: 1px solid {SCROLL}; }}
+QListView::indicator:checked, QTreeView::indicator:checked, QTableView::indicator:checked {{
+    background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
@@ -365,6 +371,22 @@ def dark_title_bar(widget):
                 break
     except Exception:  # noqa: BLE001 - purely cosmetic
         pass
+
+
+def tidy_forms(root):
+    """Form labels sit level with their one-line fields (Qt puts them at the top of a tall rounded box)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFormLayout, QLabel
+    for form in root.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.LabelRole)
+            field = form.itemAt(row, QFormLayout.FieldRole)
+            if not (label and field and isinstance(label.widget(), QLabel)):
+                continue
+            h = field.sizeHint().height()
+            if 20 <= h <= 52:                    # a one-line field; long lists and text boxes keep the top
+                label.widget().setMinimumHeight(h)
+                label.widget().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
 
 def bg_pane(widget, color=None):

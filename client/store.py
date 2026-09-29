@@ -67,6 +67,7 @@ class Store(QObject):
     thread_message = Signal(dict, bool)    # a reply in a thread (message, arrived just now)
     event_invite = Signal(dict)            # someone invited me to a meeting
     prefs_changed = Signal(str)            # a personal setting (pinned chats, focus time...) changed
+    shots_changed = Signal(str)            # a shot's status changed ("" = all of them, after sign-in)
 
     def __init__(self, conn):
         super().__init__()
@@ -85,6 +86,7 @@ class Store(QObject):
         self.server_name = ""
         self.max_file_size = 0
         self.prefs = {}                           # personal settings kept on the server (follow me to any PC)
+        self.shots = {}                           # "FAL_030" -> (status, set by, when)
         self.shot_pattern = P.SHOT_PATTERN_DEFAULT
         self.is_viewing = lambda conv: False      # set by the main window
         conn.event.connect(self.handle_event)
@@ -150,10 +152,15 @@ class Store(QObject):
     def unread_announcements(self):
         return sum(1 for a in self.announcements if not a.get("read"))
 
+    @staticmethod
+    def is_builtin(u):
+        """The server's own "admin" account (Administrator): not a colleague, so not in people lists."""
+        return (u or {}).get("username") == "admin"
+
     def all_people(self):
         """Visible users plus me (for org views)."""
-        return list(self.users.values()) + ([dict(self.me, status=self.me.get("status", "online"))]
-                                            if self.me else [])
+        return [u for u in self.users.values() if not self.is_builtin(u)] + (
+            [dict(self.me, status=self.me.get("status", "online"))] if self.me else [])
 
     def departments(self):
         return sorted({u["department"] for u in self.all_people() if u.get("department")}, key=str.lower)
@@ -237,6 +244,8 @@ class Store(QObject):
         # a server before 1.10 keeps no personal settings: they then last until Quillo is closed
         self.prefs_on_server = "prefs" in boot
         self.prefs = dict(boot.get("prefs") or {})
+        self.shots = {str(s).upper(): (st, uid, ts) for s, st, uid, ts in boot.get("shots") or []}
+        self.shots_changed.emit("")
         self.shot_pattern = boot.get("shot_pattern", P.SHOT_PATTERN_DEFAULT)
         self.prefs_changed.emit("")
         if boot.get("update"):
@@ -350,6 +359,10 @@ class Store(QObject):
         elif op == "pref":
             self.prefs[ev["key"]] = ev["value"]
             self.prefs_changed.emit(ev["key"])
+        elif op == "shot_status":
+            shot = str(ev["shot"]).upper()
+            self.shots[shot] = (ev["status"], ev.get("user_id"), ev.get("ts"))
+            self.shots_changed.emit(shot)
         elif op == "announcement":
             ann = ev["announcement"]
             self.announcements.insert(0, ann)
@@ -422,6 +435,35 @@ class Store(QObject):
         if getattr(self, "prefs_on_server", False):
             self.conn.send("set_pref", key=key, value=value)
         self.prefs_changed.emit(key)
+
+    # ------------------------------------------------ saved for later
+    MAX_SAVED = 200
+
+    def saved(self):
+        return [x for x in self.prefs.get("saved") or [] if isinstance(x, dict) and x.get("id")]
+
+    def is_saved(self, msg_id):
+        return any(x["id"] == msg_id for x in self.saved())
+
+    def set_saved(self, msg, saved):
+        from client import stickers
+        items = [x for x in self.saved() if x["id"] != msg["id"]]
+        if saved:
+            items.insert(0, {"id": msg["id"], "conv": msg["conv"], "sender_id": msg["sender_id"],
+                             "snippet": stickers.summary(msg)[:160], "ts": msg["ts"], "saved_at": time.time()})
+        self.set_pref("saved", items[:self.MAX_SAVED])
+
+    def mark_all_read(self):
+        """Every chat read at once (Monday morning)."""
+        n = 0
+        for c in list(self.convs.values()):
+            if c.unread and self.conv_exists(c.conv):
+                self.mark_read(c.conv)
+                n += 1
+        return n
+
+    def shot_status(self, shot):
+        return self.shots.get(str(shot).upper())
 
     MAX_PINNED = 10
 

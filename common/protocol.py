@@ -35,6 +35,12 @@ STATUSES = ("online", "away", "busy", "invisible")
 SHOT_PATTERN_DEFAULT = r"\b[A-Z]{2,6}[0-9]{0,4}_(?:SH)?[0-9]{2,5}(?:_[0-9]{2,5})?\b"
 
 
+# Shot status, set from a chat and shown next to the shot name everywhere: (key, emoji, label)
+SHOT_STATUSES = (("wip", "🛠", "WIP"), ("review", "🔍", "Ready for review"), ("changes", "🔁", "Changes"),
+                 ("approved", "✅", "Approved"), ("client", "⭐", "Client approved"), ("delivered", "🚀", "Delivered"))
+SHOT_STATUS = {k: (e, label) for k, e, label in SHOT_STATUSES}
+
+
 def shot_regex(pattern):
     """The compiled shot pattern, or None when it is empty or not a valid regular expression."""
     import re

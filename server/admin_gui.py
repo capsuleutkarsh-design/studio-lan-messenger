@@ -8,7 +8,7 @@ import os
 import socket
 import time
 
-from PySide6.QtCore import QDir, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QDir, QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
@@ -212,6 +212,10 @@ class Page(QWidget):
     def refresh(self):
         pass
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        T.tidy_forms(self)
+
 
 # ============================================================== dashboard
 class StatCard(QFrame):
@@ -260,7 +264,9 @@ class DashboardPage(Page):
         self.lay.addSpacing(4)
         self.warnings = QLabel()
         self.warnings.setWordWrap(True)
-        self.warnings.setStyleSheet(f"background: {T.mix(T.DANGER, T.PANEL, 0.86)}; color: {T.TEXT};"
+        self.warnings.setTextFormat(Qt.RichText)            # the ⚠ and line breaks, not "&#9888;&nbsp;"
+        self.warnings.setStyleSheet(f"background: {T.WARN_BG}; color: {T.WARN_TEXT};"
+                                    f" border: 1px solid {T.mix(T.WARN_TEXT, T.WARN_BG, 0.25)};"
                                     f" border-radius: 14px; padding: 12px 16px;")
         self.warnings.hide()
         self.lay.addWidget(self.warnings)
@@ -1380,6 +1386,8 @@ class ReportsPage(Page):
         self.tabs.addTab(self.t_depts, "Departments")
         self.tabs.addTab(self.t_people, "People")
         self.tabs.addTab(self.t_rooms, "Busiest rooms")
+        self.t_idle = make_table(["Person", "Department", "Last signed in"])
+        self.tabs.addTab(self.t_idle, "Not seen in 30 days")
         self.lay.addWidget(self.tabs, 1)
         self.data = None
         self._loaded_for = None
@@ -1404,6 +1412,10 @@ class ReportsPage(Page):
                                     p["section"], p["messages"], p["files"], human_size(p["uploaded"]),
                                     human_size(p["stored"]), fmt_time(p["last_seen"])] for p in r["people"]])
         self._fill(self.t_rooms, [[x["room"], x["messages"]] for x in r["rooms"]])
+        idle = r.get("inactive", [])
+        self._fill(self.t_idle, [[p["name"], p["department"], fmt_time(p["last_seen"])] for p in idle])
+        self.tabs.setTabText(self.tabs.indexOf(self.t_idle),
+                             f"Not seen in 30 days ({len(idle)})" if idle else "Not seen in 30 days")
 
     @staticmethod
     def _fill(table, rows):
@@ -1449,16 +1461,23 @@ class _DailyChart(QWidget):
             return
         top = max(d["messages"] for d in self.data) or 1
         n = len(self.data)
-        bw = max(2.0, (w - 20) / n)
+        head, foot = 22, 20                              # room for "max ... / day" and the dates
+        bw = min(34.0, max(2.0, (w - 20) / n))           # a few days: slim bars, not one wall of colour
+        left = 10 + ((w - 20) - bw * n) / 2
+        base = h - foot
+        p.setPen(QColor(T.HAIR))
+        p.drawLine(10, int(base), w - 10, int(base))
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(T.ACCENT))
         for i, d in enumerate(self.data):
-            bh = (h - 30) * d["messages"] / top
-            p.drawRoundedRect(int(10 + i * bw + 1), int(h - 18 - bh), max(1, int(bw - 2)), int(bh), 2, 2)
+            bh = (base - head) * d["messages"] / top
+            if bh:
+                p.drawRoundedRect(int(left + i * bw + 1), int(base - bh), max(1, int(bw - 3)), int(bh), 3, 3)
         p.setPen(QColor(T.FAINT))
-        p.drawText(10, h - 2, self.data[0]["day"])
-        p.drawText(w - 80, h - 2, self.data[-1]["day"])
-        p.drawText(10, 12, f"max {top} / day")
+        p.drawText(10, 12, f"busiest day: {top} message{'s' if top != 1 else ''}")
+        p.drawText(int(left), h - 3, self.data[0]["day"])
+        if n > 1:
+            p.drawText(QRectF(w - 170, h - 16, 160, 14), Qt.AlignRight, self.data[-1]["day"])
 
 
 # ================================================================ updates
@@ -1709,9 +1728,23 @@ class UpdatesPage(Page):
         row.addWidget(self.server_btn)
         self.lay.addLayout(row)
         self.versions = make_table(["Version", "PCs signed in now"])
-        self.versions.setMaximumHeight(260)
+        self.versions.setMaximumHeight(170)
         self.lay.addWidget(self.versions)
-        self.lay.addStretch(1)
+        people_row = QHBoxLayout()
+        self.people_label = QLabel()
+        self.people_label.setTextFormat(Qt.RichText)
+        people_row.addWidget(self.people_label, 1)
+        self.only_old = QCheckBox("Only who still needs the update")
+        self.only_old.toggled.connect(lambda _on: self.refresh())
+        people_row.addWidget(self.only_old)
+        self.remind_btn = btn("Remind them", "bell", primary=True)
+        self.remind_btn.setToolTip("Shows the update bar again on every signed-in PC that is still on an older "
+                                   "Quillo")
+        self.remind_btn.clicked.connect(self.remind)
+        people_row.addWidget(self.remind_btn)
+        self.lay.addLayout(people_row)
+        self.people = make_table(["Person", "Department", "Quillo", "PC", "Last signed in", ""])
+        self.lay.addWidget(self.people, 1)
         self.folder = ""
 
     def refresh(self):
@@ -1739,6 +1772,43 @@ class UpdatesPage(Page):
             self.versions.setItem(r, 0, cell(ver + ("  (update available)" if behind and latest else ""),
                                              color=T.DANGER if behind and latest else None))
             self.versions.setItem(r, 1, cell(count))
+        # everyone, with the Quillo they last signed in with
+        key = lambda v: tuple(int(x) for x in v.split(".")) if v and v.replace(".", "").isdigit() else ()  # noqa: E731
+        people = u.get("people", [])
+        known = [p for p in people if p["version"]]        # the others have not signed in since this console
+        old = [p for p in known if latest and key(p["version"]) < key(newest)]
+        current = [p for p in known if key(p["version"]) >= key(newest)]
+        self.people_label.setText(
+            f"<b style='font-size:11pt'>{len(current)}</b> of {len(people)} people are on {newest}"
+            + (f" &nbsp;·&nbsp; <span style='color:{T.DANGER}'><b>{len(old)}</b> still need the update</span>"
+               if old else ""))
+        self.remind_btn.setEnabled(bool(latest) and any(p["online"] for p in old))
+        shown = old if self.only_old.isChecked() else people
+        shown = sorted(shown, key=lambda p: (key(p["version"]) >= key(newest), p["name"].lower()))
+        self.people.setRowCount(len(shown))
+        for r, p in enumerate(shown):
+            unknown = not p["version"]
+            behind = bool(latest) and not unknown and key(p["version"]) < key(newest)
+            label = {"": "not signed in yet", "older": "older than 1.6.2"}.get(p["version"], p["version"])
+            self.people.setItem(r, 0, cell(p["name"]))
+            self.people.setItem(r, 1, cell(p["department"]))
+            self.people.setItem(r, 2, cell(label, color=T.FAINT if unknown else T.DANGER if behind else T.ACCENT))
+            self.people.setItem(r, 3, cell(p["pc"]))
+            self.people.setItem(r, 4, cell("online now" if p["online"] else fmt_time(p["seen"])))
+            self.people.setItem(r, 5, cell("—" if unknown else "needs the update" if behind else "✓ up to date",
+                                           color=T.FAINT if unknown else T.DANGER if behind else T.MUTED))
+
+    def remind(self):
+        try:
+            r = self.win.api.call("admin_remind_update")
+        except ValueError as e:
+            QMessageBox.warning(self, "Remind them", str(e))
+            return
+        n = r.get("reminded", 0)
+        QMessageBox.information(self, "Remind them",
+                                f"The update bar is shown again on {n} PC{'s' if n != 1 else ''}." if n else
+                                "Nobody who needs the update is signed in right now. They see the update "
+                                "the next time they sign in.")
 
     def publish(self):
         import os

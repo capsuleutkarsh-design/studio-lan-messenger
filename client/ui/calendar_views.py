@@ -333,26 +333,6 @@ class TimeGrid(QWidget):
                 p.fillRect(QRectF(x, top, w, 24 * self.HOUR), shade)
             p.setPen(QPen(QColor(T.HAIR), 1))
             p.drawLine(int(x), self.HEAD - 6, int(x), top + 24 * self.HOUR)
-            # header
-            head = QRectF(x, 0, w, self.HEAD - 6)
-            p.setPen(QColor(T.ACCENT if day == today else T.MUTED))
-            p.setFont(_font(9, day == today))
-            p.drawText(head, Qt.AlignCenter, f"{DAY_NAMES[day.weekday()]} {day.day}")
-            # all-day strip
-            y = self.HEAD
-            for e in [e for e in self.days.get(day, []) if e.all_day]:
-                r = QRectF(x + 3, y, w - 6, 20)
-                c = QColor(kind_color(e.kind))
-                c.setAlphaF(0.2)
-                p.setPen(Qt.NoPen)
-                p.setBrush(c)
-                p.drawRoundedRect(r, 7, 7)
-                p.setPen(QColor(T.TEXT))
-                p.setFont(_font(8.5))
-                p.drawText(r.adjusted(7, 0, -4, 0), Qt.AlignVCenter,
-                           QFontMetrics(_font(8.5)).elidedText(e.title, Qt.ElideRight, int(r.width() - 11)))
-                self._hits.append((r, e))
-                y += 22
             # timed items, side by side when they overlap
             timed = sorted([e for e in self.days.get(day, []) if not e.all_day], key=lambda e: e.start)
             for e, col, cols in _columns(timed):
@@ -378,8 +358,10 @@ class TimeGrid(QWidget):
                 if r.height() > 34:
                     p.setPen(QColor(T.MUTED))
                     p.setFont(_font(8))
+                    fm8 = QFontMetrics(_font(8))
                     p.drawText(QRectF(r.x() + 9, r.y() + 19, r.width() - 12, 16), Qt.AlignLeft,
-                               f"{e.start:%H:%M} – {e.end:%H:%M}" + (f"  ·  {e.sub}" if e.sub else ""))
+                               fm8.elidedText(f"{e.start:%H:%M} – {e.end:%H:%M}" + (f"  ·  {e.sub}" if e.sub else ""),
+                                              Qt.ElideRight, int(r.width() - 12)))
                 self._hits.append((r, e))
         # now
         now = datetime.datetime.now()
@@ -390,7 +372,45 @@ class TimeGrid(QWidget):
             p.drawLine(int(x), int(y), int(x + w), int(y))
             p.setBrush(QColor(T.DANGER))
             p.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
+        self._paint_head(p, top, today)
         p.end()
+
+    def _paint_head(self, p, top, today):
+        """The day names and the all-day items stay at the top while the hours scroll under them."""
+        off = max(0, self.visibleRegion().boundingRect().top())
+        p.fillRect(QRectF(0, off, self.LEFT - 6, top - 2), QColor(T.BG))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(T.PANEL))
+        p.drawRect(QRectF(self.LEFT - 6, off, self.width() - self.LEFT + 6, top - 2))
+        if off:
+            p.setPen(QPen(QColor(T.HAIR), 1))
+            p.drawLine(self.LEFT - 6, int(off + top - 2), self.width(), int(off + top - 2))
+        for i in range(self.ndays):
+            day = self._day(i)
+            x, w = self._col(i)
+            head = QRectF(x, off, w, self.HEAD - 6)
+            if day == today:
+                pill = QRectF(x + w / 2 - 34, off + 6, 68, self.HEAD - 16)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T.ACCENT_SOFT))
+                p.drawRoundedRect(pill, 10, 10)
+            p.setPen(QColor(T.ACCENT if day == today else (T.TEXT if day.weekday() not in WEEKEND else T.MUTED)))
+            p.setFont(_font(9, True))
+            p.drawText(head.adjusted(0, 4, 0, 0), Qt.AlignCenter, f"{DAY_NAMES[day.weekday()]} {day.day}")
+            y = off + self.HEAD
+            for e in [e for e in self.days.get(day, []) if e.all_day]:
+                r = QRectF(x + 3, y, w - 6, 20)
+                c = QColor(kind_color(e.kind))
+                c.setAlphaF(0.2)
+                p.setPen(Qt.NoPen)
+                p.setBrush(c)
+                p.drawRoundedRect(r, 7, 7)
+                p.setPen(QColor(T.TEXT))
+                p.setFont(_font(8.5))
+                p.drawText(r.adjusted(7, 0, -4, 0), Qt.AlignVCenter,
+                           QFontMetrics(_font(8.5)).elidedText(e.title, Qt.ElideRight, int(r.width() - 11)))
+                self._hits.append((r, e))
+                y += 22
 
     def _entry_at(self, pos):
         for r, e in reversed(self._hits):
@@ -407,8 +427,8 @@ class TimeGrid(QWidget):
         if self._entry_at(e.position()) is not None:
             return
         x, y = e.position().x(), e.position().y()
-        if x < self.LEFT or y < self._top():
-            return
+        if x < self.LEFT or y < self._top() + max(0, self.visibleRegion().boundingRect().top()):
+            return                           # the day names / all-day strip on top
         i = int((x - self.LEFT) / ((self.width() - self.LEFT) / self.ndays))
         hour = (y - self._top()) / self.HOUR
         half = int(hour * 2) / 2
@@ -451,6 +471,8 @@ class TimeGridView(QScrollArea):
         self.grid = TimeGrid()
         self.setWidget(self.grid)
         self.setWidgetResizable(True)
+        # the day names stay on top: repaint the whole grid on scroll, not just the part that moved in
+        self.verticalScrollBar().valueChanged.connect(lambda _v: self.grid.update())
         self.setFrameShape(QScrollArea.NoFrame)
         self.setStyleSheet("QScrollArea { background: transparent; }")
         self._scrolled = False
@@ -463,8 +485,8 @@ class TimeGridView(QScrollArea):
             QTimer.singleShot(0, self.scroll_to_morning)
 
     def scroll_to_morning(self):
-        """Start the day at 08:00 (or just before the first item of the day, if earlier)."""
-        self.verticalScrollBar().setValue(int(self.grid._top() + 8 * TimeGrid.HOUR - 20))
+        """Start the day at 08:00, just under the day names (they stay on top)."""
+        self.verticalScrollBar().setValue(int(8 * TimeGrid.HOUR - 12))
 
 
 # ======================================================================= agenda

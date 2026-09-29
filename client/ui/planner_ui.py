@@ -140,7 +140,7 @@ class TimeDialog(QDialog):
         lay.addWidget(self.typed_hint)
         self.edit = QDateTimeEdit(QDateTime.fromSecsSinceEpoch(int(initial or time.time() + 3600)))
         self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("ddd dd MMM yyyy   HH:mm:ss")
+        self.edit.setDisplayFormat("ddd dd MMM yyyy   HH:mm")
         self.edit.setMinimumDateTime(QDateTime.currentDateTime())
         self.edit.setMinimumHeight(36)
         lay.addWidget(self.edit)

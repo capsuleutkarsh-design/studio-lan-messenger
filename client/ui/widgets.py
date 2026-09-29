@@ -131,7 +131,7 @@ def studio_paths(text):
 # FAL_030 in a message links to everything said about that shot. The pattern is the server's (Settings in the
 # server console), the click is handled by the main window (search).
 SHOT_SCHEME = "quillo-shot:"
-_SHOTS = {"re": None, "open": None}
+_SHOTS = {"re": None, "open": None, "status": None}
 _TAG = re.compile(r"(<[^>]*>)")
 
 
@@ -142,6 +142,22 @@ def set_shot_pattern(pattern):
 
 def set_shot_handler(fn):
     _SHOTS["open"] = fn
+
+
+def set_shot_statuses(fn):
+    """fn(shot) -> status key or None: a shot name in a message shows its status (FAL_030 ✅)."""
+    _SHOTS["status"] = fn
+
+
+def _shot_html(name):
+    from common import protocol as P
+    status = _SHOTS["status"](name) if _SHOTS["status"] else None
+    badge = ""
+    if status in P.SHOT_STATUS:
+        emoji, label = P.SHOT_STATUS[status]
+        badge = f'&nbsp;<span title="{html.escape(label)}">{emoji}</span>'
+    return (f'<a href="{SHOT_SCHEME}{html.escape(name, quote=True)}" '
+            f'style="color:{T.ACCENT}; text-decoration:none; font-weight:600">{name}</a>{badge}')
 
 
 def shot_names(text):
@@ -161,9 +177,7 @@ def _mark_shots(markup):
             low = part.lower()
             in_link = True if low.startswith("<a ") else False if low.startswith("</a") else in_link
         elif part and not in_link:
-            parts[i] = rx.sub(lambda m: f'<a href="{SHOT_SCHEME}{html.escape(m.group(0), quote=True)}" '
-                                        f'style="color:{T.ACCENT}; text-decoration:none; font-weight:600">'
-                                        f'{m.group(0)}</a>', part)
+            parts[i] = rx.sub(lambda m: _shot_html(m.group(0)), part)
     return "".join(parts)
 
 
@@ -544,6 +558,7 @@ class ConvItem(QWidget):
         self.typing = False
         self.muted = False
         self.pinned = False
+        self.draft = False                      # the subtitle is my unsent text: "Draft: ..."
         self._hover = False
 
     def set_data(self, title, subtitle="", time_text="", unread=0, status=None, room=False, dim=False,
@@ -643,6 +658,16 @@ class ConvItem(QWidget):
         p.setPen(QColor(T.ACCENT if self.typing else (T.TEXT if bold else T.MUTED)))
         avail = right - x - badge_w - 8
         sub = "typing..." if self.typing else self.subtitle.replace("\n", " ")
+        if self.draft and not self.typing:
+            df = QFont(sf)
+            df.setBold(True)
+            p.setFont(df)
+            p.setPen(QColor(T.DANGER))
+            p.drawText(QRect(x, 33, avail, 20), Qt.AlignLeft | Qt.AlignVCenter, "Draft:")
+            dw = QFontMetrics(df).horizontalAdvance("Draft: ")
+            x, avail = x + dw, avail - dw
+            p.setFont(sf)
+            p.setPen(QColor(T.MUTED))
         p.drawText(QRect(x, 33, avail, 20), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(sf).elidedText(sub, Qt.ElideRight, avail))
 

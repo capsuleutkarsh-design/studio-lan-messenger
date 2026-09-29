@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.10.0-1d3a7a?style=for-the-badge"></a>
+  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.11.0-1d3a7a?style=for-the-badge"></a>
   <a href="../../actions/workflows/build.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/capsuleutkarsh-design/studio-lan-messenger/build.yml?branch=main&style=for-the-badge&label=tests"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
@@ -20,7 +20,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest release</b></a> ·
   <a href="docs/ADMIN.md"><b>Admin & IT guide</b></a> ·
-  <a href="docs/releases/v1.10.0.md"><b>What's new in 1.10.0</b></a>
+  <a href="docs/releases/v1.11.0.md"><b>What's new in 1.11.0</b></a>
 </p>
 
 <p align="center">
@@ -55,7 +55,9 @@ folders** (image sequences are zipped and extracted in one click). Files reach p
 Paste a **Nuke script** and it becomes a code card with *Copy* and *Save as .nk*. **Shot names** like
 `FAL_030` link to everything said about the shot, and **folder paths** (`\\server\proj\FAL_030\comp`,
 `Z:/plates/...`, a Nuke `####` sequence) become cards that open in Explorer with one click. Pictures sent together
-show as a **gallery** with a full-window viewer.
+show as a **gallery** with a full-window viewer where you can **compare two versions** (wipe or side by side)
+and **draw notes on a frame** before sending it. **Shot status** (WIP → Approved → Delivered) shows next to every
+shot name, and **EXR, DPX and MOV dailies get previews** made by the server.
 View-only **screen sharing** with consent, and a **pipeline API** so the render farm can message you.
 
 </td>

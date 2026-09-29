@@ -161,12 +161,10 @@ class ScreenshotDialog(QDialog):
         head.setTextFormat(Qt.PlainText)
         head.setStyleSheet("font-weight: 700; font-size: 11pt;")
         lay.addWidget(head)
-        preview = QLabel()
+        self.preview = preview = QLabel()
         preview.setAlignment(Qt.AlignCenter)
         preview.setStyleSheet(f"background: {T.BG}; border-radius: 12px; padding: 6px;")
-        pm = QPixmap.fromImage(image)
-        preview.setPixmap(pm.scaled(620, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                          if pm.width() > 620 or pm.height() > 400 else pm)
+        self._show_image()
         lay.addWidget(preview, 1)
         size = QLabel(f"{image.width()} × {image.height()} pixels")
         size.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt;")
@@ -180,6 +178,10 @@ class ScreenshotDialog(QDialog):
         copy.setToolTip("Copy to the clipboard (paste it anywhere)")
         copy.clicked.connect(self._copy)
         row.addWidget(copy)
+        draw = QPushButton("✏  Draw on it")
+        draw.setToolTip("Circle, point at and write on the screenshot before sending it")
+        draw.clicked.connect(self._draw)
+        row.addWidget(draw)
         row.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -195,6 +197,19 @@ class ScreenshotDialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         T.dark_title_bar(self)
+
+    def _show_image(self):
+        pm = QPixmap.fromImage(self.image)
+        self.preview.setPixmap(pm.scaled(620, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                               if pm.width() > 620 or pm.height() > 400 else pm)
+
+    def _draw(self):
+        from client.ui.annotate import AnnotateDialog
+        dlg = AnnotateDialog(self, self.image, send_text="Done")
+        dlg.caption.hide()
+        if dlg.exec():
+            self.image = dlg.image()
+            self._show_image()
 
     def _copy(self):
         QGuiApplication.clipboard().setImage(self.image)

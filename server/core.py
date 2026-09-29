@@ -8,6 +8,7 @@ GUI uses :meth:`ServerCore.call` to run functions there.
 import asyncio
 import base64
 import binascii
+import datetime
 import inspect
 import json
 import logging
@@ -38,6 +39,13 @@ ADMIN_SENDER_ID = 0          # sender id used for announcements made from the se
 
 
 STICKER_RE = re.compile(r"^[a-z0-9_]{1,40}/[0-9]{2,3}\.webp$")
+
+
+def _version_key(v):
+    try:
+        return tuple(int(x) for x in str(v or "").split("."))
+    except ValueError:
+        return ()
 
 
 class ClientError(Exception):
@@ -162,6 +170,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "pins": self.h_pins,
             "mute": self.h_mute,
             "set_pref": self.h_set_pref,
+            "shot_status_set": self.h_shot_status_set,
+            "shot_history": self.h_shot_history,
+            "thumb": self.h_thumb,
             "read_by": self.h_read_by,
             "announcement_reads": self.h_announcement_reads,
             "screen_invite": self.h_screen_invite,
@@ -577,6 +588,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
         session = Session(self, writer, uid, token, addr)
         session.must_change = must_change
         session.version = str(msg.get("version") or "")[:20]
+        session.pc = str(msg.get("pc") or "")[:64]
+        if session.version:
+            self.db.set_client(uid, session.version, session.pc or (addr[0] if addr else ""))
         session.writer_task = self.loop.create_task(session.writer_loop())
         self.tokens[token] = uid
         was_visible = self.visible_status(uid)
@@ -1053,6 +1067,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "muted": self.db.muted_convs(uid),
             "prefs": self.db.prefs(uid),
             "shot_pattern": self.shot_pattern(),
+            "shots": [[r["shot"], r["status"], r["user_id"], r["ts"]] for r in self.db.shot_statuses()],
             "update": self.update_info(),
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
             "trusted_link_hosts": self.trusted_link_hosts(),
@@ -1167,6 +1182,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
             row = self.db.get_message(mid)
             if target != s.user_id:
                 self.push_user(target, {"op": "message", "message": self.msg_for(row, target)})
+                if not thread_root and msg_kind != "system":
+                    self._leave_reply(s.user_id, target, conv_key)
         else:
             self._require_room(target, s.user_id)
             mid = self.db.add_message(conv_key, s.user_id, text, msg_kind, file_id, room_id=target,
@@ -1761,17 +1778,133 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     # Personal settings kept on the server, so they follow a person to any PC (studio PCs are often rented):
     # chats pinned to the top, focus time, and whether the welcome tour was seen.
-    PREF_KEYS = {"pinned_chats", "focus", "tour_done"}
+    PREF_KEYS = {"pinned_chats", "focus", "tour_done", "saved", "meeting_status"}
+    PREF_LIMITS = {"saved": 60000}          # "Save for later": up to ~200 messages with a short preview
 
     def h_set_pref(self, s, req):
         key = req.get("key")
         if key not in self.PREF_KEYS:
             raise ClientError("Unknown setting")
         value = req.get("value")
-        if len(json.dumps(value)) > 4000:
+        if len(json.dumps(value)) > self.PREF_LIMITS.get(key, 4000):
             raise ClientError("Setting too large")
         self.db.set_pref(s.user_id, key, value)
         self.push_user(s.user_id, {"op": "pref", "key": key, "value": value}, exclude=s)
+
+    # ---- leave: one automatic answer a day to each person who writes
+    def _leave_reply(self, sender_id, target, conv_key):
+        text = self.leave_auto_reply(target)
+        if not text:
+            return
+        day = datetime.date.today().isoformat()
+        sent = self.__dict__.setdefault("_leave_replied", {})
+        if sent.get((target, sender_id)) == day:
+            return
+        sent[(target, sender_id)] = day
+        body = f"🌴 Automatic reply from {self._user_name(target)}: {text}"
+        mid = self.db.add_message(conv_key, target, body, kind="system", recipient_id=sender_id, delivered=True)
+        self.db._exec("UPDATE messages SET read_at=? WHERE id=?", time.time(), mid)     # never "unread"
+        row = self.db.get_message(mid)
+        for uid in (sender_id, target):
+            self.push_user(uid, {"op": "message", "message": self.msg_for(row, uid)})
+
+    # ---- shot status: set from a chat, the same for everyone
+    def h_shot_status_set(self, s, req):
+        shot = str(req.get("shot") or "").strip()
+        status = req.get("status")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{2,40}", shot):
+            raise ClientError("Not a shot name")
+        if status not in P.SHOT_STATUS:
+            raise ClientError("Unknown status")
+        conv = req.get("conv") or ""
+        mid = None
+        emoji, label = P.SHOT_STATUS[status]
+        text = f"{self._user_name(s.user_id)} set {shot} to {emoji} {label}"
+        if conv:
+            kind, target, key = self._internal_conv(s, conv)
+            if kind == "r":
+                self._require_room(target, s.user_id)
+                self._room_system_message(target, s.user_id, text)
+            elif target != s.user_id:
+                mid = self.db.add_message(key, s.user_id, text, kind="system", recipient_id=target, delivered=True)
+                row = self.db.get_message(mid)
+                for uid in (s.user_id, target):
+                    self.push_user(uid, {"op": "message", "message": self.msg_for(row, uid)})
+        self.db.add_shot_status(shot, status, s.user_id, conv, mid)
+        self.push_all({"op": "shot_status", "shot": shot, "status": status, "user_id": s.user_id,
+                       "ts": time.time()})
+        self.audit(self._user_name(s.user_id), "shot status", shot, label)
+
+    def h_shot_history(self, s, req):
+        shot = str(req.get("shot") or "").strip()[:40]
+        return {"shot": shot, "history": [{"status": r["status"], "user_id": r["user_id"],
+                                           "name": self._user_name(r["user_id"]), "ts": r["ts"]}
+                                          for r in self.db.shot_history(shot)]}
+
+    # ---- EXR / MOV / DPX previews: made on the server (it has the file) with ffmpeg, kept small
+    THUMB_EXT = {".exr", ".dpx", ".tif", ".tiff", ".tga", ".psd", ".mov", ".mp4", ".m4v", ".avi", ".mkv",
+                 ".mxf", ".webm", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+    VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".mxf", ".webm"}
+
+    async def h_thumb(self, s, req):
+        file_id = str(req.get("file_id") or "")
+        size = 1280 if int(req.get("size") or 320) > 400 else 320
+        f = self.db.get_file(file_id)
+        if not f or not f["complete"] or not self.db.can_access_file(s.user_id, file_id):
+            raise ClientError("File not found")
+        if f["purged"] or not os.path.exists(f["path"]):
+            raise ClientError("File was removed from the server")
+        ext = os.path.splitext(f["name"])[1].lower()
+        if ext not in self.THUMB_EXT:
+            raise ClientError("No preview for this kind of file")
+        out = await self.loop.run_in_executor(None, self._make_thumb, f["path"], file_id, ext, size)
+        if not out:
+            raise ClientError("No preview")
+        with open(out, "rb") as fh:
+            return {"file_id": file_id, "size": size, "data": base64.b64encode(fh.read()).decode()}
+
+    @staticmethod
+    def ffmpeg_path():
+        """ffmpeg.exe next to the server program (installed), or the developer's imageio-ffmpeg copy."""
+        here = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ""
+        for p in ([os.path.join(here, "ffmpeg.exe")] if here else []):
+            if os.path.exists(p):
+                return p
+        try:
+            import importlib
+            return importlib.import_module("imageio_ffmpeg").get_ffmpeg_exe()
+        except Exception:                                    # noqa: BLE001 - no previews, nothing else breaks
+            return None
+
+    def _make_thumb(self, src, file_id, ext, size):
+        import subprocess
+        folder = os.path.join(self.config.storage_dir, ".thumbs")
+        os.makedirs(folder, exist_ok=True)
+        safe = "".join(c for c in file_id if c.isalnum() or c in "-_")[:64]
+        out = os.path.join(folder, f"{safe}_{size}.jpg")
+        if os.path.exists(out) and os.path.getsize(out):
+            return out
+        exe = self.ffmpeg_path()
+        if not exe:
+            return None
+        scale = f"scale='min({size},iw)':-2"
+        tries = []
+        if ext in self.VIDEO_EXT:
+            tries = [["-ss", "1"], []]                   # skip a black first frame; a short clip: from the start
+        elif ext == ".exr":
+            tries = [["-apply_trc", "iec61966_2_1"], []]  # linear EXR shown as it looks on screen (sRGB)
+        else:
+            tries = [[]]
+        for pre in tries:
+            cmd = [exe, "-v", "error", "-y"] + pre + ["-i", src, "-frames:v", "1", "-vf", scale, "-q:v", "4", out]
+            try:
+                subprocess.run(cmd, timeout=60, capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if os.path.exists(out) and os.path.getsize(out):
+                return out
+        return None
 
     def shot_pattern(self):
         """The admin's shot name pattern (Settings), or "" when it is off or not a valid regular expression."""
@@ -1955,7 +2088,14 @@ class ServerCore(PlannerMixin, CalendarMixin):
             d["uploaded"] += nbytes
         rooms = [{"room": r["name"], "messages": r["n"]} for r in self.db.room_activity(since)]
         daily = [{"day": r[0], "messages": r[1]} for r in self.db.daily_counts(since)]
-        return {"days": days, "total_messages": sum(msgs.values()),
+        cutoff = time.time() - 30 * 86400
+        online = {u["username"] for u in users if self.sessions.get(u["id"])}
+        inactive = sorted(({"name": p["name"], "username": p["username"], "department": p["department"],
+                            "last_seen": p["last_seen"]} for p in people
+                           if not p["disabled"] and p["username"] != "admin" and p["username"] not in online
+                           and (not p["last_seen"] or p["last_seen"] < cutoff)),
+                          key=lambda p: p["last_seen"] or 0)
+        return {"days": days, "total_messages": sum(msgs.values()), "inactive": inactive,
                 "total_files": sum(v[0] for v in files.values()),
                 "total_uploaded": sum(v[1] for v in files.values()),
                 "active_users": sum(1 for p in people if p["messages"] or p["files"]),
@@ -2010,7 +2150,34 @@ class ServerCore(PlannerMixin, CalendarMixin):
         for sessions in self.sessions.values():
             for s in sessions:
                 versions[s.version or "older than 1.6.2"] = versions.get(s.version or "older than 1.6.2", 0) + 1
-        return {"folder": self.updates_dir, "latest": self.update_info(), "versions": versions}
+        people = []
+        for u in self.db.list_users():
+            if u["username"] == self.BOT_USERNAME or u["disabled"] or u["deleted"]:
+                continue
+            live = [s.version for s in self.sessions.get(u["id"], ()) if getattr(s, "token", None)]
+            version = (max(live, key=_version_key) if live else "") or u["client_version"] or ""
+            if u["username"] == "admin" and not version and not live:
+                continue                          # the console's built-in account, never used on a PC
+            if live and not version:
+                version = "older"                 # Quillo before 1.6.2 does not say its version
+            people.append({"name": u["display_name"], "username": u["username"], "department": u["department"],
+                           "version": version, "pc": u["client_pc"] or "",
+                           "seen": u["client_seen"] or u["last_seen"], "online": bool(live)})
+        return {"folder": self.updates_dir, "latest": self.update_info(), "versions": versions, "people": people}
+
+    def admin_remind_update(self):
+        """Show the update bar again on every signed-in PC that is still on an older Quillo."""
+        info = self.update_info()
+        if not info:
+            raise ValueError("Publish a client update first (Publish client update...)")
+        newest, n = _version_key(info["version"]), 0
+        for sessions in list(self.sessions.values()):
+            for s in list(sessions):
+                if getattr(s, "token", None) and _version_key(s.version) < newest:
+                    s.send({"op": "update_available", "update": info, "reminder": True})
+                    n += 1
+        self.audit("admin", "update reminder", info["version"], f"{n} PCs")
+        return {"reminded": n}
 
     # ---- holidays from the console
     def admin_holidays(self, year):
@@ -2099,7 +2266,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                  "admin_delete_department", "admin_storage", "admin_cleanup_files", "admin_set_room_retention",
                  "admin_check_updates", "admin_import_users", "admin_holidays", "admin_holiday_save",
                  "admin_holiday_delete", "admin_holiday_observe", "admin_holiday_add_year",
-                 "admin_holidays_import", "safe_copy_now"}
+                 "admin_holidays_import", "safe_copy_now", "admin_remind_update"}
 
     def h_admin_call(self, s, req):
         row = self.db.get_user(s.user_id)
