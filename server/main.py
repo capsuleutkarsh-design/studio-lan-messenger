@@ -125,6 +125,7 @@ def run_remote_console(host, port, note=""):
     app.setApplicationName("Quillo Server console")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
+    theme.round_popups(app)                  # round menu corners (theme.apply ran before the app existed)
     from common import crash
     log_file = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "LANMessenger", "console.log")
     try:
@@ -214,6 +215,7 @@ def main():
     app.setApplicationName("Quillo Server")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
+    theme.round_popups(app)                  # round menu corners (theme.apply ran before the app existed)
     if not licence.check_startup():
         sys.exit(3)
     win = ServerWindow(LocalApi(core), start_minimized=args.minimized)

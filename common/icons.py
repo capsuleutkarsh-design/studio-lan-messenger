@@ -86,7 +86,63 @@ _OUTLINE = {
                 '<path d="M16 3v4"/><path d="M8 14h2"/><path d="M14 14h2"/><path d="M8 17h2"/>',
     "zap": '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
     "at": '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
+    # 1.12: outline versions of the PyBlackBox files (search, attachment, more_options, send, settings,
+    # emoticons) - an outline entry wins over the file, so the whole app draws one icon family
+    "search": '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/>',
+    "attachment": '<path d="M20.5 11.2l-8.4 8.4a5.2 5.2 0 0 1-7.4-7.4l8.6-8.6a3.5 3.5 0 0 1 4.9 4.9l-8.5 8.6'
+                  'a1.7 1.7 0 0 1-2.5-2.5l7.9-7.9"/>',
+    "more_options": '<circle cx="5.5" cy="12" r="0.9" fill="#fff"/><circle cx="12" cy="12" r="0.9" fill="#fff"/>'
+                    '<circle cx="18.5" cy="12" r="0.9" fill="#fff"/>',
+    "more_vert": '<circle cx="12" cy="5.5" r="0.9" fill="#fff"/><circle cx="12" cy="12" r="0.9" fill="#fff"/>'
+                 '<circle cx="12" cy="18.5" r="0.9" fill="#fff"/>',
+    "send": '<path d="M4.5 12L3 4.2 21 12 3 19.8z"/><path d="M4.5 12H11"/>',
+    "settings": '<path d="M18.9 12.8L20.9 14.1L19.8 16.8L17.4 16.3L16.3 17.4L16.8 19.8L14.1 20.9L12.8 18.9'
+                'L11.2 18.9L9.9 20.9L7.2 19.8L7.7 17.4L6.6 16.3L4.2 16.8L3.1 14.1L5.1 12.8L5.1 11.2L3.1 9.9'
+                'L4.2 7.2L6.6 7.7L7.7 6.6L7.2 4.2L9.9 3.1L11.2 5.1L12.8 5.1L14.1 3.1L16.8 4.2L16.3 6.6'
+                'L17.4 7.7L19.8 7.2L20.9 9.9L18.9 11.2z"/><circle cx="12" cy="12" r="3"/>',
+    "emoticons": '<circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/>'
+                 '<path d="M9 9.5h.01M15 9.5h.01"/>',
+    # meanings that had no icon of their own
+    "screenshot": '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6'
+                  'a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/>',
+    "crop": '<path d="M7 3v12a2 2 0 0 0 2 2h12"/><path d="M3 7h12a2 2 0 0 1 2 2v12"/>',
+    "camera": '<path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h2L9 4h6l1.5 2h2A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13'
+              'A2.5 2.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.5"/>',
+    "time": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+    "recent": '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 3.8v4.6h4.6"/><path d="M12 8v4.5l3 2"/>',
+    "bell_off": '<path d="M6 16v-5a6 6 0 0 1 9.4-4.9"/><path d="M18 11.5V16l2 2H4l2-2"/><path d="M10 21h4"/>'
+                '<path d="M3.5 3.5l17 17"/>',
+    "on_top": '<rect x="8" y="3" width="13" height="11" rx="2"/>'
+              '<path d="M16 17v1.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V11a2 2 0 0 1 2-2h1"/>',
+    "moon": '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>',
+    "target": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12h.01"/>',
+    "hdd": '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.5 13L8 5h8l2.5 8"/>'
+           '<path d="M7 16.5h.01M11 16.5h3"/>',
+    "cake": '<path d="M4 21h16"/><path d="M5 21v-7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v7"/>'
+            '<path d="M5 16.5c1.2 1 2.3 1 3.5 0s2.3-1 3.5 0 2.3 1 3.5 0 2.3-1 3.5 0"/><path d="M12 12V8.5"/>'
+            '<path d="M12 5.8c.9-.8.9-1.8 0-2.8-.9 1-.9 2 0 2.8z"/>',
+    "gift": '<rect x="3.5" y="8" width="17" height="4" rx="1"/><path d="M5 12v7.5A1.5 1.5 0 0 0 6.5 21h11'
+            'a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M12 8v13"/><path d="M12 8C10.5 4.5 7 3.8 7 5.9 7 7.2 9 8 12 8z'
+            'M12 8c1.5-3.5 5-4.2 5-2.1C17 7.2 15 8 12 8z"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4'
+           'M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+    "palm": '<path d="M11 21c.3-3.8 1-7 2.5-10"/><path d="M13.5 11C12 7.8 8.5 6.8 5 8.2c3.2-.1 5.8.9 8.5 2.8z"/>'
+            '<path d="M13.5 11c.8-3.5 4.2-5.2 7.5-4-3.1.4-5.5 1.6-7.5 4z"/><path d="M13.5 11c-2.6-1-5.6-.2-7.5 2.5"/>'
+            '<path d="M13.5 11c2.5-.6 4.8.5 6.2 2.8"/><path d="M7 21h10"/>',
+    "note": '<path d="M5 4h14a1 1 0 0 1 1 1v9l-6 6H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>'
+            '<path d="M14 20v-5a1 1 0 0 1 1-1h5"/><path d="M8 9h8M8 12.5h4"/>',
+    "event": '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17"/><path d="M8 3v4"/>'
+             '<path d="M16 3v4"/><rect x="12.5" y="13.5" width="4" height="3.5" rx="1"/>',
 }
+# other names for the same drawing, so call sites can use the plain word
+_ALIASES = {"attach": "attachment", "paperclip": "attachment", "more": "more_options", "gear": "settings",
+            "emoji": "emoticons", "history": "recent", "focus": "target", "mute": "bell_off",
+            "holiday": "sun", "leave": "palm", "birthday": "cake", "anniversary": "gift", "storage": "hdd"}
+
+
+def names():
+    """Every icon name icon() draws in the outline style (plus the aliases above)."""
+    return sorted(set(_OUTLINE) | set(_ALIASES))
 
 
 def assets_dir() -> str:
@@ -117,6 +173,7 @@ def logo_widget(size: int):
 
 @lru_cache(maxsize=None)
 def _svg_bytes(name: str) -> bytes:
+    name = _ALIASES.get(name, name)
     if name in _OUTLINE:
         return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
                 'stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'

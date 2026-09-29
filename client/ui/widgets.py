@@ -5,11 +5,14 @@ import html
 import os
 import re
 
-from PySide6.QtCore import QObject, QRect, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolButton, QWidget
 
 from common import theme as T
+from common.fmt import (  # noqa: F401 - the shared text/date helpers, re-exported for the client UI
+    DASH, ELLIPSIS, SEP, clip, day_word, fmt_date, fmt_range, fmt_time, fmt_time_range, fmt_when, menu_text,
+)
 from common.icons import icon
 
 
@@ -37,6 +40,7 @@ def first_name(name, fallback="them") -> str:
 
 
 def fmt_list_time(ts):
+    """The time column of a list: '16:05' today, 'Yesterday', 'Tue' this week, then '29 Sep' ('29 Sep 2025')."""
     if not ts:
         return ""
     d = datetime.datetime.fromtimestamp(ts)
@@ -47,17 +51,12 @@ def fmt_list_time(ts):
         return "Yesterday"
     if (today - d.date()).days < 7:
         return d.strftime("%a")
-    return d.strftime("%d/%m/%y")
+    return fmt_date(d, weekday=False)
 
 
 def fmt_day(ts):
-    d = datetime.datetime.fromtimestamp(ts).date()
-    today = datetime.date.today()
-    if d == today:
-        return "Today"
-    if (today - d).days == 1:
-        return "Yesterday"
-    return d.strftime("%A, %d %B %Y")
+    """A day heading in a chat: 'Today', 'Yesterday', 'Tuesday 29 September' ('... 2025' in another year)."""
+    return day_word(ts) if day_word(ts) in ("Today", "Yesterday") else fmt_date(ts, long=True)
 
 
 def fmt_last_seen(ts):
@@ -67,6 +66,40 @@ def fmt_last_seen(ts):
     if d.date() == datetime.date.today():
         return f"Last seen today at {d:%H:%M}"
     return f"Last seen {fmt_list_time(ts).lower() if fmt_list_time(ts) == 'Yesterday' else fmt_list_time(ts)}"
+
+
+def ui_font(size=T.FONT_M, bold=False, weight=None, italic=False, zoom=1.0):
+    """The app font for painted widgets at a scale size in pt (T.FONT_S ...), set in pixels like the rest of the
+    painted UI: ui_font(T.FONT_S, bold=True)."""
+    f = QFont("Segoe UI")
+    f.setPixelSize(T.px(size, zoom))
+    if weight is not None:
+        f.setWeight(weight)
+    elif bold:
+        f.setBold(True)
+    f.setItalic(italic)
+    return f
+
+
+def popup_pos(anchor, size, above=False, align_right=True, gap=6):
+    """Where (global top-left) to open a pop-up or menu of `size` from the button `anchor`: below it (above=True:
+    above it), right edges lined up (align_right=False: left edges), flipped and nudged to stay on the anchor's
+    screen. For a menu: menu.exec(popup_pos(button, menu.sizeHint(), above=True))."""
+    top_left = anchor.mapToGlobal(QPoint(0, 0))
+    r = QRect(top_left, anchor.size())
+    w, h = size.width(), size.height()
+    x = r.right() - w + 1 if align_right else r.left()
+    y = r.top() - h - gap if above else r.bottom() + 1 + gap
+    screen = anchor.screen()
+    if screen is not None:
+        area = screen.availableGeometry()
+        if above and y < area.top():
+            y = r.bottom() + 1 + gap              # no room above: open below instead
+        elif not above and y + h > area.bottom() + 1:
+            y = r.top() - h - gap                 # no room below: open above instead
+        x = max(area.left(), min(x, area.right() + 1 - w))
+        y = max(area.top(), min(y, area.bottom() + 1 - h))
+    return QPoint(x, y)
 
 
 # web links, and studio paths: \\server\share\..., //server/share/... (Nuke), X:\... or X:/...;
@@ -420,8 +453,11 @@ class Avatar(QWidget):
 
 # ------------------------------------------------------------ icon button
 class IconButton(QToolButton):
+    """A round icon-only button. hover_bg / press_bg: the hover and pressed backgrounds, for buttons on a
+    fixed-colour surface (the dark image viewer) where the theme's own hover colour would vanish."""
+
     def __init__(self, icon_name, tooltip="", size=36, icon_size=18, color=None, hover=None,
-                 round_=True, parent=None):
+                 round_=True, parent=None, hover_bg=None, press_bg=None):
         super().__init__(parent)
         color, hover = color or T.MUTED, hover or T.TEXT
         self.icon_name, self.color, self.hover_color, self.isz = icon_name, color, hover, icon_size
@@ -433,8 +469,8 @@ class IconButton(QToolButton):
         r = size // 2 if round_ else 10
         self.setStyleSheet(f"""
             QToolButton {{ background: transparent; border: none; border-radius: {r}px; }}
-            QToolButton:hover {{ background: {T.SURFACE_HOVER}; }}
-            QToolButton:pressed {{ background: {T.BORDER}; }}
+            QToolButton:hover {{ background: {hover_bg or T.SURFACE_HOVER}; }}
+            QToolButton:pressed {{ background: {press_bg or T.BORDER}; }}
             QToolButton::menu-indicator {{ image: none; }}""")
 
     def enterEvent(self, e):
@@ -447,24 +483,39 @@ class IconButton(QToolButton):
 
 
 class RailButton(QToolButton):
-    """Navigation button: icon with a small label; the active one gets an accent pill and a side marker."""
+    """Navigation button: icon with a small label; the active one gets an accent pill and a side marker.
+
+    A button without a label is a toggle (keep on top, compact view): when on it shows an accent icon on a soft
+    pill but no side marker, so only the page you are on looks selected."""
 
     W, H = 72, 58
+    H_COMPACT = 46
 
     def __init__(self, icon_name, tooltip, label="", parent=None):
         super().__init__(parent)
         self.icon_name = icon_name
         self.label = label
         self.badge = 0
+        self.badge_kind = "alert"
+        self.compact = False
         self.setCheckable(True)
-        self.setFixedSize(self.W, self.H if label else 46)
+        self.setFixedSize(self.W, self.H if label else self.H_COMPACT)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(tooltip)
         self._hover = False
 
-    def set_badge(self, n):
-        self.badge = n
+    def set_badge(self, n, kind="alert"):
+        """A count on the button: kind 'alert' (red: unread for you, failed) or 'neutral' (accent: work in
+        progress, like active transfers) - see T.badge_colors."""
+        self.badge, self.badge_kind = n, kind
         self.update()
+
+    def set_compact(self, on):
+        """Short windows: hide the label (the tooltip still names the page) so the rail needs less height."""
+        if self.compact != bool(on):
+            self.compact = bool(on)
+            self.setFixedSize(self.W, self.H if self.label and not self.compact else self.H_COMPACT)
+            self.update()
 
     def enterEvent(self, e):
         self._hover = True
@@ -479,11 +530,15 @@ class RailButton(QToolButton):
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         on = self.isChecked()
-        pill = QRectF((self.W - 44) / 2, 4, 44, 32 if self.label else 38)
-        if on:
+        show_label = bool(self.label) and not self.compact
+        pill = QRectF((self.W - 44) / 2, 4, 44, 32 if show_label else 38)
+        if on and self.label:                     # the page you are on
             p.setBrush(QColor(T.ACCENT))
             p.drawRoundedRect(QRectF(0, pill.top() + 6, 3, pill.height() - 12), 1.5, 1.5)
             p.setBrush(QColor(T.ACCENT_SOFT))
+            p.drawRoundedRect(pill, 10, 10)
+        elif on:                                  # a toggle that is on
+            p.setBrush(QColor(T.SURFACE_HOVER))
             p.drawRoundedRect(pill, 10, 10)
         elif self._hover:
             p.setBrush(QColor(T.SURFACE_HOVER))
@@ -491,7 +546,7 @@ class RailButton(QToolButton):
         color = T.ACCENT if on else (T.TEXT if self._hover else T.MUTED)
         pm = icon(self.icon_name, color, 20).pixmap(20, 20)
         p.drawPixmap(int(pill.center().x()) - 10, int(pill.center().y()) - 10, pm)
-        if self.label:
+        if show_label:
             f = QFont("Segoe UI")
             f.setPixelSize(10)
             f.setBold(on)
@@ -506,10 +561,11 @@ class RailButton(QToolButton):
             p.setFont(f)
             w = max(18, QFontMetrics(f).horizontalAdvance(text) + 8)
             b = QRectF(pill.right() - w / 2 - 2, pill.top() - 3, w, 18)
-            p.setBrush(QColor(T.DANGER))
+            bg, fg = T.badge_colors(self.badge_kind)
+            p.setBrush(QColor(bg))
             p.setPen(QPen(QColor(T.RAIL), 2))
             p.drawRoundedRect(b, 9, 9)
-            p.setPen(QColor("#ffffff"))
+            p.setPen(QColor(fg))
             p.drawText(b, Qt.AlignCenter, text)
 
 
@@ -521,6 +577,15 @@ class MeButton(QToolButton):
         self.setFixedSize(RailButton.W, 52)
         self.setCursor(Qt.PointingHandCursor)
         self.name, self.status, self.uid = "", "online", None
+        self._hover = False
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
 
     def set_me(self, name, status, tooltip="", uid=None):
         self.name, self.status, self.uid = name, status, uid
@@ -529,8 +594,13 @@ class MeButton(QToolButton):
 
     def paintEvent(self, _):
         p = QPainter(self)
+        if self._hover:                           # a soft halo, like the rail buttons' hover pill
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T.SURFACE_HOVER))
+            p.drawEllipse(QRect((self.width() - 48) // 2, 2, 48, 48))
         paint_avatar(p, QRect((self.width() - 40) // 2, 6, 40, 40), self.name, self.name,
-                     status=self.status, ring=T.RAIL, uid=self.uid)
+                     status=self.status, ring=T.SURFACE_HOVER if self._hover else T.RAIL, uid=self.uid)
 
 
 # -------------------------------------------------------------- list item
@@ -540,6 +610,7 @@ class ConvItem(QWidget):
     context = Signal(str, object)
 
     HEIGHT = 64
+    INSET = 16          # avatar's left edge; text starts at INSET + 56 (set 4 on Home cards to line up)
 
     def __init__(self, conv, parent=None):
         super().__init__(parent)
@@ -597,18 +668,19 @@ class ConvItem(QWidget):
             bg = T.ACCENT_SOFT
         elif self._hover:
             bg = T.SURFACE
+        edge = max(0, self.INSET - 10)
         if bg != T.PANEL:
             p.setBrush(QColor(bg))
-            p.drawRoundedRect(QRectF(6, 2, w - 12, self.HEIGHT - 4), 12, 12)
+            p.drawRoundedRect(QRectF(edge, 2, w - 2 * edge, self.HEIGHT - 4), 12, 12)
         if self.dim:
             p.setOpacity(0.5)
         uid = int(self.conv[2:]) if self.conv.startswith("u:") else None
-        paint_avatar(p, QRect(16, 10, 44, 44), self.title, self.conv if self.room else self.title,
+        paint_avatar(p, QRect(self.INSET, 10, 44, 44), self.title, self.conv if self.room else self.title,
                      self.room, self.status, bg, uid)
         p.setOpacity(1)
         bold = bool(self.unread) and not self.muted
 
-        right = w - 18
+        right = w - edge - 12
         f = QFont("Segoe UI")
         f.setPixelSize(11)
         f.setBold(bold)
@@ -616,14 +688,14 @@ class ConvItem(QWidget):
         time_w = 0
         if self.time:
             time_w = QFontMetrics(f).horizontalAdvance(self.time) + 6
-            p.setPen(QColor(T.ACCENT if bold else T.FAINT))
+            p.setPen(QColor(T.ACCENT if bold else T.META))
             p.drawText(QRect(right - time_w, 12, time_w, 18), Qt.AlignRight | Qt.AlignVCenter, self.time)
         if self.muted:
             time_w += 18
-            p.drawPixmap(right - time_w + 2, 14, icon("bell", T.FAINT, 13).pixmap(13, 13))
+            p.drawPixmap(right - time_w + 2, 14, icon("bell_off", T.META, 13).pixmap(13, 13))
         if self.pinned:
             time_w += 18
-            p.drawPixmap(right - time_w + 2, 14, icon("pin", T.FAINT, 13).pixmap(13, 13))
+            p.drawPixmap(right - time_w + 2, 14, icon("pin", T.META, 13).pixmap(13, 13))
 
         badge_w = 0
         if self.unread:
@@ -634,13 +706,14 @@ class ConvItem(QWidget):
             badge_w = max(20, QFontMetrics(bf).horizontalAdvance(text) + 12)
             b = QRectF(right - badge_w, 34, badge_w, 20)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T.SURFACE_HOVER if self.muted else T.ACCENT))
+            bg_badge, fg_badge = T.badge_colors("muted" if self.muted else "neutral")
+            p.setBrush(QColor(bg_badge))
             p.drawRoundedRect(b, 10, 10)
             p.setFont(bf)
-            p.setPen(QColor(T.MUTED if self.muted else T.ACCENT_TEXT))
+            p.setPen(QColor(fg_badge))
             p.drawText(b, Qt.AlignCenter, text)
 
-        x = 72
+        x = self.INSET + 56
         if self.dim:
             p.setOpacity(0.6)
         nf = QFont("Segoe UI")
@@ -657,7 +730,7 @@ class ConvItem(QWidget):
         p.setFont(sf)
         p.setPen(QColor(T.ACCENT if self.typing else (T.TEXT if bold else T.MUTED)))
         avail = right - x - badge_w - 8
-        sub = "typing..." if self.typing else self.subtitle.replace("\n", " ")
+        sub = "typing…" if self.typing else self.subtitle.replace("\n", " ")
         if self.draft and not self.typing:
             df = QFont(sf)
             df.setBold(True)
@@ -728,10 +801,87 @@ class SectionLabel(QLabel):
         if sub:
             super().__init__(text, parent)
             self.setTextFormat(Qt.PlainText)
-            self.setStyleSheet(f"color: {T.FAINT}; font-size: 8.5pt; font-weight: 600;"
+            self.setStyleSheet(f"color: {T.META}; font-size: 8.5pt; font-weight: 600;"
                                " padding: 8px 18px 2px 26px;")
         else:
             super().__init__(text.upper(), parent)
             self.setTextFormat(Qt.PlainText)
             self.setStyleSheet(f"color: {T.MUTED}; font-size: 7.5pt; font-weight: 700;"
                                " padding: 14px 18px 4px 18px; letter-spacing: 1px;")
+
+
+class ElidedLabel(QLabel):
+    """One line of plain text that ends in '…' when it doesn't fit; the whole text is then its tooltip.
+
+    Use it for titles, subtitles, file names and paths that sit next to other things in a row. text() returns
+    the whole text. It asks for room for the whole text but can shrink to a few letters, so give the column it
+    sits in the stretch (layout.addWidget(label, 1)). mode: Qt.ElideRight (default), Qt.ElideMiddle for paths
+    and file names (the end says which file), Qt.ElideLeft."""
+
+    def __init__(self, text="", parent=None, mode=Qt.ElideRight):
+        super().__init__(parent)
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(False)
+        self._full, self._mode, self._tip = "", mode, ""
+        self.setText(text)
+
+    # ---- the whole text
+    def setText(self, text):
+        self._full = " ".join(str(text or "").splitlines())
+        self._refresh()
+        self.updateGeometry()
+
+    def text(self):
+        return self._full
+
+    def shown_text(self):
+        """What is painted right now (the whole text, or its cut version)."""
+        return super().text()
+
+    def is_elided(self):
+        return super().text() != self._full
+
+    def set_elide_mode(self, mode):
+        self._mode = mode
+        self._refresh()
+
+    def setToolTip(self, tip):
+        """A tooltip of your own wins; without one the whole text shows when it is cut."""
+        self._tip = tip or ""
+        self._refresh_tip()
+
+    # ---- sizes: ask for the whole text, accept a few letters
+    def sizeHint(self):
+        s = super().sizeHint()
+        fm = self.fontMetrics()
+        extra = fm.horizontalAdvance(self._full) - fm.horizontalAdvance(super().text())
+        return QSize(s.width() + max(0, extra), s.height())
+
+    def minimumSizeHint(self):
+        s = super().minimumSizeHint()
+        fm = self.fontMetrics()
+        chrome = max(0, s.width() - fm.horizontalAdvance(super().text()))   # margins, padding, indent
+        return QSize(chrome + fm.horizontalAdvance("M" + ELLIPSIS), s.height())
+
+    # ---- keep the cut in step with the width and the font
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._refresh()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._refresh()
+            self.updateGeometry()
+
+    def _refresh(self):
+        avail = self.contentsRect().width() - 2 * self.margin() - max(0, self.indent())
+        shown = self.fontMetrics().elidedText(self._full, self._mode, max(0, avail))
+        if shown != super().text():
+            super().setText(shown)
+        self._refresh_tip()
+
+    def _refresh_tip(self):
+        tip = self._tip or (rich_safe(self._full) if self.is_elided() else "")
+        if tip != self.toolTip():
+            super().setToolTip(tip)

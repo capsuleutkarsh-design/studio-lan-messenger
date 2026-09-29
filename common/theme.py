@@ -84,14 +84,24 @@ RAIL = BG = PANEL = SURFACE = SURFACE_HOVER = BORDER = TEXT = MUTED = FAINT = ""
 BUBBLE_OTHER = INPUT_FOCUS_BG = TINT = TOOLTIP = SCROLL = SCROLL_HOVER = DANGER = WARN_BG = WARN_TEXT = ""
 ACCENT = ACCENT_TEXT = ACCENT_HOVER = ACCENT_SOFT = ACCENT_FOCUS = BUBBLE_ME = ""
 HAIR = ""          # a soft hairline, halfway between BORDER and PANEL - edges you notice without seeing
+# Text colours by job: TEXT for content, MUTED for secondary lines, META for small information people still need
+# to read (times, sub-labels, hints, dates; 4.5:1 on PANEL, BG and SURFACE), FAINT only for decoration and
+# disabled text (it is below 4.5:1 - and it colours the licence line, which must stay as it is).
+META = ""
+FLOAT_BORDER = ""  # the edge of floating surfaces (menus, pop-ups, drop-down lists): firmer than HAIR
+CONTROL_EDGE = ""  # the outline of unticked check boxes (SCROLL alone nearly vanishes on the light theme)
+# Count badges: neutral (ACCENT - active transfers, unread in a quiet chat), alert (DANGER - unread for you,
+# failed), muted (a muted chat). See badge_colors().
+BADGE_BG = BADGE_TEXT = BADGE_ALERT_BG = BADGE_ALERT_TEXT = BADGE_MUTED_BG = BADGE_MUTED_TEXT = ""
 
 STATUS_COLORS = {
     "online": "#3ecf6e",
     "away": "#ffa24c",
     "busy": "#ff4d5e",
     "invisible": "#8a8f99",
-    "offline": "#5a6070",
+    "offline": "#5a6070",          # light themes; apply() swaps in OFFLINE_DARK on dark ones
 }
+OFFLINE_DARK = "#7c859c"           # the dark grey vanished on navy / black panels (2.7:1)
 STATUS_LABELS = {
     "online": "Online",
     "away": "Away",
@@ -100,8 +110,39 @@ STATUS_LABELS = {
     "offline": "Offline",
 }
 
-AVATAR_COLORS = ["#7c6cf0", "#12b886", "#3b8cf0", "#f0764a", "#e0445a", "#e64f9c",
-                 "#15aabf", "#f2a73b", "#9775fa", "#20c997", "#fa8c6c", "#4dabf7"]
+# Twelve clearly different hues, each dark enough for white initials (3.4:1 or more). Everyone keeps their place in
+# the list, so a person's colour only shifts shade (the three oranges became orange, olive and indigo).
+AVATAR_COLORS = ["#7c6cf0", "#129f5d", "#3b8cf0", "#e25a1c", "#e0445a", "#e64f9c",
+                 "#0f98b4", "#bf7d0a", "#a35bd0", "#0d9c89", "#649926", "#4c5fd6"]
+
+# ------------------------------------------------------------------ type, spacing and corner scale
+# Use these in new or touched code instead of one-off numbers (callers are moved over as they are edited).
+# Text sizes are in pt for style sheets - pt(FONT_S) gives "9pt" - and px(FONT_S) gives pixels for QPainter
+# fonts (QFont.setPixelSize). Settings > Text size scales the whole app through QT_SCALE_FACTOR, so the sizes need
+# no zoom of their own; chat zoom (Ctrl + / Ctrl -) passes its factor: pt(FONT_BODY, zoom=pct / 100).
+FONT_XS = 8        # section captions (upper case, letter-spaced), badges
+FONT_S = 9         # meta: times, sub-labels, hints, chips
+FONT_M = 10        # controls and ordinary text (the style sheet's default)
+FONT_BODY = 10.5   # message text
+FONT_L = 11.5      # card, pop-up and dialog titles
+FONT_XL = 13       # panel titles (chat header name)
+FONT_XXL = 15      # page headings (QLabel[heading="true"])
+# Spacing: a 4 px step. Gutters: 16 inside the sidebar, 24 around pages and chats.
+SPACE_XS, SPACE_S, SPACE_M, SPACE_L, SPACE_XL, SPACE_XXL = 4, 8, 12, 16, 20, 24
+GUTTER, PAGE_GUTTER = 16, 24
+# Corners: 6 small bits (check boxes, quotes, tags), 10 rows / icon buttons / menu items, 12 inputs and buttons,
+# 14 menus, cards and pop-ups, 18 message bubbles and big panels. A pill is height // 2.
+RADIUS_S, RADIUS_M, RADIUS_CONTROL, RADIUS_L, RADIUS_XL = 6, 10, 12, 14, 18
+
+
+def pt(size, zoom=1.0) -> str:
+    """A style-sheet font size: pt(FONT_S) -> '9pt'."""
+    return f"{size * zoom:g}pt"
+
+
+def px(size, zoom=1.0) -> int:
+    """A scale size (pt) as pixels at 96 dpi, for QFont.setPixelSize in painted widgets: px(FONT_M) -> 13."""
+    return max(1, round(size * zoom * 4 / 3))
 
 
 # ------------------------------------------------------------------ colour maths
@@ -128,6 +169,58 @@ def luminance(c):
 def rgba(c, alpha):
     r, g, b = _rgb(c)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _rel_lum(c):
+    """WCAG relative luminance (luminance() above is the quick, uncorrected one the accent rules use)."""
+    def lin(v):
+        v /= 255
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = _rgb(c)
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def contrast(a, b) -> float:
+    """WCAG contrast ratio of two colours: 1 (same) .. 21 (black on white). Text wants 4.5, big text and
+    icons 3."""
+    la, lb = sorted((_rel_lum(a), _rel_lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def readable_on(fg, bg, ratio=4.5):
+    """fg, darkened (on a light bg) or lightened (on a dark bg) just enough to reach `ratio` against bg.
+
+    bg can be a list of backgrounds: the result is readable on all of them. Colours that already pass come back
+    unchanged, so the hue stays recognisable."""
+    bgs = list(bg) if isinstance(bg, (list, tuple)) else [bg]
+    if min(contrast(fg, b) for b in bgs) >= ratio:
+        return fg
+    toward = "#000000" if sum(_rel_lum(b) for b in bgs) / len(bgs) > 0.18 else "#ffffff"
+    for step in range(1, 41):
+        c = mix(toward, fg, step / 40)
+        if min(contrast(c, b) for b in bgs) >= ratio:
+            return c
+    return toward
+
+
+def ink_on(bg):
+    """White or near-black text for a coloured background (badges, chips, avatars), whichever reads better."""
+    return "#ffffff" if contrast("#ffffff", bg) >= contrast("#10131a", bg) else "#10131a"
+
+
+def name_color(key_or_color, bg=None):
+    """A person's colour for text - sender names, reply-quote names and bars, calendar kind labels.
+
+    Takes an avatar key (the same key as avatar_color) or a colour, and keeps its hue but makes it readable
+    (4.5:1) on bg - by default the panel and the other person's bubble."""
+    c = key_or_color if str(key_or_color).startswith("#") else avatar_color(str(key_or_color))
+    return readable_on(c, bg or [PANEL, BUBBLE_OTHER])
+
+
+def badge_colors(kind="neutral"):
+    """(background, text) of a count badge: 'neutral' (accent), 'alert' (danger) or 'muted'."""
+    return {"alert": (BADGE_ALERT_BG, BADGE_ALERT_TEXT),
+            "muted": (BADGE_MUTED_BG, BADGE_MUTED_TEXT)}.get(kind, (BADGE_BG, BADGE_TEXT))
 
 
 # ------------------------------------------------------------------ current theme
@@ -164,7 +257,8 @@ def apply(theme="midnight", accent=None, festivals=False):
 
     festivals=True: on 15 Aug, 26 Jan and 24-26 Dec the festival look replaces the chosen theme."""
     global THEME, ACCENT_NAME, ACCENT, ACCENT_TEXT, ACCENT_HOVER, ACCENT_SOFT, ACCENT_FOCUS
-    global BUBBLE_ME, STYLESHEET, FESTIVAL, HAIR
+    global BUBBLE_ME, STYLESHEET, FESTIVAL, HAIR, META, FLOAT_BORDER, CONTROL_EDGE
+    global BADGE_BG, BADGE_TEXT, BADGE_ALERT_BG, BADGE_ALERT_TEXT, BADGE_MUTED_BG, BADGE_MUTED_TEXT
     if festivals and festival_today():
         theme = festival_today()
     if theme == "system":
@@ -181,14 +275,25 @@ def apply(theme="midnight", accent=None, festivals=False):
     acc = FESTIVAL["accent"] if FESTIVAL else ACCENTS[accent]
     if not pal["DARK"] and luminance(acc) > 0.55:
         acc = mix(acc, "#000000", 0.62)           # bright accents are unreadable on white
+    if not pal["DARK"]:
+        acc = readable_on(acc, pal["BG"])         # links and times in the accent colour: 4.5:1 on the page
     ACCENT = acc
     ACCENT_TEXT = "#10131a" if luminance(acc) > 0.55 else "#ffffff"
     ACCENT_HOVER = mix(acc, "#ffffff", 0.85) if pal["DARK"] else mix(acc, "#000000", 0.88)
-    ACCENT_SOFT = mix(acc, pal["PANEL"], 0.20 if pal["DARK"] else 0.13)
+    # selected rows: on the light theme 0.13 was the same shade as a hovered row
+    ACCENT_SOFT = mix(acc, pal["PANEL"], 0.20)
     ACCENT_FOCUS = mix(acc, pal["SURFACE"], 0.55)
     BUBBLE_ME = mix(acc, pal["BG"], 0.34 if pal["DARK"] else 0.22)     # my own messages: clearly mine
     HAIR = mix(pal["BORDER"], pal["PANEL"], 0.55)
+    META = readable_on(pal["FAINT"], [pal["PANEL"], pal["BG"], pal["SURFACE"]])
+    FLOAT_BORDER = readable_on(pal["BORDER"], pal["PANEL"], 1.5)
+    CONTROL_EDGE = readable_on(pal["SCROLL"], pal["SURFACE"], 2.2 if pal["DARK"] else 3.0)
+    STATUS_COLORS["offline"] = OFFLINE_DARK if pal["DARK"] else "#5a6070"
+    BADGE_BG, BADGE_TEXT = acc, ACCENT_TEXT
+    BADGE_ALERT_BG, BADGE_ALERT_TEXT = pal["DANGER"], "#ffffff"
+    BADGE_MUTED_BG, BADGE_MUTED_TEXT = pal["SURFACE_HOVER"], pal["MUTED"]
     STYLESHEET = _stylesheet()
+    round_popups()
     return STYLESHEET
 
 
@@ -254,6 +359,55 @@ def _arrow_image():
                       f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>')
 
 
+# ------------------------------------------------------------------ round pop-ups
+# A menu is its own window, and Windows fills the window's corners, so the style sheet's border-radius showed
+# square corners on the light theme. A see-through window (without the square system shadow) lets the rounded
+# background be the edge. Done once per app by a thin style wrapper, so every menu - ours, Qt's own right-click
+# menus and QMenu subclasses (emoji, reactions) - is covered without touching each one.
+_POPUP_STYLE = {"style": None}
+
+
+def round_popup(widget):
+    """Make one custom pop-up window (a QFrame/QListWidget with a rounded style sheet) show round corners.
+
+    Call it before the first show(). The widget must paint its own rounded background (style sheet
+    background + border-radius; on a QListWidget keep 5 px or more padding so the list stays inside the curve)."""
+    from PySide6.QtCore import Qt
+    widget.setAttribute(Qt.WA_TranslucentBackground, True)
+    flags = widget.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+    if flags != widget.windowFlags() and not widget.testAttribute(Qt.WA_WState_Created):
+        widget.setWindowFlags(flags)
+    return widget
+
+
+def round_popups(app=None):
+    """Install the round-menu style wrapper on the running QApplication (apply() does this when an app exists;
+    call it yourself when the style sheet is set without apply(), as the server console does). Safe to repeat."""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QMenu, QProxyStyle, QWidget
+    except ImportError:                          # colours only (no Qt): nothing to round
+        return
+    app = app or QApplication.instance()
+    if app is None or not isinstance(app, QApplication) or _POPUP_STYLE["style"] is not None:
+        return
+
+    class PopupStyle(QProxyStyle):
+        def polish(self, arg):
+            if isinstance(arg, QMenu) and arg.windowType() == Qt.Popup:
+                round_popup(arg)
+            elif isinstance(arg, QWidget) and arg.property("roundPopup") and arg.isWindow():
+                round_popup(arg)
+            return super().polish(arg)
+
+    try:
+        style = PopupStyle(app.style().name())   # a fresh copy of the current style, wrapped
+        app.setStyle(style)
+    except Exception:  # noqa: BLE001 - purely cosmetic; square corners are better than no app
+        return
+    _POPUP_STYLE["style"] = style
+
+
 def _stylesheet():
     check, arrow = _check_image(), _arrow_image()
     return f"""
@@ -281,7 +435,7 @@ QTimeEdit {{ padding-right: 12px; min-width: 64px; }}
 QCalendarWidget QWidget {{ background: {PANEL}; }}
 QCalendarWidget QToolButton {{ background: transparent; border: none; padding: 4px 8px; font-weight: 700; }}
 QCalendarWidget QAbstractItemView {{ selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT}; }}
-QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {HAIR}; padding: 6px;
+QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {FLOAT_BORDER}; padding: 6px;
     selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT}; outline: none; }}
 QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
 
@@ -292,9 +446,10 @@ QPushButton {{
 QPushButton:hover {{ background: {SURFACE_HOVER}; }}
 QPushButton:pressed {{ background: {HAIR}; }}
 QPushButton:disabled {{ color: {FAINT}; }}
+QPushButton:checked {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_FOCUS}; }}
 QPushButton[primary="true"] {{ background: {ACCENT}; color: {ACCENT_TEXT}; border: none; }}
 QPushButton[primary="true"]:hover {{ background: {ACCENT_HOVER}; }}
-QPushButton[primary="true"]:disabled {{ background: {ACCENT_FOCUS}; color: {MUTED}; }}
+QPushButton[primary="true"]:disabled {{ background: {SURFACE}; color: {FAINT}; border: 1px solid {HAIR}; }}
 QPushButton[danger="true"] {{ color: {DANGER}; }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 6px; }}
 QPushButton[flat="true"]:hover {{ background: {SURFACE_HOVER}; }}
@@ -302,15 +457,16 @@ QPushButton[chip="true"] {{ background: transparent; border: 1px solid {HAIR}; b
     padding: 3px 12px; font-weight: 600; font-size: 9pt; color: {MUTED}; min-height: 16px; }}
 QPushButton[chip="true"]:hover {{ background: {SURFACE}; color: {TEXT}; }}
 QPushButton[chip="true"]:checked {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_FOCUS}; color: {TEXT}; }}
+QPushButton[chip="true"][tall="true"] {{ border-radius: 12px; padding: 7px 14px; min-height: 19px; }}
 
 QCheckBox, QRadioButton {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 6px; background: {SURFACE};
-    border: 1px solid {SCROLL}; }}
+    border: 1px solid {CONTROL_EDGE}; }}
 QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
 QCheckBox:disabled {{ color: {FAINT}; }}
 QListView::indicator, QTreeView::indicator, QTableView::indicator {{ width: 16px; height: 16px; border-radius: 6px;
-    background: {SURFACE}; border: 1px solid {SCROLL}; }}
+    background: {SURFACE}; border: 1px solid {CONTROL_EDGE}; }}
 QListView::indicator:checked, QTreeView::indicator:checked, QTableView::indicator:checked {{
     background: {ACCENT}; border: 1px solid {ACCENT}; image: url("{check}"); }}
 
@@ -322,6 +478,7 @@ QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: {SCROLL}; border-radius: 3px; min-width: 30px; margin: 3px 2px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+QAbstractScrollArea::corner {{ background: transparent; border: none; }}
 
 QTableWidget, QTableView, QListWidget, QTreeWidget {{
     background: {PANEL}; border: none; border-radius: 16px;
@@ -335,7 +492,7 @@ QHeaderView::section {{ background: {PANEL}; border: none; border-bottom: 1px so
     padding: 7px; font-weight: 600; color: {MUTED}; }}
 QTableCornerButton::section {{ background: {PANEL}; border: none; }}
 
-QMenu {{ background: {PANEL}; border: 1px solid {HAIR}; border-radius: 14px; padding: 6px; }}
+QMenu {{ background: {PANEL}; border: 1px solid {FLOAT_BORDER}; border-radius: 14px; padding: 6px; }}
 QMenu::item {{ padding: 8px 26px 8px 12px; border-radius: 9px; }}
 QMenu::item:selected {{ background: {SURFACE_HOVER}; }}
 QMenu::item:disabled {{ color: {FAINT}; }}
