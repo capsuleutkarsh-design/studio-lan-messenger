@@ -415,8 +415,6 @@ class MainWindow(QMainWindow):
             self.chat_stale = self.store.conv_exists(self.chat.conv)
             if not self.chat_stale:
                 self.chat.conv = None
-        if boot.get("review_notice"):
-            QTimer.singleShot(500, self._review_notice)
         if boot.get("must_change_password"):
             QTimer.singleShot(300, lambda: self._force_password_change(boot["must_change_password"]))
             return
@@ -1009,19 +1007,13 @@ class MainWindow(QMainWindow):
         m.exec(pos)
 
     # ======================================================== policy / updates
-    def _review_notice(self):
-        """Tell the user once per server that administrators may review chats."""
-        key = f"{self.conn.host}:{self.conn.port}"
-        seen = self.config.get("review_notice_seen") or []
-        if key in seen:
-            return
-        QMessageBox.information(
-            self, "Chat policy",
-            "Your studio's administrators can review conversations on this messenger "
-            "(for example for HR or security investigations). Every review is recorded.\n\n"
-            "Please use it for work communication.")
-        self.config["review_notice_seen"] = seen + [key]
-        self.config.save()
+    def _quit_for_update(self):
+        """Quit without questions: the update installer is waiting to replace Quillo's files."""
+        self.quitting = True
+        self.screens.stop()
+        self.conn.logout()
+        self.tray.hide()
+        QApplication.quit()
 
     @staticmethod
     def _is_newer(version):
@@ -1095,15 +1087,17 @@ class MainWindow(QMainWindow):
                 return
             self.update_label.setText("Installing the update — Quillo restarts by itself...")
             # The installer closes this app (Restart Manager) and opens it again afterwards.
+            args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE"
             if self._per_user_install():         # same place, same mode: no administrator prompt
-                rc = ctypes.windll.shell32.ShellExecuteW(None, "open", dest,
-                                                         "/SILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER", None, 1)
+                rc = ctypes.windll.shell32.ShellExecuteW(None, "open", dest, args + " /CURRENTUSER", None, 1)
             else:
-                rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", dest,
-                                                         "/SILENT /SUPPRESSMSGBOXES /NORESTART", None, 1)
+                rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", dest, args, None, 1)
             if rc <= 32:
                 self.update_label.setText("The update was not started (administrator permission needed).")
                 self.update_btn.setEnabled(True)
+                return
+            # step aside so the installer can replace the files; it opens Quillo again when it is done
+            QTimer.singleShot(1500, self._quit_for_update)
         t.finished.connect(finished)
 
     # ================================================ forward / mute / reads

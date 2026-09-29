@@ -50,8 +50,9 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; close a running client before files are replaced (any user signed in on this PC)
-AppMutex=LANMessengerClientMutex,Global\LANMessengerClientMutex
+; A running client is closed before files are replaced (see InitializeSetup). No AppMutex: in a silent
+; install its "Quillo is running - OK / Cancel" box is answered Cancel, so every update started from inside
+; Quillo (which is running, by definition) quit without installing anything.
 CloseApplications=force
 RestartApplications=yes
 
@@ -87,6 +88,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FwRule}"" dir=in action=allow program=""{app}\{#ExeName}"" enable=yes profile=any"; \
   Flags: runhidden; Tasks: firewall; StatusMsg: "Configuring Windows Firewall..."
 Filename: "{app}\{#ExeName}"; Description: "Start Quillo now"; Flags: postinstall nowait skipifsilent runasoriginaluser
+; an update started from inside Quillo: open it again when done (not for IT's /VERYSILENT roll-outs)
+Filename: "{app}\{#ExeName}"; Flags: nowait runasoriginaluser; Check: InAppUpdate
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FwRule}"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
@@ -97,6 +100,57 @@ Type: files; Name: "{app}\client_config.json"
 [Code]
 var
   ServerPage: TInputQueryWizardPage;
+
+const
+  ClientMutexes = 'LANMessengerClientMutex,Global\LANMessengerClientMutex';
+
+{ Started by Quillo itself to update: Quillo 1.8 passes /SILENT, 1.9 and later also /UPDATE.
+  IT roll-outs use /VERYSILENT and must not start Quillo as whoever runs the deployment. }
+function InAppUpdate: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if (CompareText(ParamStr(I), '/SILENT') = 0) or (CompareText(ParamStr(I), '/UPDATE') = 0) then
+      Result := True;
+end;
+
+function QuilloRunning: Boolean;
+begin
+  Result := CheckForMutexes(ClientMutexes);
+end;
+
+{ Close every running Quillo of this PC and wait (up to 15 s) until it is gone. }
+procedure CloseQuillo;
+var
+  Code, Waited: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#ExeName}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Waited := 0;
+  while QuilloRunning and (Waited < 15000) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+  if not QuilloRunning then Exit;
+  if WizardSilent then
+    CloseQuillo                     { an update or an IT roll-out: nobody is there to click OK }
+  else
+    while QuilloRunning do
+      if MsgBox('Quillo is running.' + #13#10 + #13#10 +
+                'Close Quillo (right-click its tray icon > Quit), then click OK to continue. ' +
+                'Or click Cancel to leave this setup.', mbError, MB_OKCANCEL) <> IDOK then
+      begin
+        Result := False;
+        Exit;
+      end;
+end;
 
 { /SERVER=... on the command line wins, otherwise the address used last time }
 function InitialServer: String;
