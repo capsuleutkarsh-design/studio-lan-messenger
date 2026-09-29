@@ -47,7 +47,7 @@ class PreviewCache(QObject):
         if t.state == "done":
             self.ready.emit(t.file_id, t.dest_path)
         elif t.state in ("failed", "cancelled"):
-            self.failed.emit(t.file_id)
+            self.failed.emit(str(t.file_id))
 
     def _cleanup(self):
         cutoff = time.time() - KEEP_DAYS * 86400

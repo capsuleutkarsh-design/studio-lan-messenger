@@ -1958,9 +1958,13 @@ class ChatView(QWidget):
         else:
             u = self.store.users.get(target) or {}
             status = u.get("status", "offline")
-            self.avatar.set(title, title, status=status, uid=target)
-            parts = [T.STATUS_LABELS.get(status, status) if status != "offline"
-                     else fmt_last_seen(u.get("last_seen"))]
+            connected = getattr(self.ctx.conn, "online", True)
+            # while the server is away their presence isn't known: no dot and no "Online"
+            self.avatar.set(title, title, status=status if connected else None, uid=target)
+            parts = []
+            if connected:
+                parts.append(T.STATUS_LABELS.get(status, status) if status != "offline"
+                             else fmt_last_seen(u.get("last_seen")))
             if self.store.status_text(u):
                 parts.append(self.store.status_text(u))
             line = self.store.designation_line(u)

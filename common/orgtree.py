@@ -35,18 +35,24 @@ def _sort_key(u):
 def _person(u, me_id=None):
     status = u.get("status", "offline")
     where = " · ".join(x for x in (u.get("department"), u.get("section")) if x)
-    name = u["name"] + ("  (you)" if u["id"] == me_id else "")
+    name = u["name"] + (" (you)" if u["id"] == me_id else "")
     it = QTreeWidgetItem([name, u.get("designation") or "", where, T.STATUS_LABELS.get(status, status)])
     it.setIcon(0, icon("user", T.STATUS_COLORS.get(status, T.MUTED), 16))
-    it.setForeground(3, QBrush(QColor(T.STATUS_COLORS.get(status, T.MUTED))))
+    away = status in ("offline", "invisible")
+    it.setForeground(3, QBrush(QColor(T.META if away else T.STATUS_COLORS.get(status, T.MUTED))))
     if u.get("designation"):
-        it.setForeground(1, QBrush(QColor(T.ACCENT if (u.get("level") or 0) >= 60 else T.MUTED)))
+        lead = (u.get("level") or 0) >= 60
+        it.setForeground(1, QBrush(QColor(T.TEXT if lead else T.MUTED)))
+        if lead:
+            f = QFont("Segoe UI")
+            f.setWeight(QFont.DemiBold)
+            it.setFont(1, f)
     it.setData(0, Qt.UserRole, u["id"])
     return it
 
 
 def _group(text, count, icon_name):
-    it = QTreeWidgetItem([f"{text}   ({count})"])
+    it = QTreeWidgetItem([f"{text} · {count}"])
     f = QFont("Segoe UI")
     f.setBold(True)
     it.setFont(0, f)
@@ -106,7 +112,7 @@ def fill(tree: QTreeWidget, users, mode="department", query="", me_id=None):
                 it = _person(u, me_id)
                 n = len(children.get(u["id"], []))
                 if n:
-                    it.setText(0, f"{it.text(0)}   ({n})")
+                    it.setText(0, f"{it.text(0)} · {n}")
                 if parent_item is None:
                     tree.addTopLevelItem(it)
                 else:

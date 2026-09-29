@@ -802,12 +802,12 @@ class SectionLabel(QLabel):
             super().__init__(text, parent)
             self.setTextFormat(Qt.PlainText)
             self.setStyleSheet(f"color: {T.META}; font-size: 8.5pt; font-weight: 600;"
-                               " padding: 8px 18px 2px 26px;")
+                               " padding: 8px 16px 2px 24px;")
         else:
             super().__init__(text.upper(), parent)
             self.setTextFormat(Qt.PlainText)
             self.setStyleSheet(f"color: {T.MUTED}; font-size: 7.5pt; font-weight: 700;"
-                               " padding: 14px 18px 4px 18px; letter-spacing: 1px;")
+                               " padding: 14px 16px 4px 16px; letter-spacing: 1px;")
 
 
 class ElidedLabel(QLabel):

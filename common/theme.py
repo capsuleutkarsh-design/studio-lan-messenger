@@ -451,6 +451,7 @@ QPushButton[primary="true"] {{ background: {ACCENT}; color: {ACCENT_TEXT}; borde
 QPushButton[primary="true"]:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton[primary="true"]:disabled {{ background: {SURFACE}; color: {FAINT}; border: 1px solid {HAIR}; }}
 QPushButton[danger="true"] {{ color: {DANGER}; }}
+QPushButton[danger="true"]:disabled {{ color: {FAINT}; }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 6px; }}
 QPushButton[flat="true"]:hover {{ background: {SURFACE_HOVER}; }}
 QPushButton[chip="true"] {{ background: transparent; border: 1px solid {HAIR}; border-radius: 11px;

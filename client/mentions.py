@@ -68,7 +68,7 @@ def mark(escaped_html, known, mine, color, soft):
         rest = m.group(1)[len(tok):]
         low = tok.lower()
         if low in mine:
-            return (f'<span style="color:{color}; background:{soft}; font-weight:600">&nbsp;@{tok}&nbsp;</span>'
+            return (f'<span style="color:{color}; background:{soft}; font-weight:600">&#8201;@{tok}&#8201;</span>'
                     f'{rest}')
         if low in known:
             return f'<span style="color:{color}; font-weight:600">@{tok}</span>{rest}'

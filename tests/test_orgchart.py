@@ -61,7 +61,7 @@ class OrgChartTest(unittest.TestCase):
         rahul = tree.topLevelItem(0)
         self.assertTrue(rahul.text(0).startswith("Rahul Verma"))
         groups = [rahul.child(i).text(0) for i in range(rahul.childCount())]
-        self.assertEqual(groups, ["Lighting   (2)", "Compositing   (1)", "No department   (1)"])
+        self.assertEqual(groups, ["Lighting · 2", "Compositing · 1", "No department · 1"])
         comp = rahul.child(1)
         self.assertTrue(comp.child(0).text(0).startswith("Akash Singh"))
         self.assertEqual(comp.child(0).childCount(), 2)           # Priya and Sana, no label
