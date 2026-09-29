@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from common.protocol import DISCOVERY_PORT, TCP_PORT
+from common.protocol import DISCOVERY_PORT, SHOT_PATTERN_DEFAULT, TCP_PORT
 from common.files import replace_file
 
 DEFAULTS = {
@@ -49,6 +49,9 @@ DEFAULTS = {
     # network links in chat (a server share or a mapped drive) to these computers / drives open with one click; any
     # other computer asks first. One per line or comma-separated, e.g. "fileserver, nas01, Z:"
     "trusted_link_hosts": "",
+    # shot names in chat messages become links to everything said about that shot. A regular expression; the
+    # default catches FAL_030, FAL_030_0010 and SEQ010_SH0020. Empty = off.
+    "shot_code_pattern": SHOT_PATTERN_DEFAULT,
 }
 
 # Settings of older versions that no longer do anything; dropped when an old config.json is read.

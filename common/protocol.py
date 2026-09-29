@@ -30,6 +30,22 @@ IDLE_TIMEOUT = 90                   # server drops sessions silent for this long
 
 STATUSES = ("online", "away", "busy", "invisible")
 
+# Shot names that become links in chats (the server admin can change the pattern): FAL_030, FAL_030_0010,
+# SEQ010_SH0020. Letters and digits of the show / sequence, "_", optional SH, the shot number, optional task no.
+SHOT_PATTERN_DEFAULT = r"\b[A-Z]{2,6}[0-9]{0,4}_(?:SH)?[0-9]{2,5}(?:_[0-9]{2,5})?\b"
+
+
+def shot_regex(pattern):
+    """The compiled shot pattern, or None when it is empty or not a valid regular expression."""
+    import re
+    if not pattern or len(pattern) > 300:
+        return None
+    try:
+        rx = re.compile(pattern)
+    except re.error:
+        return None
+    return None if rx.match("") else rx          # a pattern matching nothing-at-all would link every gap
+
 
 def encode(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"

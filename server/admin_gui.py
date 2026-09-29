@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from common import theme as T
 from common.icons import add_show_password, asset, icon
+from common import protocol as P
 from common.protocol import human_size
 from server.core import ServerCore, local_ips, startup_error_text
 
@@ -2002,6 +2003,32 @@ class SettingsPage(Page):
         self.rename = QCheckBox("People can change their own display name (in their Profile)")
         form.addRow("", self.rename)
 
+        section("Chats")
+        self.shots = QLineEdit()
+        self.shots.setPlaceholderText("Empty = off")
+        self.shots.setFont(QFont("Consolas", 9))
+        shot_row = QHBoxLayout()
+        shot_row.addWidget(self.shots, 1)
+        shot_reset = QPushButton("Default")
+        shot_reset.setToolTip("Catches FAL_030, FAL_030_0010 and SEQ010_SH0020")
+        shot_reset.clicked.connect(lambda: self.shots.setText(P.SHOT_PATTERN_DEFAULT))
+        shot_row.addWidget(shot_reset)
+        form.addRow("Shot names", shot_row)
+        self.shot_test = QLineEdit()
+        self.shot_test.setPlaceholderText("Try it: type a message, e.g.  FAL_030 comp v12 is up")
+        self.shot_result = QLabel()
+        T.polish(self.shot_result, muted=True)
+        self.shots.textChanged.connect(self._test_shots)
+        self.shot_test.textChanged.connect(self._test_shots)
+        form.addRow("", self.shot_test)
+        form.addRow("", self.shot_result)
+        shot_hint = QLabel("Shot names in messages become links: a click shows everything said about that shot, in "
+                           "every chat the person can see. A regular expression, for studios whose shots are named "
+                           "differently.")
+        shot_hint.setWordWrap(True)
+        T.polish(shot_hint, muted=True)
+        form.addRow("", shot_hint)
+
         row = QHBoxLayout()
         row.addStretch(1)
         save = btn("Save settings", "check", primary=True)
@@ -2053,6 +2080,7 @@ class SettingsPage(Page):
         self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
         self.msg_days.setValue(int(cfg.get("message_retention_days", 0)))
         self.trusted.setText(cfg.get("trusted_link_hosts", ""))
+        self.shots.setText(cfg.get("shot_code_pattern", ""))
         # Browse shows THIS PC's folders: fine unless the console manages a server on another PC
         remote = self.win.api.remote and getattr(self.win.api, "host", "").lower() not in (
             "127.0.0.1", "localhost", "::1", socket.gethostname().lower())
@@ -2124,6 +2152,17 @@ class SettingsPage(Page):
         else:
             QMessageBox.warning(self, "Chat backup failed", (r or {}).get("error", "Unknown error"))
 
+    def _test_shots(self):
+        rx = P.shot_regex(self.shots.text().strip())
+        if self.shots.text().strip() and not rx:
+            self.shot_result.setText("Not a valid pattern")
+        elif not self.shots.text().strip():
+            self.shot_result.setText("Shot links are off")
+        else:
+            found = rx.findall(self.shot_test.text()) if self.shot_test.text() else []
+            found = [f if isinstance(f, str) else f[0] for f in found]
+            self.shot_result.setText(("Links: " + ", ".join(found)) if found else
+                                     ("No shot name found" if self.shot_test.text() else ""))
     def save(self):
         cfg = self.cfg
         values = dict(
@@ -2143,7 +2182,12 @@ class SettingsPage(Page):
             api_key=self.api_key.text().strip(), api_bot_name=self.api_bot.text().strip() or "Pipeline Bot",
             chat_log_enabled=self.cl_enabled.isChecked(), chat_log_dir=self.cl_dir.text().strip(),
             message_retention_days=self.msg_days.value(), buzz_enabled=self.buzz.isChecked(),
-            allow_name_change=self.rename.isChecked(), trusted_link_hosts=self.trusted.text().strip())
+            allow_name_change=self.rename.isChecked(), trusted_link_hosts=self.trusted.text().strip(),
+            shot_code_pattern=self.shots.text().strip())
+        if values["shot_code_pattern"] and not P.shot_regex(values["shot_code_pattern"]):
+            QMessageBox.warning(self, "Shot names", "The shot name pattern is not a valid regular expression. "
+                                "Click Default, or leave it empty to switch shot links off.")
+            return
         if (values["message_retention_days"] and not values["chat_log_enabled"]
                 and QMessageBox.question(self, "Chat history",
                                          "The nightly chat backup is off, so messages older than "

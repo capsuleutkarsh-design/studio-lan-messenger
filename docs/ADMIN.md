@@ -223,6 +223,18 @@ longer allowed to post there (e.g. they left the room).
 *Back up chats now* writes the text backup immediately. Deleted messages written before they were deleted stay in the
 text backup (it is an archive).
 
+## 6b. Shot names, and settings that follow people
+
+- **Shot names in chats become links** (1.10.0): `FAL_030` in a message links to everything said about that shot.
+  The pattern is a regular expression in the console: *Settings → Chats → Shot names*. The default catches
+  `FAL_030`, `FAL_030_0010` and `SEQ010_SH0020`; type a sample message in the box below it to see what would
+  become a link. *Default* puts the standard pattern back; empty switches shot links off. PCs pick up a new
+  pattern the next time they sign in.
+- **Personal settings are kept on the server**, so they follow people to any PC (useful when PCs are rented or
+  swapped): chats pinned to the top, focus time and whether the welcome tour was seen. They are in the database,
+  so they are in the safe copy and the backups too. The text size and the width of the chat list stay with each PC
+  (they depend on its monitor).
+
 ## 7. Pipeline API (render farm, scripts)
 
 Console → Settings → *Pipeline API*: tick *Allow*, click *New key*, save, restart the server. Then from any machine

@@ -112,14 +112,80 @@ def linkify(text, mark=None):
                    f'{html.escape(breakable(shown))}</a>{html.escape(rest)}')
         pos = m.end()
     out.append(mark(html.escape(breakable(text[pos:]))))
-    return "".join(out).replace("\n", "<br>")
+    return _mark_shots("".join(out)).replace("\n", "<br>")
+
+
+def studio_paths(text):
+    """The studio paths in a message (\\\\server\\share\\..., X:\\...), in order, without repeats."""
+    found = []
+    for m in _LINK_RE.finditer(text or ""):
+        if m.group("url"):
+            continue
+        path = m.group("quoted") or m.group(0).rstrip(".,;:)!'")
+        if path not in found:
+            found.append(path)
+    return found
+
+
+# ------------------------------------------------------------------ shot names
+# FAL_030 in a message links to everything said about that shot. The pattern is the server's (Settings in the
+# server console), the click is handled by the main window (search).
+SHOT_SCHEME = "quillo-shot:"
+_SHOTS = {"re": None, "open": None}
+_TAG = re.compile(r"(<[^>]*>)")
+
+
+def set_shot_pattern(pattern):
+    from common import protocol as P
+    _SHOTS["re"] = P.shot_regex(pattern)
+
+
+def set_shot_handler(fn):
+    _SHOTS["open"] = fn
+
+
+def shot_names(text):
+    rx = _SHOTS["re"]
+    return list(dict.fromkeys(m.group(0) for m in rx.finditer(text or ""))) if rx else []
+
+
+def _mark_shots(markup):
+    """Shot names in message HTML become links - never inside a tag or inside another link."""
+    rx = _SHOTS["re"]
+    if not rx:
+        return markup
+    parts = _TAG.split(markup)
+    in_link = False
+    for i, part in enumerate(parts):
+        if i % 2:                            # a tag
+            low = part.lower()
+            in_link = True if low.startswith("<a ") else False if low.startswith("</a") else in_link
+        elif part and not in_link:
+            parts[i] = rx.sub(lambda m: f'<a href="{SHOT_SCHEME}{html.escape(m.group(0), quote=True)}" '
+                                        f'style="color:{T.ACCENT}; text-decoration:none; font-weight:600">'
+                                        f'{m.group(0)}</a>', part)
+    return "".join(parts)
 
 
 def open_link(url):
     if url.startswith(PATH_SCHEME):
         path_menu(QUrl.fromPercentEncoding(url[len(PATH_SCHEME):].encode()))
         return
+    if url.startswith(SHOT_SCHEME):
+        if _SHOTS["open"]:
+            _SHOTS["open"](html.unescape(url[len(SHOT_SCHEME):]))
+        return
     QDesktopServices.openUrl(QUrl(url))
+
+
+def open_studio_path(path, parent=None):
+    """'Open folder' on a path card: asks first for an untrusted computer, then opens the folder (or the folder
+    holding the file / the frames)."""
+    host = unc_host(path)
+    if not link_host_trusted(host) and not _confirm_host(host, parent):
+        return
+    target, sequence = path_target(path)
+    _reveal(target, bool(os.path.splitext(target)[1]) and not sequence)
 
 
 # ------------------------------------------------------------------ studio paths
@@ -477,12 +543,13 @@ class ConvItem(QWidget):
         self.dim = False
         self.typing = False
         self.muted = False
+        self.pinned = False
         self._hover = False
 
     def set_data(self, title, subtitle="", time_text="", unread=0, status=None, room=False, dim=False,
-                 muted=False):
+                 muted=False, pinned=False):
         self.title, self.subtitle, self.time, self.unread = title, subtitle, time_text, unread
-        self.status, self.room, self.dim, self.muted = status, room, dim, muted
+        self.status, self.room, self.dim, self.muted, self.pinned = status, room, dim, muted, pinned
         self.update()
 
     def set_active(self, active):
@@ -539,6 +606,9 @@ class ConvItem(QWidget):
         if self.muted:
             time_w += 18
             p.drawPixmap(right - time_w + 2, 14, icon("bell", T.FAINT, 13).pixmap(13, 13))
+        if self.pinned:
+            time_w += 18
+            p.drawPixmap(right - time_w + 2, 14, icon("pin", T.FAINT, 13).pixmap(13, 13))
 
         badge_w = 0
         if self.unread:
@@ -575,6 +645,55 @@ class ConvItem(QWidget):
         sub = "typing..." if self.typing else self.subtitle.replace("\n", " ")
         p.drawText(QRect(x, 33, avail, 20), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(sf).elidedText(sub, Qt.ElideRight, avail))
+
+
+class EmptyState(QWidget):
+    """What an empty list or page shows: a soft round icon, a line saying why it's empty, and (often) the one
+    button that fills it."""
+
+    def __init__(self, icon_name="chat", title="", text="", button=None, action=None, parent=None, compact=False):
+        from PySide6.QtWidgets import QPushButton, QVBoxLayout
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 18 if compact else 40, 24, 18 if compact else 40)
+        lay.setSpacing(8)
+        size = 44 if compact else 64
+        self.icon = QLabel()
+        self.icon.setFixedSize(size, size)
+        self.icon.setAlignment(Qt.AlignCenter)
+        self.icon.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: {size // 2}px;")
+        lay.addWidget(self.icon, 0, Qt.AlignHCenter)
+        lay.addSpacing(4)
+        self.title = plain(QLabel())
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setWordWrap(True)
+        self.title.setStyleSheet(f"color: {T.TEXT}; font-size: {'10pt' if compact else '11.5pt'}; font-weight: 700;"
+                                 " background: transparent;")
+        lay.addWidget(self.title)
+        self.text = plain(QLabel())
+        self.text.setAlignment(Qt.AlignCenter)
+        self.text.setWordWrap(True)
+        self.text.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; background: transparent;")
+        lay.addWidget(self.text)
+        self.button = QPushButton()
+        self.button.setCursor(Qt.PointingHandCursor)
+        T.polish(self.button, primary=True)
+        self.button.clicked.connect(lambda: self._action and self._action())
+        lay.addSpacing(6)
+        lay.addWidget(self.button, 0, Qt.AlignHCenter)
+        self._action = None
+        self.set(icon_name, title, text, button, action)
+
+    def set(self, icon_name="chat", title="", text="", button=None, action=None):
+        size = self.icon.width()
+        self.icon.setPixmap(icon(icon_name, T.ACCENT, size // 2).pixmap(size // 2, size // 2))
+        self.title.setText(title)
+        self.title.setVisible(bool(title))
+        self.text.setText(text)
+        self.text.setVisible(bool(text))
+        self._action = action
+        self.button.setText(button or "")
+        self.button.setVisible(bool(button and action))
 
 
 class SectionLabel(QLabel):

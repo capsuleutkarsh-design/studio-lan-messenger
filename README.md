@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.9.0-1d3a7a?style=for-the-badge"></a>
+  <a href="../../releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-1.10.0-1d3a7a?style=for-the-badge"></a>
   <a href="../../actions/workflows/build.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/capsuleutkarsh-design/studio-lan-messenger/build.yml?branch=main&style=for-the-badge&label=tests"></a>
   <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3cc8b4?style=for-the-badge&logo=windows&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-5b8def?style=for-the-badge&logo=python&logoColor=white">
@@ -20,7 +20,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest release</b></a> ·
   <a href="docs/ADMIN.md"><b>Admin & IT guide</b></a> ·
-  <a href="docs/releases/v1.9.0.md"><b>What's new in 1.9.0</b></a>
+  <a href="docs/releases/v1.10.0.md"><b>What's new in 1.10.0</b></a>
 </p>
 
 <p align="center">
@@ -38,7 +38,8 @@ Direct chats and rooms, **department and section rooms** you switch on per depar
 **@mentions** (people, @everyone, @here, @Department), read receipts and "seen by", **emoji reactions**, **polls** for the everyday
 "which dailies slot?" questions, **reminders**, **scheduled messages** (type *mon 9:30* or *in 2h*), and **Buzz** (a person or a whole room) to reach someone who is
 busy (it even pops a minimised app up on screen). Messages typed while the server is away **wait and go out
-when it's back**, and search has filters (person, chat, dates, files).
+when it's back**, and search has filters (person, chat, dates, files). A **"New messages" line** shows where you
+stopped reading, chats can be **pinned to the top**, and new messages **pop up with a box to answer** right there.
 
 </td>
 <td width="33%" valign="top">
@@ -51,8 +52,10 @@ folders** (image sequences are zipped and extracted in one click). Files reach p
 <td width="33%" valign="top">
 
 ### 🎬 Made for artists
-Paste a **Nuke script** and it becomes a code card with *Copy* and *Save as .nk*. **Shot and path links**:
-`\\server\proj\FAL_030\comp`, `Z:/plates/...` or a Nuke `####` sequence opens in Explorer with one click.
+Paste a **Nuke script** and it becomes a code card with *Copy* and *Save as .nk*. **Shot names** like
+`FAL_030` link to everything said about the shot, and **folder paths** (`\\server\proj\FAL_030\comp`,
+`Z:/plates/...`, a Nuke `####` sequence) become cards that open in Explorer with one click. Pictures sent together
+show as a **gallery** with a full-window viewer.
 View-only **screen sharing** with consent, and a **pipeline API** so the render farm can message you.
 
 </td>

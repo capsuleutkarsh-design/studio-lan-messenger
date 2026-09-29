@@ -43,6 +43,11 @@ DEFAULTS = {
     "compact_mode": False,       # narrow window docked to the right edge of the screen
     "compact_on_top": False,     # ...and kept above other windows
     "trusted_link_hosts": [],    # computers whose chat links open without asking ("don't ask again")
+    "text_scale": 1.0,           # Settings > Text size: the whole window (1.0 normal ... 1.5 extra large)
+    "chat_zoom": 100,            # Ctrl + / Ctrl -: message text in chats, in percent
+    "sidebar_width": 330,        # the chat list; its edge can be dragged
+    "quick_reply": True,         # new messages pop up in the corner, with a box to answer right there
+    "tour_seen": [],             # "host:user" - the welcome tour, for servers that keep no personal settings
 }
 
 

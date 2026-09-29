@@ -66,6 +66,7 @@ class Store(QObject):
     calendar_changed = Signal()            # something on the calendar changed: fetch again
     thread_message = Signal(dict, bool)    # a reply in a thread (message, arrived just now)
     event_invite = Signal(dict)            # someone invited me to a meeting
+    prefs_changed = Signal(str)            # a personal setting (pinned chats, focus time...) changed
 
     def __init__(self, conn):
         super().__init__()
@@ -83,6 +84,8 @@ class Store(QObject):
         self.calendar = None                      # the next two weeks (Home, meeting reminders)
         self.server_name = ""
         self.max_file_size = 0
+        self.prefs = {}                           # personal settings kept on the server (follow me to any PC)
+        self.shot_pattern = P.SHOT_PATTERN_DEFAULT
         self.is_viewing = lambda conv: False      # set by the main window
         conn.event.connect(self.handle_event)
 
@@ -195,6 +198,7 @@ class Store(QObject):
         self.announcements, self.reminders, self.scheduled = [], [], []
         self.muted = set()
         self.my_threads = set()
+        self.prefs = {}
 
     def load(self, boot):
         """Apply a login_ok payload. Also used after reconnecting."""
@@ -230,6 +234,11 @@ class Store(QObject):
                 c.add(last)
         self.announcements = boot.get("announcements", [])
         self.muted = set(boot.get("muted", []))
+        # a server before 1.10 keeps no personal settings: they then last until Quillo is closed
+        self.prefs_on_server = "prefs" in boot
+        self.prefs = dict(boot.get("prefs") or {})
+        self.shot_pattern = boot.get("shot_pattern", P.SHOT_PATTERN_DEFAULT)
+        self.prefs_changed.emit("")
         if boot.get("update"):
             self.update_available.emit(boot["update"])
         self.me_changed.emit()
@@ -338,6 +347,9 @@ class Store(QObject):
             self.unread_changed.emit(self.total_unread())
         elif op == "typing":
             self.typing.emit(ev["conv"], ev["user_id"])
+        elif op == "pref":
+            self.prefs[ev["key"]] = ev["value"]
+            self.prefs_changed.emit(ev["key"])
         elif op == "announcement":
             ann = ev["announcement"]
             self.announcements.insert(0, ann)
@@ -403,6 +415,47 @@ class Store(QObject):
         self.conn.send("mute", conv=conv, muted=muted)
         self.conv_changed.emit(conv)
         self.unread_changed.emit(self.total_unread())
+
+    # ------------------------------------------------ personal settings
+    def set_pref(self, key, value):
+        self.prefs[key] = value
+        if getattr(self, "prefs_on_server", False):
+            self.conn.send("set_pref", key=key, value=value)
+        self.prefs_changed.emit(key)
+
+    MAX_PINNED = 10
+
+    def pinned_chats(self):
+        return [c for c in self.prefs.get("pinned_chats") or [] if isinstance(c, str) and self.conv_exists(c)]
+
+    def is_pinned(self, conv):
+        return conv in (self.prefs.get("pinned_chats") or [])
+
+    def set_pinned(self, conv, pinned):
+        """Keep a chat at the top of the Chats list (False: back among the others). False when the list is full."""
+        pins = [c for c in self.prefs.get("pinned_chats") or [] if c != conv]
+        if pinned:
+            if len([c for c in pins if self.conv_exists(c)]) >= self.MAX_PINNED:
+                return False
+            pins.append(conv)
+        self.set_pref("pinned_chats", pins)
+        return True
+
+    def focus_until(self):
+        """End of my focus time (a timestamp), or 0 when it is not on."""
+        f = self.prefs.get("focus") or {}
+        until = float(f.get("until") or 0) if isinstance(f, dict) else 0
+        return until if until > time.time() else 0
+
+    def focus_people(self):
+        f = self.prefs.get("focus") or {}
+        return [int(u) for u in f.get("people") or [] if str(u).isdigit()] if isinstance(f, dict) else []
+
+    def gets_through_focus(self, msg):
+        """While focus time is on: @mentions, my lead ('Reports to') and the people I chose still reach me."""
+        sender = msg.get("sender_id")
+        return (self.mentions_me(msg) or (sender and sender == self.me.get("manager_id"))
+                or sender in self.focus_people())
 
     def mark_read(self, conv):
         c = self.conversation(conv)

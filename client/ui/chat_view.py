@@ -20,12 +20,19 @@ from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
 from client.ui.widgets import (
-    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_file, open_link, open_path, plain,
-    rich_safe,
-    show_in_folder,
+    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_file, open_link, open_path,
+    open_studio_path, plain, rich_safe, show_in_folder, studio_paths, windows_path,
 )
+from client.ui.gallery import GALLERY_MAX, GalleryRow, ImageViewer, is_plain_image, is_previewable
 
 GROUP_SECONDS = 300
+# Ctrl + / Ctrl − in a chat: the size of message text, in percent (Settings > Text size scales everything)
+ZOOM = {"pct": 100}
+ZOOM_STEPS = (80, 90, 100, 110, 120, 135, 150, 170)
+
+
+def text_pt(base=10.5):
+    return f"{base * ZOOM['pct'] / 100:.1f}pt"
 RENDER_MAX = 150        # message widgets built when a chat opens; scrolling up shows more
 EMOJIS = ("😀 😂 😊 😍 😎 🤔 😅 😭 😡 👍 👎 👌 🙏 👏 💪 🙌 🎉 🔥 ✅ ❌ ⚠️ ❓ 💡 ⭐ "
           "❤️ 💯 🚀 🎬 🎥 🖥️ 📁 📎 ☕ 🍕 🕐 👀 🤝 😴 🤯 🥳").split()
@@ -220,11 +227,7 @@ class FileCard(QFrame):
             self.ctx.extract_zip(self.local_path())
 
 
-IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
 _PATH_RE = __import__("re").compile(r'\\\\[^\s<>"|?*]+(?:\\[^\s<>"|?*]+)*|[A-Za-z]:\\[^\s<>"|?*]+')
-PREVIEW_MAX_BYTES = 15 * 1024 * 1024
-
-
 _THUMBS = {}          # path -> rounded preview pixmap (small LRU: dicts keep insertion order)
 
 
@@ -263,18 +266,14 @@ def rounded(pm, radius):
     return out
 
 
-def is_previewable(file_info):
-    return (os.path.splitext(file_info.get("name", ""))[1].lower() in IMAGE_EXT
-            and 0 < file_info.get("size", 0) <= PREVIEW_MAX_BYTES and not file_info.get("purged"))
-
-
 class ImagePreview(QLabel):
-    """Thumbnail of an image attachment (downloaded quietly into a cache)."""
+    """Thumbnail of an image attachment (downloaded quietly into a cache). A click opens the picture viewer."""
 
-    def __init__(self, ctx, file_info):
+    def __init__(self, ctx, file_info, msg=None):
         super().__init__()
         self.ctx = ctx
         self.info = file_info
+        self.msg = msg
         self.path = None
         self.setCursor(Qt.PointingHandCursor)
         self.setAlignment(Qt.AlignCenter)
@@ -304,11 +303,80 @@ class ImagePreview(QLabel):
         self.setStyleSheet("background: transparent;")
         self.setPixmap(pm)
         self.setFixedSize(pm.size())
-        self.setToolTip("Click to open")
+        self.setToolTip("Click to view (← → for the other pictures in this chat)")
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and self.path:
-            open_file(self.path)
+            if self.msg and getattr(self.ctx, "chat", None):
+                self.ctx.chat.open_viewer(self.msg)
+            else:
+                open_file(self.path)
+
+
+class PathCard(QFrame):
+    """A studio folder or file named in a message: its name, where it is, and Open / Copy buttons."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self.setObjectName("pathcard")
+        self.setStyleSheet(f"#pathcard {{ background: {T.TINT}; border-radius: 12px; }}")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 7, 6, 7)
+        lay.setSpacing(10)
+        ic = QLabel()
+        ic.setFixedSize(34, 34)
+        ic.setAlignment(Qt.AlignCenter)
+        ic.setStyleSheet(f"background: {T.ACCENT_SOFT}; border-radius: 9px;")
+        ic.setPixmap(pixmap("folder", T.ACCENT, 18))
+        lay.addWidget(ic)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        full = windows_path(path)
+        name = plain(QLabel(os.path.basename(full.rstrip("\\")) or full))
+        name.setStyleSheet("font-weight: 700; font-size: 9.5pt; background: transparent;")
+        where = plain(QLabel(os.path.dirname(full) or full))
+        where.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; background: transparent;")
+        where.setMinimumWidth(40)
+        where.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setToolTip(full)
+        col.addWidget(name)
+        col.addWidget(where)
+        lay.addLayout(col, 1)
+        b_open = IconButton("open", "Open the folder", 32, 17, T.ACCENT, T.ACCENT)
+        b_open.clicked.connect(lambda: open_studio_path(path, self))
+        b_copy = IconButton("copy", "Copy the path", 32, 16)
+        b_copy.clicked.connect(self._copy)
+        lay.addWidget(b_open)
+        lay.addWidget(b_copy)
+
+    def _copy(self):
+        QGuiApplication.clipboard().setText(windows_path(self.path))
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.showText(QCursor.pos(), "Path copied")
+
+
+class UnreadDivider(QWidget):
+    """'New messages' above the first message you had not read when you opened the chat."""
+
+    def __init__(self, count):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 12, 0, 6)
+        lay.setSpacing(10)
+        def line():
+            f = QFrame()
+            f.setFixedHeight(1)
+            f.setStyleSheet(f"background: {T.ACCENT}; border: none;")
+            return f
+        lbl = QLabel(f"{count} new message{'s' if count != 1 else ''}" if count else "New messages")
+        lbl.setStyleSheet(f"color: {T.ACCENT}; font-size: 8pt; font-weight: 800; letter-spacing: 0.5px;")
+        lay.addWidget(line(), 1)
+        lay.addWidget(lbl)
+        lay.addWidget(line(), 1)
+
+    def set_max_width(self, w):
+        pass
 
 
 _NUKE_RE = re.compile(r"^(set cut_paste_input|version \d+|Root \{|push \$|[A-Z][A-Za-z0-9]+ \{$)", re.M)
@@ -697,7 +765,7 @@ class MessageRow(QWidget):
             f = msg.get("file")
             if f:
                 if is_previewable(f):
-                    b.addWidget(ImagePreview(ctx, f))
+                    b.addWidget(ImagePreview(ctx, f, msg))
                 b.addWidget(FileCard(ctx, f, msg["conv"], msg["ts"]))
             if msg.get("kind") == "poll" and msg.get("poll"):
                 b.addWidget(PollCard(ctx, msg))
@@ -711,10 +779,16 @@ class MessageRow(QWidget):
                 self.text.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
                 self.text.setOpenExternalLinks(False)
                 self.text.linkActivated.connect(open_link)
-                self.text.setStyleSheet("font-size: 10.5pt;")
+                self.text.setStyleSheet(f"font-size: {text_pt()};")
                 self.text.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
                 self.text.setContextMenuPolicy(Qt.NoContextMenu)
-                b.addWidget(self.text)
+                paths = studio_paths(msg["body"])[:3]
+                if len(paths) == 1 and msg["body"].strip().strip('"') == paths[0]:
+                    self.text = None                     # just a path: the card says it all
+                else:
+                    b.addWidget(self.text)
+                for path in paths:
+                    b.addWidget(PathCard(path))
 
         if msg.get("reactions") and not deleted:
             b.addWidget(ReactionBar(ctx, msg))
@@ -1403,7 +1477,7 @@ class ChatView(QWidget):
         self.b_buzz.clicked.connect(self.buzz)
         self.b_screen = IconButton("screen", "Share screen", 38, 19)
         self.b_screen.clicked.connect(self.screen_menu)
-        self.b_search = IconButton("search", "Search messages", 38, 18)
+        self.b_search = IconButton("search", "Search messages (Ctrl+F)", 38, 18)
         self.b_search.clicked.connect(lambda: self.ctx.show_search())
         self.b_members = IconButton("users", "Members", 38, 19)
         self.b_members.clicked.connect(lambda: self.ctx.show_room_info(self.conv))
@@ -1413,6 +1487,11 @@ class ChatView(QWidget):
         self.b_more.clicked.connect(self.more_menu)
         for b in (self.b_buzz, self.b_screen, self.b_search, self.b_calendar, self.b_members, self.b_more):
             hl.addWidget(b)
+        # on a wide window the header buttons say what they do, not just show an icon
+        self.head_labels = {self.b_buzz: "Buzz", self.b_screen: "Screen", self.b_search: "Search",
+                            self.b_calendar: "Calendar", self.b_members: "Members"}
+        self._head_styles = {b: b.styleSheet() for b in self.head_labels}
+        self._labelled = None
         lay.addWidget(head)
 
         # pinned message card
@@ -1463,6 +1542,25 @@ class ChatView(QWidget):
         self.mlay.addStretch(1)
         self.scroll.setWidget(self.container)
         self.hover_bar = HoverBar(self, self.container)
+        self.first_unread_id = None      # the "New messages" line goes above this message
+        self.unread_count = 0            # unread when the chat was opened
+        self.divider = None
+        self.new_below = 0               # messages that came in while scrolled up
+        self._anchor = None              # scroll the "New messages" line into view once the chat is laid out
+        self.jump_down = QPushButton(self)
+        self.jump_down.setCursor(Qt.PointingHandCursor)
+        self.jump_down.setToolTip("Jump to the latest message")
+        self.jump_down.clicked.connect(self.jump_to_latest)
+        self.jump_up = QPushButton(self)
+        self.jump_up.setCursor(Qt.PointingHandCursor)
+        self.jump_up.setToolTip("Jump to the first message you haven't read")
+        self.jump_up.clicked.connect(self.jump_to_unread)
+        for b in (self.jump_down, self.jump_up):
+            b.setStyleSheet(f"QPushButton {{ background: {T.PANEL}; color: {T.ACCENT}; border: 1px solid {T.HAIR};"
+                            f" border-radius: 17px; padding: 0 14px; font-weight: 700; font-size: 9pt;"
+                            f" min-height: 34px; }}"
+                            f"QPushButton:hover {{ background: {T.SURFACE_HOVER}; border: 1px solid {T.ACCENT}; }}")
+            b.hide()
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._on_range)
         lay.addWidget(self.scroll, 1)
@@ -1617,6 +1715,11 @@ class ChatView(QWidget):
             prev.draft = self.input.toPlainText()
             if self.conv != conv:
                 prev.trim()
+        if conv != self.conv or not self.divider:
+            # read before this chat was opened: remember where the "New messages" line goes
+            self.unread_count = self.store.conversation(conv).unread
+            self.first_unread_id = None
+        self.new_below = 0
         self.conv = conv
         self.render_limit = RENDER_MAX
         self.typing_users.clear()
@@ -1716,12 +1819,28 @@ class ChatView(QWidget):
         for w in self.rows:
             w.deleteLater()
         self.rows = []
+        self.divider = None
+
+    def _find_first_unread(self, c, msgs):
+        """The first of the messages that were unread when the chat was opened (once enough are loaded)."""
+        if not self.unread_count or self.first_unread_id:
+            return
+        others = [m for m in msgs if m["sender_id"] != self.store.my_id and not m.get("deleted")]
+        if len(others) >= self.unread_count:
+            self.first_unread_id = others[-self.unread_count]["id"]
+        elif c.complete and others:
+            self.first_unread_id = others[0]["id"]
+        if self.first_unread_id:
+            self._anchor = True
 
     def render_all(self):
         self.setUpdatesEnabled(False)
         self._clear()
         c = self.store.conversation(self.conv)
         msgs = sorted(c.messages.values(), key=lambda m: m["id"])
+        self._find_first_unread(c, msgs)
+        if self.first_unread_id and self.unread_count > self.render_limit:
+            self.render_limit = min(self.unread_count + 20, 600)      # show from the line down
         cut = max(0, len(msgs) - self.render_limit)
         prev = msgs[cut - 1] if cut else None
         for m in msgs[cut:]:
@@ -1736,6 +1855,7 @@ class ChatView(QWidget):
         self.setUpdatesEnabled(True)
         self._apply_widths()
         QTimer.singleShot(300, self._update_seen)
+        QTimer.singleShot(0, self._update_jumps)
 
     def _empty_text(self):
         kind, target = P.parse_conv(self.conv)
@@ -1753,6 +1873,30 @@ class ChatView(QWidget):
             sep = DaySeparator(m["ts"])
             self.mlay.insertWidget(self.mlay.count(), sep)
             self.rows.append(sep)
+        unread_line = m["id"] == self.first_unread_id and self.divider is None
+        if unread_line:
+            self.divider = UnreadDivider(self.unread_count)
+            self.mlay.insertWidget(self.mlay.count(), self.divider)
+            self.rows.append(self.divider)
+        grouped = (prev and not new_day and not unread_line and prev["sender_id"] == m["sender_id"]
+                   and prev["kind"] not in ("system", "buzz") and m["ts"] - prev["ts"] < GROUP_SECONDS)
+        last = self.rows[-1] if self.rows else None
+        if grouped and is_plain_image(m):
+            # pictures sent one after another share one gallery bubble
+            if isinstance(last, GalleryRow) and len(last.msgs) < GALLERY_MAX:
+                last.add(m)
+                return last
+            if isinstance(last, MessageRow) and is_plain_image(last.msg):
+                gallery = GalleryRow(self.ctx, [last.msg, m], last.mine, last.first, is_room)
+                self.mlay.insertWidget(self.mlay.indexOf(last), gallery)
+                self.mlay.removeWidget(last)
+                if self.hover_bar.row is last:
+                    self.hover_bar.hide()
+                    self.hover_bar.row = None
+                last.deleteLater()
+                self.rows[-1] = gallery
+                gallery.set_max_width(self._bubble_width())
+                return gallery
         if m["kind"] == "system":
             w = SystemLine(m)
         elif m["kind"] == "buzz":
@@ -1762,24 +1906,127 @@ class ChatView(QWidget):
                          if mine else f"{self.store.user_name(m['sender_id'])} buzzed "
                                       + ("the room" if room_buzz else "you"))
         else:
-            grouped = (prev and not new_day and prev["sender_id"] == m["sender_id"]
-                       and prev["kind"] not in ("system", "buzz")
-                       and m["ts"] - prev["ts"] < GROUP_SECONDS)
             w = MessageRow(self.ctx, m, m["sender_id"] == self.store.my_id, not grouped, not grouped, is_room)
         self.mlay.insertWidget(self.mlay.count(), w)
         self.rows.append(w)
         return w
 
+    def _bubble_width(self):
+        return int(max(300, self.scroll.viewport().width() - 40) * 0.72)
+
     def _apply_widths(self):
-        w = int(max(300, self.scroll.viewport().width() - 40) * 0.72)
+        w = self._bubble_width()
         for r in self.rows:
-            if isinstance(r, MessageRow):
+            if isinstance(r, (MessageRow, GalleryRow)):
                 r.set_max_width(w)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._apply_widths()
         self.drop_overlay.setGeometry(self.rect().adjusted(12, 12, -12, -12))
+        self._label_header()
+        self._update_jumps()
+
+    def _label_header(self):
+        """Wide window: 'Search', 'Members'... next to the header icons. Narrow: icons only."""
+        wide = self.width() >= 980 and not self.compact
+        if wide == self._labelled:
+            return
+        self._labelled = wide
+        for b, label in self.head_labels.items():
+            b.setText(f" {label}" if wide else "")
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon if wide else Qt.ToolButtonIconOnly)
+            if wide:
+                b.setMinimumSize(0, 38)
+                b.setMaximumSize(200, 38)
+                b.setStyleSheet(self._head_styles[b] + f" QToolButton {{ padding: 0 12px 0 8px; color: {T.MUTED};"
+                                " font-size: 9pt; font-weight: 600; }")
+                b.setFixedWidth(b.sizeHint().width() + 8)
+            else:
+                b.setStyleSheet(self._head_styles[b])
+                b.setFixedSize(38, 38)
+
+    # ------------------------------------------------------------ jumping around
+    def _update_jumps(self):
+        """'↓ Latest' when scrolled up (with how many came in), '↑ N new messages' when the line is above."""
+        if not self.conv:
+            self.jump_down.hide()
+            self.jump_up.hide()
+            return
+        bar = self.scroll.verticalScrollBar()
+        far = bar.maximum() - bar.value() > 400
+        if not far:
+            self.new_below = 0
+        if far or self.new_below:
+            self.jump_down.setText(f"↓  {self.new_below} new" if self.new_below else "↓  Latest")
+            self.jump_down.adjustSize()
+            g = self.scroll.geometry()
+            self.jump_down.move(g.right() - self.jump_down.width() - 26, g.bottom() - self.jump_down.height() - 14)
+            self.jump_down.raise_()
+            self.jump_down.show()
+        else:
+            self.jump_down.hide()
+        above = False
+        if self.divider is not None and not self.divider.isHidden():
+            above = self.divider.y() + self.divider.height() < bar.value()
+        elif self.unread_count and not self.first_unread_id and not self._anchor:
+            above = bar.value() > 0                  # the first unread is older than what's loaded
+        if above and self.unread_count:
+            n = self.unread_count
+            self.jump_up.setText(f"↑  {n} new message{'s' if n != 1 else ''}")
+            self.jump_up.adjustSize()
+            g = self.scroll.geometry()
+            self.jump_up.move(g.center().x() - self.jump_up.width() // 2, g.top() + 12)
+            self.jump_up.raise_()
+            self.jump_up.show()
+        else:
+            self.jump_up.hide()
+
+    def jump_to_latest(self):
+        self.new_below = 0
+        self._stick_bottom = True
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def jump_to_unread(self):
+        if self.divider is not None:
+            self._stick_bottom = False
+            self.scroll.verticalScrollBar().setValue(max(0, self.divider.y() - 20))
+        else:                                        # not loaded yet: go up, which loads older messages
+            self.scroll.verticalScrollBar().setValue(0)
+
+    def open_viewer(self, msg):
+        """The picture viewer, with every picture shown in this chat (← → move between them)."""
+        pics = []
+        for r in self.rows:
+            if isinstance(r, GalleryRow):
+                pics += r.msgs
+            elif isinstance(r, MessageRow) and r.msg.get("file") and is_previewable(r.msg["file"]) \
+                    and not r.msg.get("deleted"):
+                pics.append(r.msg)
+        if not any(m["id"] == msg["id"] for m in pics):
+            pics = [msg]
+        ImageViewer(self.ctx, pics, msg).show()
+
+    def zoom(self, step):
+        """Ctrl + / Ctrl − / Ctrl 0: bigger or smaller message text (remembered on this PC)."""
+        cur = ZOOM["pct"]
+        if step == 0:
+            new = 100
+        else:
+            bigger = [z for z in ZOOM_STEPS if z > cur]
+            smaller = [z for z in ZOOM_STEPS if z < cur]
+            new = (bigger[0] if bigger else cur) if step > 0 else (smaller[-1] if smaller else cur)
+        if new == cur:
+            return
+        ZOOM["pct"] = new
+        self.ctx.config["chat_zoom"] = new
+        self.ctx.config.save()
+        if self.conv:
+            at_bottom = self._at_bottom()
+            self._stick_bottom = at_bottom
+            self.render_all()
+        self.ctx.toast(f"Message text {new}%" + ("" if new != 100 else "  (normal)"), 1500)
 
     def _last_msg(self):
         for r in reversed(self.rows):
@@ -1799,9 +2046,14 @@ class ChatView(QWidget):
             return
         if last and msg["id"] == last["id"]:
             return
-        if any(getattr(r, "msg", {}).get("id") == msg["id"] for r in self.rows[-20:]):
+        if any(getattr(r, "msg", {}).get("id") == msg["id"] or (isinstance(r, GalleryRow) and r.has(msg["id"]))
+               for r in self.rows[-20:]):
             return
         near_bottom = self._at_bottom() or msg["sender_id"] == self.store.my_id
+        if msg["sender_id"] == self.store.my_id and self.divider is not None:
+            self.divider.hide()                  # you answered: the "New messages" line has done its job
+        if not near_bottom and is_new and msg["kind"] != "system":
+            self.new_below += 1
         if near_bottom and self.rendered >= self.render_limit + 60:
             # a busy chat left open all day: drop the oldest widgets instead of growing forever
             self.render_limit = RENDER_MAX
@@ -1810,12 +2062,13 @@ class ChatView(QWidget):
             return
         w = self._append(msg, last)
         self.rendered += 1
-        if isinstance(w, MessageRow):
-            w.set_max_width(int(max(300, self.scroll.viewport().width() - 40) * 0.72))
+        if isinstance(w, (MessageRow, GalleryRow)):
+            w.set_max_width(self._bubble_width())
         self.loading.hide()
         if near_bottom:
             self._stick_bottom = True
         QTimer.singleShot(500, self._update_seen)
+        QTimer.singleShot(0, self._update_jumps)
 
     def _on_history(self, conv, msgs, older):
         if conv != self.conv:
@@ -1845,16 +2098,30 @@ class ChatView(QWidget):
 
     def _on_range(self, _min, maximum):
         bar = self.scroll.verticalScrollBar()
+        if self._anchor and self.divider is not None:
+            # opened with unread messages: start at the "New messages" line, not at the very bottom
+            y = self.divider.y() - 40
+            if y < maximum:
+                self._stick_bottom = False
+                bar.setValue(max(0, y))
+                QTimer.singleShot(700, self._drop_anchor)
+                return
+            self._anchor = None
         if self._keep_from_bottom is not None:
             bar.setValue(maximum - self._keep_from_bottom)
             self._keep_from_bottom = None
         elif self._stick_bottom:
             bar.setValue(maximum)
 
+    def _drop_anchor(self):
+        self._anchor = None
+        self._update_jumps()
+
     def _on_scroll(self, value):
         self.hover_bar.hide()
         bar = self.scroll.verticalScrollBar()
         self._stick_bottom = value >= bar.maximum() - 60
+        self._update_jumps()
         if value == 0 and bar.maximum() > 0 and self.conv:
             c = self.store.conversation(self.conv)
             if len(c.messages) > self.rendered:        # already in memory: just show more
@@ -2035,6 +2302,8 @@ class ChatView(QWidget):
 
     def set_compact(self, on):
         self.compact = on
+        self._labelled = None
+        self._label_header()
         self.b_back.setVisible(on)
         self.input.setPlaceholderText("Message..." if on else "Write a message...")
         self.head.layout().setContentsMargins(8 if on else 22, 10, 10 if on else 16, 10)
@@ -2283,7 +2552,7 @@ class ChatView(QWidget):
 
     def scroll_to(self, msg_id):
         for r in self.rows:
-            if getattr(r, "msg", {}).get("id") == msg_id:
+            if getattr(r, "msg", {}).get("id") == msg_id or (isinstance(r, GalleryRow) and r.has(msg_id)):
                 self._stick_bottom = False
                 self.scroll.ensureWidgetVisible(r, 0, 80)
                 if isinstance(r, MessageRow):
@@ -2348,7 +2617,7 @@ class ChatView(QWidget):
     def _my_last_row(self):
         """My message if it is the latest visible one (deleted messages are skipped)."""
         for r in reversed(self.rows):
-            if isinstance(r, MessageRow) and not r.msg.get("deleted"):
+            if isinstance(r, (MessageRow, GalleryRow)) and not r.msg.get("deleted"):
                 return r if r.mine else None
         return None
 
@@ -2358,7 +2627,7 @@ class ChatView(QWidget):
             return
         row = self._my_last_row()
         for r in self.rows:
-            if isinstance(r, MessageRow) and r.seen and r is not row:
+            if isinstance(r, (MessageRow, GalleryRow)) and r.seen and r is not row:
                 r.set_seen("")
         if not row:
             return

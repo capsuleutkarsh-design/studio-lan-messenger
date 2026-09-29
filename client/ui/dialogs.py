@@ -598,6 +598,17 @@ class SettingsDialog(Dialog):
         row.addWidget(browse)
         self.notifications = QCheckBox("Show a notification for new messages")
         self.notifications.setChecked(cfg["notifications"])
+        self.quick_reply = QCheckBox("As a pop-up I can answer right there (instead of a Windows notification)")
+        self.quick_reply.setChecked(cfg["quick_reply"])
+        self.quick_reply.setEnabled(cfg["notifications"])
+        self.notifications.toggled.connect(self.quick_reply.setEnabled)
+        self.text_scale = QComboBox()
+        for value, label in ((0.9, "Small"), (1.0, "Normal"), (1.15, "Large"), (1.3, "Extra large"),
+                             (1.5, "Huge")):
+            self.text_scale.addItem(label, value)
+        cur = float(cfg.get("text_scale") or 1)
+        self.text_scale.setCurrentIndex(min(range(self.text_scale.count()),
+                                            key=lambda i: abs(self.text_scale.itemData(i) - cur)))
         self.sounds = QCheckBox("Play a sound for new messages")
         self.sounds.setChecked(cfg["sounds"])
         self.close_to_tray = QCheckBox("Keep running in the tray when the window is closed")
@@ -619,8 +630,10 @@ class SettingsDialog(Dialog):
         form.addRow("Theme", self.theme)
         form.addRow("", self.festivals)
         form.addRow("Accent colour", swatches)
+        form.addRow("Text size", self.text_scale)
         section(form, "Notifications")
         form.addRow("", self.notifications)
+        form.addRow("", self.quick_reply)
         form.addRow("", self.sounds)
         form.addRow("", self.allow_buzz)
         form.addRow("Meetings", self.meet_remind)
@@ -677,6 +690,7 @@ class SettingsDialog(Dialog):
         cfg = self.ctx.config
         cfg["download_dir"] = self.download_dir.text().strip() or cfg["download_dir"]
         cfg["notifications"] = self.notifications.isChecked()
+        cfg["quick_reply"] = self.quick_reply.isChecked()
         cfg["sounds"] = self.sounds.isChecked()
         cfg["close_to_tray"] = self.close_to_tray.isChecked()
         cfg["auto_away_minutes"] = self.away.value()
@@ -689,14 +703,16 @@ class SettingsDialog(Dialog):
                 set_autostart(cfg["start_with_windows"])
             except OSError as e:
                 QMessageBox.warning(self, "Settings", f"Could not change Windows startup: {e}")
-        look_changed = ((cfg["theme"], cfg["accent"], cfg["festival_themes"])
-                        != (self.theme.currentData(), self.accent, self.festivals.isChecked()))
+        look_changed = ((cfg["theme"], cfg["accent"], cfg["festival_themes"], float(cfg["text_scale"] or 1))
+                        != (self.theme.currentData(), self.accent, self.festivals.isChecked(),
+                            self.text_scale.currentData()))
+        cfg["text_scale"] = self.text_scale.currentData()
         cfg["theme"], cfg["accent"] = self.theme.currentData(), self.accent
         cfg["festival_themes"] = self.festivals.isChecked()
         cfg.save()
         super().accept()
         if look_changed and QMessageBox.question(
-                self.ctx, "New look", "Restart Quillo now to apply the new theme?") == QMessageBox.Yes:
+                self.ctx, "New look", "Restart Quillo now to apply the new look?") == QMessageBox.Yes:
             self.ctx.restart()
 
 
@@ -883,10 +899,10 @@ class SearchDialog(Dialog):
     """Search what you can see, by text or file name - narrowed to a person, a chat, some days, or files."""
     open_conv = Signal(str)
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, query=""):
         from PySide6.QtCore import QDate
         from PySide6.QtWidgets import QCheckBox, QComboBox, QDateEdit
-        super().__init__(ctx, "Search messages", 640)
+        super().__init__(ctx, f"Everything about {query}" if query else "Search messages", 640)
         self.ctx = ctx
         self.setMinimumHeight(520)
         self.results = []
@@ -955,6 +971,9 @@ class SearchDialog(Dialog):
         self.more.clicked.connect(lambda: self.search(more=True))
         self.more.hide()
         self.lay.addWidget(self.more)
+        if query:
+            self.query.setText(query)
+            QTimer.singleShot(0, self.search)
 
     def _filters(self):
         f = {}

@@ -186,7 +186,7 @@ def apply(theme="midnight", accent=None, festivals=False):
     ACCENT_HOVER = mix(acc, "#ffffff", 0.85) if pal["DARK"] else mix(acc, "#000000", 0.88)
     ACCENT_SOFT = mix(acc, pal["PANEL"], 0.20 if pal["DARK"] else 0.13)
     ACCENT_FOCUS = mix(acc, pal["SURFACE"], 0.55)
-    BUBBLE_ME = mix(acc, pal["BG"], 0.26 if pal["DARK"] else 0.16)
+    BUBBLE_ME = mix(acc, pal["BG"], 0.34 if pal["DARK"] else 0.22)     # my own messages: clearly mine
     HAIR = mix(pal["BORDER"], pal["PANEL"], 0.55)
     STYLESHEET = _stylesheet()
     return STYLESHEET

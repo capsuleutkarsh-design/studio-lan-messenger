@@ -161,6 +161,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "pin": self.h_pin,
             "pins": self.h_pins,
             "mute": self.h_mute,
+            "set_pref": self.h_set_pref,
             "read_by": self.h_read_by,
             "announcement_reads": self.h_announcement_reads,
             "screen_invite": self.h_screen_invite,
@@ -1050,6 +1051,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "recent": recent,
             "announcements": anns[:100],
             "muted": self.db.muted_convs(uid),
+            "prefs": self.db.prefs(uid),
+            "shot_pattern": self.shot_pattern(),
             "update": self.update_info(),
             "max_file_size": int(self.config["max_file_mb"]) * 1024 * 1024,
             "trusted_link_hosts": self.trusted_link_hosts(),
@@ -1755,6 +1758,25 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 raise ClientError("User not found")
         self.db.set_muted(s.user_id, conv, bool(req.get("muted", True)))
         self.push_user(s.user_id, {"op": "muted", "conv": conv, "muted": bool(req.get("muted", True))}, exclude=s)
+
+    # Personal settings kept on the server, so they follow a person to any PC (studio PCs are often rented):
+    # chats pinned to the top, focus time, and whether the welcome tour was seen.
+    PREF_KEYS = {"pinned_chats", "focus", "tour_done"}
+
+    def h_set_pref(self, s, req):
+        key = req.get("key")
+        if key not in self.PREF_KEYS:
+            raise ClientError("Unknown setting")
+        value = req.get("value")
+        if len(json.dumps(value)) > 4000:
+            raise ClientError("Setting too large")
+        self.db.set_pref(s.user_id, key, value)
+        self.push_user(s.user_id, {"op": "pref", "key": key, "value": value}, exclude=s)
+
+    def shot_pattern(self):
+        """The admin's shot name pattern (Settings), or "" when it is off or not a valid regular expression."""
+        pattern = str(self.config["shot_code_pattern"] or "")
+        return pattern if P.shot_regex(pattern) else ""
 
     def h_read_by(self, s, req):
         """Who has read a room message (for 'Seen by')."""

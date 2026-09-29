@@ -113,6 +113,19 @@ class MainWindow(QMainWindow):
         ub.addWidget(later)
         self.update_bar.hide()
         outer.addWidget(self.update_bar)
+        self.focus_bar = QFrame()
+        self.focus_bar.setStyleSheet(f"QFrame {{ background: {T.ACCENT_SOFT}; }}")
+        fb = QHBoxLayout(self.focus_bar)
+        fb.setContentsMargins(16, 4, 10, 4)
+        self.focus_label = plain(QLabel())
+        self.focus_label.setStyleSheet(f"color: {T.TEXT}; font-weight: 600; background: transparent;")
+        fb.addWidget(self.focus_label, 1)
+        focus_end = QPushButton("End now")
+        focus_end.clicked.connect(self.end_focus)
+        fb.addWidget(focus_end)
+        self.focus_bar.hide()
+        outer.addWidget(self.focus_bar)
+        self.focus_missed = 0                 # messages that waited while focus time was on
         self.pending_update = None
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -178,7 +191,14 @@ class MainWindow(QMainWindow):
         self.sidebar.open_conv.connect(self.open_conv)
         self.sidebar.new_room.connect(self.new_room)
         self.sidebar.conv_menu.connect(self.conv_menu)
+        self.sidebar.go_page.connect(lambda key: (self.rail[key].setChecked(True), self.rail_clicked(key)))
+        self._set_sidebar_width(config.get("sidebar_width", 330), save=False)
         body.addWidget(self.sidebar)
+        from client.ui.sidebar import SidebarEdge
+        self.sidebar_edge = SidebarEdge(self.sidebar)
+        self.sidebar_edge.moved.connect(lambda w: self._set_sidebar_width(w, save=False))
+        self.sidebar_edge.released.connect(lambda: self._set_sidebar_width(self.sidebar.width()))
+        body.addWidget(self.sidebar_edge)
 
         # ---- content
         self.stack = QStackedWidget()
@@ -251,6 +271,19 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.focus_search)
         QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=lambda: self.set_compact(not self.compact))
         QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=lambda: self.chat.take_screenshot())
+        QShortcut(QKeySequence("Ctrl+/"), self, activated=self.show_shortcuts)
+        QShortcut(QKeySequence("F1"), self, activated=self.show_shortcuts)
+        for keys, step in (("Ctrl+=", 1), ("Ctrl++", 1), ("Ctrl+-", -1), ("Ctrl+0", 0)):
+            QShortcut(QKeySequence(keys), self, activated=lambda step=step: self.chat.zoom(step))
+        from client.ui import chat_view
+        from client.ui.widgets import set_shot_handler
+        chat_view.ZOOM["pct"] = int(config.get("chat_zoom", 100) or 100)
+        set_shot_handler(self.show_shot)
+        from client.ui.popups import PopupStack
+        self.popup_stack = PopupStack(store, self._quick_reply, self._popup_open)
+        store.prefs_changed.connect(self._prefs_changed)
+        self._focus_timer = QTimer(self, interval=20_000, timeout=self._update_focus)
+        self._focus_timer.start()
         self.chat.back.connect(lambda: self._compact_show("list"))
         self.rail["chats"].setChecked(True)
         self.sidebar.show_page("chats")
@@ -306,6 +339,8 @@ class MainWindow(QMainWindow):
         T.dark_title_bar(self)
         if self.config["compact_mode"] and not self.compact:
             QTimer.singleShot(0, lambda: self.set_compact(True))
+        if getattr(self, "_tour_pending", False):
+            QTimer.singleShot(800, self._maybe_tour)
 
     # ============================================================ compact view
     COMPACT_WIDTH = 440
@@ -330,13 +365,15 @@ class MainWindow(QMainWindow):
             self.setMinimumSize(360, 480)
             self.sidebar.setMinimumWidth(0)
             self.sidebar.setMaximumWidth(16777215)
+            self.sidebar_edge.hide()
             self._dock_right()
             self._compact_show("content" if self.stack.currentWidget() is self.chat and self.chat.conv
                                else "list")
             self.set_on_top(self.config["compact_on_top"], save=False)
         else:
             self.set_on_top(False, save=False)
-            self.sidebar.setFixedWidth(330)
+            self._set_sidebar_width(self.config.get("sidebar_width", 330), save=False)
+            self.sidebar_edge.show()
             self.sidebar.show()
             self.stack.show()
             self.setMinimumSize(960, 600)
@@ -344,6 +381,19 @@ class MainWindow(QMainWindow):
                 self.restoreGeometry(self._normal_geometry)
             else:
                 self.resize(1280, 800)
+
+    def _set_sidebar_width(self, w, save=True):
+        from client.ui.sidebar import Sidebar
+        try:
+            w = int(w)
+        except (TypeError, ValueError):
+            w = Sidebar.WIDTH
+        w = max(Sidebar.MIN_WIDTH, min(Sidebar.MAX_WIDTH, w))
+        if not self.compact:
+            self.sidebar.setFixedWidth(w)
+        if save:
+            self.config["sidebar_width"] = w
+            self.config.save()
 
     def _dock_right(self):
         screen = self.screen() or QApplication.primaryScreen()
@@ -400,8 +450,10 @@ class MainWindow(QMainWindow):
                 and self.isActiveWindow() and not self.isMinimized())
 
     def _on_logged_in(self, boot):
-        from client.ui.widgets import set_link_policy
+        from client.ui.widgets import set_link_policy, set_shot_pattern
         set_link_policy(boot.get("trusted_link_hosts", []), self.config)
+        set_shot_pattern(self.store.shot_pattern)
+        self._update_focus()
         self.banner.hide()
         self.home.set_name(self.store.me.get("name", ""), self.store.server_name)
         self.setWindowTitle(f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}")
@@ -421,6 +473,7 @@ class MainWindow(QMainWindow):
         # reminders that came due while this PC was off / signed out
         for r in [r for r in self.store.reminders if r.get("state") == 1][:5]:
             self._show_reminder(r, sound=False)
+        QTimer.singleShot(900, self._maybe_tour)
         # unread announcements pop up after login (max 3)
         unread = [a for a in self.store.announcements if not a.get("read")]
         for a in reversed(unread[:3]):
@@ -434,6 +487,7 @@ class MainWindow(QMainWindow):
             return
         for a in reversed([a for a in self.store.announcements if not a.get("read")][:3]):
             self._popup_announcement(a)
+        QTimer.singleShot(900, self._maybe_tour)
 
     def _on_connection_lost(self, reason):
         self.banner.setText(f"Connection to the server lost — reconnecting...  ({reason})")
@@ -444,6 +498,8 @@ class MainWindow(QMainWindow):
         me = self.store.me
         status = me.get("status", "online") if connected else "offline"
         line = "Reconnecting..." if not connected else (self.store.status_text(me) or T.STATUS_LABELS.get(status, status))
+        if connected and self.store.focus_until():
+            line += f"\n🎯 Focus time until {datetime.datetime.fromtimestamp(self.store.focus_until()):%H:%M}"
         self.me_btn.set_me(me.get("name", ""), status, f"{me.get('name', '')}\n{line}", uid=self.store.my_id)
 
     def me_menu(self):
@@ -459,7 +515,11 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setChecked(me.get("status") == st)
         m.addAction(icon("smile", T.TEXT, 16), "Profile photo & status...", self.edit_status_message)
+        m.addMenu(self.focus_menu(m))
         m.addAction(icon("clock", T.TEXT, 16), "New reminder...", self.new_reminder)
+        m.addSeparator()
+        m.addAction(icon("list", T.TEXT, 16), "Keyboard shortcuts   Ctrl+/", self.show_shortcuts)
+        m.addAction(icon("info", T.TEXT, 16), "Welcome tour", self.show_tour)
         m.addSeparator()
         dark = T.DARK
         m.addAction(icon("palette", T.TEXT, 16), "Switch to light mode" if dark else "Switch to dark mode",
@@ -567,14 +627,21 @@ class MainWindow(QMainWindow):
             return
         if not mention and (self.store.is_muted(msg["conv"]) or self.store.me.get("status") == "busy"):
             return
+        if self.store.focus_until() and not self.store.gets_through_focus(msg):
+            self.focus_missed += 1
+            return
         sender = self.store.user_name(msg["sender_id"])
         where = "" if msg["conv"].startswith("u:") else f" in {self.store.title(msg['conv'])}"
-        self.notify(f"{sender} replied in a thread{where}", stickers.summary(msg), msg["conv"])
+        self.notify(f"{sender} replied in a thread{where}", stickers.summary(msg), msg["conv"], msg)
 
     def _on_message(self, msg, is_new):
         if not is_new or msg["sender_id"] == self.store.my_id or msg["kind"] == "system":
             return
+        focus = self.store.focus_until() and not self.store.gets_through_focus(msg)
         if msg["kind"] == "buzz":
+            if focus:                        # focus time: a buzz waits like any other message
+                self.focus_missed += 1
+                return
             self.buzzed(msg)
             return
         if self.is_viewing(msg["conv"]):
@@ -583,10 +650,13 @@ class MainWindow(QMainWindow):
         # muted chats and "Do not disturb" stay silent, unless someone @mentions you
         if not mention and (self.store.is_muted(msg["conv"]) or self.store.me.get("status") == "busy"):
             return
+        if focus:                            # focus time: only @mentions, my lead and the people I chose
+            self.focus_missed += 1
+            return
         sender = self.store.user_name(msg["sender_id"])
         where = "" if msg["conv"].startswith("u:") else f" in {self.store.title(msg['conv'])}"
         title = f"{sender} mentioned you{where}" if mention else f"{sender}{where}"
-        self.notify(title, stickers.summary(msg), msg["conv"])
+        self.notify(title, stickers.summary(msg), msg["conv"], msg)
 
     # ======================================================= reminders
     def add_reminder(self, due_at, text="", conv="", message_id=None):
@@ -703,13 +773,152 @@ class MainWindow(QMainWindow):
             anim.setKeyValueAt(i / steps, start + QPoint(int(dx), 0))
         anim.start()
 
-    def notify(self, title, text, target):
+    def notify(self, title, text, target, msg=None):
         self.last_notified_conv = target
         if self.config["notifications"]:
-            self.tray.showMessage(title, text[:200], self.base_icon, 5000)
+            if msg is not None and self.config["quick_reply"]:
+                thread = msg.get("thread_root") if not msg.get("thread_broadcast") else None
+                self.popup_stack.show(msg["conv"], title, text, msg["sender_id"], thread)
+            else:
+                self.tray.showMessage(title, text[:200], self.base_icon, 5000)
         if self.config["sounds"]:
             play_sound()
         QApplication.alert(self, 0)
+
+    def _quick_reply(self, conv, text, thread_root):
+        """An answer typed into a pop-up: sent like any message (it waits in the outbox if the server is away)."""
+        if not self.store.conv_exists(conv):
+            return
+        self.outbox.add(conv, text=text, thread_root=thread_root)
+        self.store.mark_read(conv)
+
+    def _popup_open(self, conv):
+        self.show_normal()
+        if self.store.conv_exists(conv):
+            self.open_conv(conv)
+
+    # ============================================================ focus time
+    def focus_menu(self, parent):
+        """Focus time: silence everything except @mentions, my lead and a few people I choose."""
+        m = QMenu("Focus time", parent)
+        m.setIcon(icon("clock", T.TEXT, 16))
+        until = self.store.focus_until()
+        now = datetime.datetime.now()
+        if until:
+            end = datetime.datetime.fromtimestamp(until)
+            head = m.addAction(f"On until {end:%H:%M}" if end.date() == now.date() else f"On until {end:%a %H:%M}")
+            head.setEnabled(False)
+            m.addAction("End focus time", self.end_focus)
+            m.addSeparator()
+        for label, minutes in (("30 minutes", 30), ("1 hour", 60), ("2 hours", 120), ("4 hours", 240)):
+            m.addAction(label, lambda minutes=minutes: self.start_focus(time.time() + minutes * 60))
+        evening = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        if now < evening - datetime.timedelta(minutes=30):
+            m.addAction("Until 6 PM", lambda: self.start_focus(evening.timestamp()))
+        m.addSeparator()
+        n = len(self.store.focus_people())
+        m.addAction(icon("users", T.TEXT, 16), "Who can still reach me..." + (f"  ({n} chosen)" if n else ""),
+                    self.choose_focus_people)
+        return m
+
+    def start_focus(self, until):
+        f = dict(self.store.prefs.get("focus") or {})
+        f["until"] = until
+        self.focus_missed = 0
+        self.store.set_pref("focus", f)
+        end = datetime.datetime.fromtimestamp(until)
+        self.toast(f"🎯 Focus time until {end:%H:%M} — only @mentions, your lead and the people you chose get through")
+
+    def end_focus(self):
+        f = dict(self.store.prefs.get("focus") or {})
+        f["until"] = 0
+        self.store.set_pref("focus", f)
+
+    def choose_focus_people(self):
+        from client.ui.dialogs import Dialog, MemberPicker, _buttons
+        dlg = Dialog(self, "Who can reach me in focus time", 460)
+        note = QLabel("@mentions and the person you report to always get through. Tick anyone else who should.")
+        note.setWordWrap(True)
+        T.polish(note, muted=True)
+        dlg.lay.addWidget(note)
+        picker = MemberPicker(self.store, checked=self.store.focus_people())
+        dlg.lay.addWidget(picker, 1)
+        dlg.lay.addWidget(_buttons(dlg))
+        if dlg.exec():
+            f = dict(self.store.prefs.get("focus") or {})
+            f["people"] = picker.selected()[:50]
+            self.store.set_pref("focus", f)
+
+    def _prefs_changed(self, key):
+        if key in ("", "focus"):
+            self._update_focus()
+
+    def _update_focus(self):
+        until = self.store.focus_until() if self.store.me else 0
+        was_on = self.focus_bar.isVisible()
+        if until:
+            end = datetime.datetime.fromtimestamp(until)
+            n = len(self.store.focus_people())
+            lead = self.store.manager_name(self.store.my_id)
+            who = ["@mentions"] + ([lead] if lead else []) + ([f"{n} more"] if n else [])
+            waiting = f"  ·  {self.focus_missed} waiting" if self.focus_missed else ""
+            self.focus_label.setText(f"🎯  Focus time until {end:%H:%M}  ·  only {', '.join(who)} get through{waiting}")
+            self.focus_bar.show()
+        else:
+            self.focus_bar.hide()
+            if was_on:
+                n = self.focus_missed
+                self.focus_missed = 0
+                self.toast("Focus time is over" + (f" — {n} message{'s' if n != 1 else ''} came in" if n else ""))
+        self._show_me(connected=self.conn.online)
+
+    # ============================================================ help
+    def show_shortcuts(self):
+        from client.ui.help import ShortcutsDialog
+        ShortcutsDialog(self).exec()
+
+    def show_tour(self):
+        from client.ui.help import WelcomeTour
+        if getattr(self, "_tour", None) is not None and self._tour.isVisible():
+            self._tour.raise_()
+            return
+        self._tour = WelcomeTour(self)
+        self._tour.finished.connect(lambda _r: self._tour_done())
+        self._tour.open()                      # not exec(): the chat keeps running behind it
+
+    def _tour_key(self):
+        return f"{self.conn.host}:{self.store.me.get('username', '')}"
+
+    def _maybe_tour(self):
+        """New people see the welcome tour once, and everyone once after this update."""
+        s = self.store
+        if not s.me or s.prefs.get("tour_done"):
+            return
+        if not self.isVisible():               # started with Windows, in the tray: when the window first opens
+            self._tour_pending = True
+            return
+        self._tour_pending = False
+        if not getattr(s, "prefs_on_server", False) and self._tour_key() in (self.config.get("tour_seen") or []):
+            return
+        self.show_tour()
+
+    def _tour_done(self):
+        self.store.set_pref("tour_done", 1)
+        seen = list(self.config.get("tour_seen") or [])
+        if self._tour_key() not in seen:
+            self.config["tour_seen"] = (seen + [self._tour_key()])[-20:]
+            self.config.save()
+
+    # ============================================================ pinned chats, shot names
+    def pin_chat(self, conv, pinned):
+        if not self.store.set_pinned(conv, pinned):
+            self.toast(f"Up to {self.store.MAX_PINNED} chats can be pinned — unpin one first.")
+        elif pinned:
+            self.toast(f"📌 {self.store.title(conv)} stays at the top of your chats")
+
+    def show_shot(self, name):
+        """A shot name (FAL_030) was clicked: everything said about it, in every chat I can see."""
+        SearchDialog(self, name).exec()
 
     def _on_announcement(self, ann):
         if ann["sender_id"] == self.store.my_id:
@@ -980,6 +1189,9 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         kind, target = P.parse_conv(conv)
         m.addAction(icon("chat", T.TEXT, 16), "Open chat", lambda: self.open_conv(conv))
+        pinned = self.store.is_pinned(conv)
+        m.addAction(icon("pin", T.TEXT, 16), "Unpin from the top" if pinned else "Pin to the top",
+                    lambda: self.pin_chat(conv, not pinned))
         muted = self.store.is_muted(conv)
         m.addAction(icon("bell", T.TEXT, 16), "Unmute notifications" if muted else "Mute notifications",
                     lambda: self.set_muted(conv, not muted))
@@ -1251,6 +1463,12 @@ class MainWindow(QMainWindow):
             w.close()
         self.reminder_cards.clear()
         self.popups.clear()
+        self.popup_stack.close_all()
+        if getattr(self, "_tour", None) is not None:
+            self._tour.close()
+            self._tour = None
+        self.focus_bar.hide()
+        self.focus_missed = 0
         self.chat.conv = None
         self.chat._clear()
         self.stack.setCurrentWidget(self.home)
@@ -1265,6 +1483,7 @@ class MainWindow(QMainWindow):
             return
         self.quitting = True
         self.screens.stop()
+        self.popup_stack.close_all()
         self.conn.logout()
         self.tray.hide()
         QApplication.quit()

@@ -10,7 +10,9 @@ from common import protocol as P
 from common import theme as T
 from common.icons import icon
 from client import stickers
-from client.ui.widgets import ConvItem, IconButton, SectionLabel, first_name, fmt_last_seen, fmt_list_time, plain
+from client.ui.widgets import (
+    ConvItem, EmptyState, IconButton, SectionLabel, first_name, fmt_last_seen, fmt_list_time,
+)
 
 
 class ItemList(QScrollArea):
@@ -28,10 +30,7 @@ class ItemList(QScrollArea):
         self.lay.addStretch(1)
         self.setWidget(w)
         self.items: dict[str, ConvItem] = {}
-        self.empty = plain(QLabel())
-        self.empty.setWordWrap(True)
-        self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setStyleSheet(f"color: {T.FAINT}; padding: 40px 24px; line-height: 150%;")
+        self.empty = EmptyState()
 
     def clear(self):
         while self.lay.count() > 1:
@@ -47,25 +46,77 @@ class ItemList(QScrollArea):
         if isinstance(w, ConvItem):
             self.items[w.conv] = w
 
-    def show_empty(self, text):
-        self.empty.setText(text)
+    def show_empty(self, title, text="", icon_name="chat", button=None, action=None):
+        self.empty.set(icon_name, title, text, button, action)
         self.add(self.empty)
         self.empty.show()
+
+
+class SidebarEdge(QWidget):
+    """The thin strip between the chat list and the chat: drag it to make the list wider or narrower,
+    double-click for the normal width."""
+    moved = Signal(int)
+    released = Signal()
+
+    def __init__(self, sidebar):
+        super().__init__()
+        self.sidebar = sidebar
+        self.setFixedWidth(5)
+        self.setCursor(Qt.SizeHorCursor)
+        self.setToolTip("Drag to resize the list  ·  double-click for the normal width")
+        self._start = None
+        self._hover = False
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _):
+        from PySide6.QtGui import QColor, QPainter
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(T.PANEL))
+        if self._hover or self._start is not None:
+            p.fillRect(self.width() // 2 - 1, 0, 2, self.height(), QColor(T.ACCENT))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._start = (e.globalPosition().x(), self.sidebar.width())
+
+    def mouseMoveEvent(self, e):
+        if self._start is not None:
+            x0, w0 = self._start
+            self.moved.emit(int(w0 + e.globalPosition().x() - x0))
+
+    def mouseReleaseEvent(self, e):
+        if self._start is not None:
+            self._start = None
+            self.update()
+            self.released.emit()
+
+    def mouseDoubleClickEvent(self, e):
+        self.moved.emit(Sidebar.WIDTH)
+        self.released.emit()
 
 
 class Sidebar(QFrame):
     open_conv = Signal(str)
     new_room = Signal()
     conv_menu = Signal(str, object)
+    go_page = Signal(str)                   # an empty list's button: "Find people" opens People
 
     PAGES = ("chats", "contacts", "rooms")
+    WIDTH, MIN_WIDTH, MAX_WIDTH = 330, 250, 560     # the edge next to the chat can be dragged
 
     def __init__(self, store):
         super().__init__()
         self.store = store
         self.active_conv = None
         self.typing = {}
-        self.setFixedWidth(330)
+        self.setFixedWidth(self.WIDTH)
         self.setStyleSheet(f"Sidebar {{ background: {T.PANEL}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 16, 0, 0)
@@ -128,6 +179,7 @@ class Sidebar(QFrame):
         store.user_updated.connect(self._user_updated)
         store.conv_changed.connect(self._conv_changed)
         store.typing.connect(self._typing)
+        store.prefs_changed.connect(lambda key: key in ("", "pinned_chats") and self.schedule_rebuild())
 
     # ---------------------------------------------------------------- api
     def schedule_rebuild(self, *_):
@@ -198,12 +250,13 @@ class Sidebar(QFrame):
                 item.set_data(u.get("name", "?"), sub, "", unread, status, dim=status == "offline")
             else:
                 item.set_data(u.get("name", "?"), self._preview(conv), when, unread, status,
-                              muted=s.is_muted(conv))
+                              muted=s.is_muted(conv), pinned=self.page == "chats" and s.is_pinned(conv))
         else:
             room = s.rooms.get(target, {})
             sub = self._preview(conv) if self.page == "chats" else (
                 room.get("topic") or f"{len(room.get('members', []))} members")
-            item.set_data(room.get("name", "Room"), sub, when, unread, room=True, muted=s.is_muted(conv))
+            item.set_data(room.get("name", "Room"), sub, when, unread, room=True, muted=s.is_muted(conv),
+                          pinned=self.page == "chats" and s.is_pinned(conv))
         item.typing = bool(self.typing.get(conv))
         item.set_active(conv == self.active_conv)
 
@@ -222,29 +275,43 @@ class Sidebar(QFrame):
         lst.clear()
         s = self.store
         if self.page == "chats":
-            convs = [c for c in s.convs.values() if c.last and s.conv_exists(c.conv)]
-            if self.filter == "unread":
-                convs = [c for c in convs if c.unread]
-            elif self.filter in ("people", "rooms"):
-                convs = [c for c in convs if c.conv.startswith("u:" if self.filter == "people" else "r:")]
+            def wanted(conv):
+                c = s.convs.get(conv)
+                if self.filter == "unread" and not (c and c.unread):
+                    return False
+                if self.filter in ("people", "rooms") and not conv.startswith("u:" if self.filter == "people"
+                                                                               else "r:"):
+                    return False
+                return self._query_match(s.title(conv))
+
+            mine = P.direct_conv(s.my_id) if s.my_id else None
+            pinned = [c for c in s.pinned_chats() if c != mine and wanted(c)]
+            convs = [c for c in s.convs.values() if c.last and s.conv_exists(c.conv)
+                     and c.conv != mine and c.conv not in pinned and wanted(c.conv)]
             convs.sort(key=lambda c: c.last_ts, reverse=True)
             n = 0
-            mine = P.direct_conv(s.my_id) if s.my_id else None
-            convs = [c for c in convs if c.conv != mine]
             if mine and self.filter in ("all", "people") and self._query_match("My space", "notes", "me"):
                 lst.add(self._make_item(mine))              # always at the top, even while empty
                 n += 1
-            for c in convs:
-                if self._query_match(s.title(c.conv)):
-                    lst.add(self._make_item(c.conv))
+            if pinned:
+                lst.add(SectionLabel("Pinned"))
+                for conv in pinned:
+                    lst.add(self._make_item(conv))
                     n += 1
+                if convs:
+                    lst.add(SectionLabel("Chats"))
+            for c in convs:
+                lst.add(self._make_item(c.conv))
+                n += 1
             if not n:
                 if self.search.text():
-                    lst.show_empty("Nothing found.")
+                    lst.show_empty("Nothing found", f"No chat called “{self.search.text().strip()}”.", "search",
+                                   "Search people", lambda: self.go_page.emit("contacts"))
                 elif self.filter == "unread":
-                    lst.show_empty("You're all caught up.")
+                    lst.show_empty("You're all caught up", "No unread messages.", "check")
                 else:
-                    lst.show_empty("No conversations yet.\nPick someone in People to start chatting.")
+                    lst.show_empty("No chats yet", "Pick someone in People to start chatting.", "chat",
+                                   "Find people", lambda: self.go_page.emit("contacts"))
         elif self.page == "contacts":
             order = {"online": 0, "busy": 1, "away": 2, "offline": 3}
 
@@ -275,7 +342,10 @@ class Sidebar(QFrame):
                     for u in sorted(sections[sect], key=sort_key):
                         lst.add(self._make_item(P.direct_conv(u["id"])))
             if not matches:
-                lst.show_empty("Nobody found." if self.search.text() else "No other users yet.")
+                if self.search.text():
+                    lst.show_empty("Nobody found", "Try a first name, a department or a section.", "search")
+                else:
+                    lst.show_empty("Nobody here yet", "People appear here once the admin adds them.", "users")
         else:
             rooms = [r for r in s.rooms.values() if self._query_match(r["name"], r.get("topic"))]
             manual = sorted((r for r in rooms if not r.get("auto")), key=lambda r: r["name"].lower())
@@ -288,8 +358,13 @@ class Sidebar(QFrame):
                     lst.add(self._make_item(P.room_conv(r["id"])))
                     n += 1
             if not n:
-                lst.show_empty("You are not in any room yet.\nClick + to create one." if not self.search.text()
-                               else "Nothing found.")
+                if self.search.text():
+                    lst.show_empty("Nothing found", "No room with that name.", "search")
+                elif self.store.perm("create_rooms"):
+                    lst.show_empty("No rooms yet", "A room is a group chat for a show, a team or a topic.",
+                                   "hash", "Create a room", self.new_room.emit)
+                else:
+                    lst.show_empty("No rooms yet", "You're added to rooms by the people who create them.", "hash")
         lst.setUpdatesEnabled(True)
         bar.setValue(pos)
 
@@ -306,8 +381,9 @@ class Sidebar(QFrame):
     def _conv_changed(self, conv):
         if self.page == "chats":
             lst = self.lists["chats"]
-            first = next(iter(lst.items), None)
-            if conv not in lst.items or first != conv:
+            first = next((c for c in lst.items if c != P.direct_conv(self.store.my_id)
+                          and not self.store.is_pinned(c)), None)
+            if conv not in lst.items or (first != conv and not self.store.is_pinned(conv)):
                 self.schedule_rebuild()   # new conversation or moved to the top
                 return
         item = self.lists[self.page].items.get(conv)

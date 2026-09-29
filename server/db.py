@@ -105,6 +105,12 @@ CREATE TABLE IF NOT EXISTS mutes(
     conv TEXT NOT NULL,
     PRIMARY KEY(user_id, conv)
 );
+CREATE TABLE IF NOT EXISTS prefs(
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY(user_id, key)
+);
 CREATE TABLE IF NOT EXISTS audit(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -1063,6 +1069,19 @@ class Database:
 
     def muted_convs(self, user_id: int) -> list[str]:
         return [r[0] for r in self._all("SELECT conv FROM mutes WHERE user_id=?", user_id)]
+
+    # ------------------------------------------------ personal settings that follow a person to any PC
+    def set_pref(self, user_id: int, key: str, value):
+        self._exec("INSERT OR REPLACE INTO prefs VALUES(?,?,?)", user_id, key, json.dumps(value))
+
+    def prefs(self, user_id: int) -> dict:
+        out = {}
+        for key, value in self._all("SELECT key, value FROM prefs WHERE user_id=?", user_id):
+            try:
+                out[key] = json.loads(value)
+            except ValueError:
+                pass
+        return out
 
     def room_readers(self, room_id: int, msg_id: int) -> list[int]:
         return [r[0] for r in self._all("SELECT user_id FROM room_members WHERE room_id=? AND last_read>=?",

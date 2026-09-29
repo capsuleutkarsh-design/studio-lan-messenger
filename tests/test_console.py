@@ -97,6 +97,24 @@ class ConsoleTest(unittest.TestCase):
     def test_departments_page(self):
         self.core.start()
         check_departments_page(self, self.win, self.win.api)
+
+    def test_shot_names_setting(self):
+        """1.10.0: the admin's pattern for shot names; a broken one is never saved."""
+        from common import protocol as P
+        page = next(p for title, _i, p in self.win.pages if title == "Settings")
+        page.refresh()
+        self.assertEqual(page.shots.text(), P.SHOT_PATTERN_DEFAULT)
+        page.shots.setText("FAL_[0-9")
+        page.save()
+        self.assertEqual(self.core.config["shot_code_pattern"], P.SHOT_PATTERN_DEFAULT)
+        mine = r"\b[A-Z]{3}_[0-9]{3}\b"
+        page.shots.setText(mine)
+        page.shot_test.setText("FAL_030 comp is up, KGF_1200 is not")
+        self.assertIn("FAL_030", page.shot_result.text())
+        self.assertNotIn("KGF_1200", page.shot_result.text())
+        page.save()
+        self.assertEqual(self.core.config["shot_code_pattern"], mine)
+        self.assertEqual(self.core.shot_pattern(), mine)
         self.refresh_all()
 
     def test_a_window_error_does_not_stop_the_server(self):

@@ -202,6 +202,12 @@ def main():
     crash.install("Quillo", log_file)
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    try:                                     # Settings > Text size: scales every window, on top of Windows' own
+        scale = float(ClientConfig()["text_scale"] or 1)
+    except (TypeError, ValueError, OSError):
+        scale = 1.0
+    if 0.8 <= scale <= 1.6 and scale != 1 and "QT_SCALE_FACTOR" not in os.environ:
+        os.environ["QT_SCALE_FACTOR"] = f"{scale:g}"
     app = QApplication(sys.argv)
     app.setApplicationName("Quillo")
     app.setWindowIcon(QIcon(asset("app.ico")))

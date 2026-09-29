@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
 from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
-from client.ui.widgets import (IconButton, esc, first_name, linkify, open_file, open_link, open_path, plain,
-                               rich_safe, show_in_folder)
+from client.ui.widgets import (EmptyState, IconButton, esc, first_name, linkify, open_file, open_link, open_path,
+                               plain, rich_safe, show_in_folder)
 
 
 class PageHeader(QFrame):
@@ -51,6 +51,10 @@ def scroll_column():
 
 
 TIPS = [
+    ("hash", "Shot names are links", "Write FAL_030 in a message: a click on it shows everything said about that shot."),
+    ("pin", "Keep chats at the top", "Right-click a chat in the list → Pin to the top. Up to 10 chats stay above the rest."),
+    ("clock", "Focus time", "Click your photo → Focus time: only @mentions, your lead and people you choose get through."),
+    ("list", "All the shortcuts", "Press Ctrl+/ to see every keyboard shortcut. Ctrl + and Ctrl − change the text size."),
     ("sticker", "Stickers", "Click the sticker button next to the emoji button — 459 desi, filmy, festival and mood stickers."),
     ("chart", "Quick polls", "Where for lunch? Which dailies slot? Attach button → Create a poll."),
     ("file", "Nuke scripts", "Paste a Nuke script straight into a chat. Others click Copy and paste it into Nuke."),
@@ -201,6 +205,9 @@ class HomePage(QWidget):
         upcoming = self.store.reminders or [x for x in self.store.scheduled if x["state"] == "pending"]
         cards = [self._catch_up(), self._calendar(), self._announcements(), self._team(),
                  self._coming_up() if upcoming else self._tip()]
+        cards = [c for c in cards if c is not None]
+        if len(cards) % 2 and wide and len(cards) > 1 and upcoming:
+            cards.append(self._tip())          # an even number of cards fills both columns
         for i, card in enumerate(cards):          # two columns when there is room, else one below the other
             grid.addWidget(card, i // 2 if wide else i, i % 2 if wide else 0)
         if wide:
@@ -343,9 +350,12 @@ class HomePage(QWidget):
         convs = [c for c in s.convs.values() if c.unread and c.last and s.conv_exists(c.conv)]
         convs.sort(key=lambda c: (s.is_muted(c.conv), -c.last_ts))
         if not convs:
-            recent = sorted((c for c in s.convs.values() if c.last and s.conv_exists(c.conv)),
+            mine = P.direct_conv(s.my_id)
+            recent = sorted((c for c in s.convs.values() if c.last and s.conv_exists(c.conv) and c.conv != mine),
                             key=lambda c: -c.last_ts)[:4]
-            done = QLabel("🎉  You're all caught up." + ("  Recent chats:" if recent else ""))
+            if not recent:
+                return None                     # nothing unread and no chats yet: the hero says "all caught up"
+            done = QLabel("🎉  You're all caught up.  Recent chats:")
             done.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px 6px 2px;")
             body.addWidget(done)
             convs = recent
@@ -375,12 +385,10 @@ class HomePage(QWidget):
 
     def _announcements(self):
         s = self.store
-        frame, body = _panel("Announcements", "See all", lambda: self.ctx.rail_clicked("announcements"))
         anns = s.announcements[:3]
         if not anns:
-            empty = QLabel("No announcements yet.")
-            empty.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px;")
-            body.addWidget(empty)
+            return None
+        frame, body = _panel("Announcements", "See all", lambda: self.ctx.rail_clicked("announcements"))
         for a in anns:
             row = _Clickable(lambda: self.ctx.rail_clicked("announcements"), 10)
             rl = QHBoxLayout(row)
@@ -425,17 +433,13 @@ class HomePage(QWidget):
         if not people and me.get("department"):
             people = [u for u in s.users.values() if u.get("department") == me["department"]]
             label = me["department"]
+        if not people:
+            return None                         # no team set up yet: nothing to show
         order = {"online": 0, "busy": 1, "away": 2, "invisible": 3, "offline": 4}
         people.sort(key=lambda u: (order.get(u.get("status", "offline"), 4), u["name"].lower()))
         online = sum(1 for u in people if u.get("status", "offline") != "offline")
-        frame, body = _panel(f"{label}  ·  {online}/{len(people)} online" if people else "My team",
+        frame, body = _panel(f"{label}  ·  {online}/{len(people)} online",
                              "Organisation", lambda: self.ctx.rail_clicked("directory"))
-        if not people:
-            empty = QLabel("Your team shows up here once the admin sets your department and 'Reports to'.")
-            empty.setWordWrap(True)
-            empty.setStyleSheet(f"color: {T.MUTED}; padding: 4px 2px;")
-            body.addWidget(empty)
-            return frame
         grid = QGridLayout()
         grid.setSpacing(6)
         width = self._built_key[3] * (0.58 if self._built_key[0] else 1.0) - 40
@@ -720,10 +724,12 @@ class AnnouncementsPage(QWidget):
             if w:
                 w.deleteLater()
         if not self.store.announcements:
-            empty = QLabel("No announcements yet.")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(f"color: {T.FAINT}; padding: 40px;")
-            self.col.insertWidget(0, empty)
+            can = bool(announce_targets(self.store))
+            self.col.insertWidget(0, EmptyState(
+                "megaphone", "No announcements yet",
+                "Studio news, holidays and dailies times show up here." if not can else
+                "Tell your team or the whole studio something important: everyone gets a pop-up.",
+                "New announcement" if can else None, self.compose.emit if can else None))
         for i, a in enumerate(self.store.announcements):
             card = AnnouncementCard(self.store, a)
             card.show_reads.connect(self.show_reads.emit)
@@ -889,9 +895,10 @@ class TransfersPage(QWidget):
         lay.addWidget(header)
         self.area, self.col = scroll_column()
         lay.addWidget(self.area, 1)
-        self.empty = QLabel("No file transfers yet.\nDrag files into a chat to send them.")
-        self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setStyleSheet(f"color: {T.FAINT}; padding: 40px;")
+        self.empty = EmptyState("download", "No file transfers yet",
+                                "Drag files or whole folders into a chat to send them. What you send and "
+                                "download shows up here, with its progress.",
+                                "Open the downloads folder", lambda: open_path(manager.config["download_dir"]))
         self.col.insertWidget(0, self.empty)
         manager.added.connect(self.add)
         manager.changed.connect(self.changed)
