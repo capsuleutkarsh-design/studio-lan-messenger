@@ -1,7 +1,6 @@
 """Pictures in a chat: several images sent one after another show as one gallery, and a click opens a viewer
 where the arrow keys move through every picture of the chat."""
 
-import datetime
 import os
 
 from PySide6.QtCore import QRectF, QSize, QSizeF, Qt, Signal
@@ -11,7 +10,10 @@ from PySide6.QtWidgets import (
 )
 
 from common import theme as T
-from client.ui.widgets import Avatar, IconButton, open_file, plain
+from client.ui.widgets import SEP, Avatar, ElidedLabel, IconButton, fmt_time, fmt_when, open_file, plain
+
+VIEWER_HOVER = "rgba(255,255,255,0.10)"     # the viewer is always dark: its buttons keep a dark-theme hover
+VIEWER_PRESS = "rgba(255,255,255,0.16)"
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
 PREVIEW_MAX_BYTES = 15 * 1024 * 1024
@@ -70,9 +72,9 @@ class Thumb(QLabel):
         self.setFixedSize(size, size)
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"background: {T.TINT}; border-radius: 10px; color: {T.FAINT}; font-size: 8pt;")
+        self.setStyleSheet(f"background: {T.TINT}; border-radius: 10px; color: {T.META}; font-size: 8pt;")
         self.setToolTip(msg["file"]["name"])
-        self.setText("...")
+        self.setText("…")
         ctx.previews.ready.connect(self._ready)
         ctx.previews.failed.connect(self._failed)
         path = ctx.previews.request(msg["file"])
@@ -132,7 +134,8 @@ class GalleryRow(QWidget):
         sender = ctx.store.user_name(msgs[0]["sender_id"])
         if show_name and is_room and not mine:
             name = plain(QLabel(sender))
-            name.setStyleSheet(f"color: {T.avatar_color(sender)}; font-weight: 700; font-size: 9pt; padding-left: 4px;")
+            name.setStyleSheet(f"color: {T.name_color(sender)}; font-weight: 700; font-size: 9pt;"
+                               " padding-left: 4px;")
             b.addWidget(name)
         self.grid = QGridLayout()
         self.grid.setSpacing(4)
@@ -149,7 +152,7 @@ class GalleryRow(QWidget):
         foot.addWidget(self.count)
         foot.addStretch(1)
         self.meta = QLabel()
-        self.meta.setStyleSheet(f"color: {T.FAINT}; font-size: 8pt;")
+        self.meta.setStyleSheet(f"color: {T.META}; font-size: 8pt;")
         foot.addWidget(self.meta)
         b.addLayout(foot)
         if mine:
@@ -182,7 +185,7 @@ class GalleryRow(QWidget):
         self.thumbs.append(t)
         self._place()
         n = len(self.msgs)
-        self.count.setText(f"{n} pictures  ·  Download all" if n > 1 else "Download")
+        self.count.setText(f"{n} pictures{SEP}Download all" if n > 1 else "Download")
         self.update_meta()
 
     def _place(self):
@@ -199,8 +202,8 @@ class GalleryRow(QWidget):
             self._place()
 
     def update_meta(self):
-        t = datetime.datetime.fromtimestamp(self.msg["ts"]).strftime("%H:%M")
-        self.meta.setText(f"{self.seen}  ·  {t}" if self.seen else t)
+        t = fmt_time(self.msg["ts"])
+        self.meta.setText(f"{self.seen}{SEP}{t}" if self.seen else t)
 
     def set_seen(self, text):
         self.seen = text
@@ -323,7 +326,7 @@ class ImageViewer(QDialog):
         top.setStyleSheet("background: rgba(0,0,0,0.35);")
         tl = QHBoxLayout(top)
         tl.setContentsMargins(18, 8, 10, 8)
-        self.caption = QLabel()
+        self.caption = ElidedLabel()
         self.caption.setStyleSheet("color: #e8eaf0; font-size: 10pt; background: transparent;")
         tl.addWidget(self.caption, 1)
         self.counter = QLabel()
@@ -334,7 +337,7 @@ class ImageViewer(QDialog):
                               ("pen", "Draw on it and send it to the chat", self._draw),
                               ("open", "Open in its program", self._open), ("download", "Save as...", self._save),
                               ("copy", "Copy the picture", self._copy), ("close", "Close (Esc)", self.close)):
-            b = IconButton(name, tip, 36, 18, "#c9cedb", "#ffffff")
+            b = IconButton(name, tip, 36, 18, "#c9cedb", "#ffffff", hover_bg=VIEWER_HOVER, press_bg=VIEWER_PRESS)
             b.clicked.connect(fn)
             tl.addWidget(b)
             if name == "compare":
@@ -352,10 +355,16 @@ class ImageViewer(QDialog):
 
         mid = QHBoxLayout()
         mid.setContentsMargins(10, 0, 10, 0)
-        self.prev = IconButton("back", "Previous (←)", 48, 24, "#c9cedb", "#ffffff")
+        self.prev = IconButton("back", "Previous (←)", 48, 24, "#c9cedb", "#ffffff", hover_bg=VIEWER_HOVER,
+                               press_bg=VIEWER_PRESS)
         self.prev.clicked.connect(lambda: self.go(self.i - 1))
-        self.next = IconButton("next", "Next (→)", 48, 24, "#c9cedb", "#ffffff")
+        self.next = IconButton("next", "Next (→)", 48, 24, "#c9cedb", "#ffffff", hover_bg=VIEWER_HOVER,
+                               press_bg=VIEWER_PRESS)
         self.next.clicked.connect(lambda: self.go(self.i + 1))
+        for b in (self.prev, self.next):          # at either end the arrow goes away, keeping its room
+            keep = b.sizePolicy()
+            keep.setRetainSizeWhenHidden(True)
+            b.setSizePolicy(keep)
         self.view = _ViewCanvas()
         mid.addWidget(self.prev)
         mid.addWidget(self.view, 1)
@@ -430,11 +439,10 @@ class ImageViewer(QDialog):
         self.strip_area.ensureWidgetVisible(self.strip[self.i])
         m = self.msgs[self.i]
         store = self.ctx.store
-        when = datetime.datetime.fromtimestamp(m["ts"]).strftime("%d %b %H:%M")
-        self.caption.setText(f"{store.user_name(m['sender_id'])}  ·  {when}  ·  {m['file']['name']}")
+        self.caption.setText(SEP.join((store.user_name(m["sender_id"]), fmt_when(m["ts"]), m["file"]["name"])))
         self.counter.setText(f"{self.i + 1} / {len(self.msgs)}" if len(self.msgs) > 1 else "")
-        self.prev.setEnabled(self.i > 0)
-        self.next.setEnabled(self.i < len(self.msgs) - 1)
+        self.prev.setVisible(self.i > 0)
+        self.next.setVisible(self.i < len(self.msgs) - 1)
         self.image = self._load(m)
         if self.cmp_index is not None:
             self._update_compare()
@@ -507,7 +515,7 @@ class ImageViewer(QDialog):
                 self.ctx.toast("Sent to " + self.ctx.store.title(conv))
 
     def _fit(self):
-        self.view.show_image(self.image, "Loading..." if self.ctx.conn.online else "Not available offline")
+        self.view.show_image(self.image, "Loading…" if self.ctx.conn.online else "Not available offline")
 
     def keyPressEvent(self, e):
         key = e.key()

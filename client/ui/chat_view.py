@@ -12,16 +12,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout,
-    QWidget, QWidgetAction,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton,
+    QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from common import protocol as P
 from common import theme as T
 from common.icons import icon, pixmap
 from client.ui.widgets import (
-    Avatar, IconButton, esc, first_name, fmt_day, fmt_last_seen, linkify, open_file, open_link, open_path,
-    open_studio_path, plain, rich_safe, show_in_folder, studio_paths, windows_path,
+    SEP, Avatar, ElidedLabel, EmptyState, IconButton, clip, day_word, esc, first_name, fmt_date, fmt_day,
+    fmt_last_seen, fmt_time, fmt_when, linkify, menu_text, open_file, open_link, open_path, open_studio_path,
+    plain, popup_pos, rich_safe, show_in_folder, studio_paths, windows_path,
 )
 from client.ui.gallery import GALLERY_MAX, GalleryRow, ImageViewer, is_plain_image, is_previewable
 
@@ -32,7 +33,49 @@ ZOOM_STEPS = (80, 90, 100, 110, 120, 135, 150, 170)
 
 
 def text_pt(base=10.5):
+    """A chat font size that follows Ctrl + / Ctrl − (message text, names, times, quotes, the composer)."""
     return f"{base * ZOOM['pct'] / 100:.1f}pt"
+
+
+def when_inline(ts):
+    """A moment inside a sentence: 'today at 18:00', 'tomorrow at 09:30', 'Tue 6 Oct at 09:30'."""
+    word = day_word(ts)
+    return f"{word.lower() if word else fmt_date(ts)} at {fmt_time(ts)}"
+
+
+def thread_when(ts):
+    """When the latest thread reply came: 'yesterday, 18:00', 'Tue 29 Sep, 18:00'."""
+    word = day_word(ts)
+    return f"{word.lower()}, {fmt_time(ts)}" if word else fmt_when(ts)
+
+
+def pick_time_text():
+    """The last item of a 'when' menu ('&' doubled, or Qt eats it as a shortcut marker)."""
+    return menu_text("Pick a date & time…")
+
+
+def mention_items(store, conv, query):
+    """@-suggestions for a room chat (the chat's composer and the thread panel's)."""
+    from client import mentions
+    room = store.rooms.get(P.parse_conv(conv)[1], {})
+    members = [store.me if uid == store.my_id else store.users.get(uid) for uid in room.get("members", [])]
+    return mentions.suggestions(query, [u for u in members if u], store.my_id)
+
+
+def transfer_status(t):
+    """'211 MB of 3.0 GB · 7% · 221 MB/s · about 13 s left'."""
+    bits = [f"{P.human_size(t.done)} of {P.human_size(t.size)}"]
+    if t.size:
+        bits.append(f"{int(t.done * 100 / t.size)}%")
+    if t.speed:
+        bits.append(f"{P.human_size(t.speed)}/s")
+        left = max(0, (t.size - t.done) / t.speed) if t.size else 0
+        if left >= 1:
+            bits.append("about " + (f"{int(left)} s" if left < 60 else f"{round(left / 60)} min" if left < 3600
+                                    else f"{left / 3600:.1f} h") + " left")
+    return SEP.join(bits)
+
+
 RENDER_MAX = 150        # message widgets built when a chat opens; scrolling up shows more
 EMOJIS = ("😀 😂 😊 😍 😎 🤔 😅 😭 😡 👍 👎 👌 🙏 👏 💪 🙌 🎉 🔥 ✅ ❌ ⚠️ ❓ 💡 ⭐ "
           "❤️ 💯 🚀 🎬 🎥 🖥️ 📁 📎 ☕ 🍕 🕐 👀 🤝 😴 🤯 🥳").split()
@@ -59,7 +102,7 @@ class DaySeparator(QWidget):
         lay.setContentsMargins(0, 16, 0, 8)
         lay.setSpacing(12)
         lbl = QLabel(fmt_day(ts))
-        lbl.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 700;")
+        lbl.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_XS)}; font-weight: 700;")
         lay.addWidget(_hline(), 1)
         lay.addWidget(lbl)
         lay.addWidget(_hline(), 1)
@@ -71,12 +114,11 @@ class SystemLine(QWidget):
         self.msg = msg
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 6, 0, 6)
-        t = datetime.datetime.fromtimestamp(msg["ts"]).strftime("%H:%M")
-        self.lbl = lbl = plain(QLabel(f"{msg['body']}  ·  {t}"))
+        self.lbl = lbl = plain(QLabel(f"{msg['body']}{SEP}{fmt_time(msg['ts'])}"))
         lbl.setWordWrap(True)
         lbl.setAlignment(Qt.AlignCenter)
-        lbl.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; background: {T.TINT}; border-radius: 10px;"
-                          " padding: 3px 12px;")
+        lbl.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_XS)}; background: {T.TINT};"
+                          " border-radius: 10px; padding: 3px 12px;")
         lbl.ensurePolished()
         self._ideal = lbl.fontMetrics().horizontalAdvance(lbl.text()) + 32
         lay.addStretch(1)
@@ -98,9 +140,9 @@ class BuzzLine(QWidget):
         self.msg = msg
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 8, 0, 8)
-        t = datetime.datetime.fromtimestamp(msg["ts"]).strftime("%H:%M")
-        pill = plain(QLabel(f"⚡  {text}  ·  {t}"))
-        pill.setStyleSheet(f"color: {T.ACCENT}; font-weight: 700; font-size: 9pt; background: {T.ACCENT_SOFT};"
+        pill = plain(QLabel(f"⚡  {text}{SEP}{fmt_time(msg['ts'])}"))
+        pill.setStyleSheet(f"color: {T.ACCENT}; font-weight: 700; font-size: {text_pt(T.FONT_S)};"
+                           f" background: {T.ACCENT_SOFT};"
                            f" border: 1px solid {T.ACCENT_FOCUS}; border-radius: 12px; padding: 4px 14px;")
         lay.addStretch(1)
         lay.addWidget(pill)
@@ -113,6 +155,8 @@ class BuzzLine(QWidget):
 class FileCard(QFrame):
     """Attachment inside a bubble: name, size, and download/open actions."""
 
+    MIN_WIDTH = 270
+
     def __init__(self, ctx, file_info, conv, sent_ts=None):
         super().__init__()
         self.ctx = ctx
@@ -121,7 +165,7 @@ class FileCard(QFrame):
         self.sent_ts = sent_ts
         self.setObjectName("filecard")
         self.setStyleSheet(f"#filecard {{ background: {T.TINT}; border-radius: 14px; }}")
-        self.setMinimumWidth(270)
+        self.setMinimumWidth(self.MIN_WIDTH)            # narrower only when the bubble is (set_max_width)
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setHorizontalSpacing(12)
@@ -133,12 +177,13 @@ class FileCard(QFrame):
         ic.setPixmap(pixmap(_file_icon_name(file_info["name"]), T.ACCENT, 22))
         lay.addWidget(ic, 0, 0, 2, 1)
         self.name = plain(QLabel(file_info["name"]))
-        self.name.setStyleSheet("font-weight: 600;")
+        self.name.setStyleSheet(f"font-weight: 600; font-size: {text_pt(T.FONT_M)};")
         self.name.setWordWrap(True)
         self.name.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.name, 0, 1)
         self.meta = plain(QLabel())
-        self.meta.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt;")
+        self.meta.setWordWrap(True)                      # a narrow bubble wraps 'available until …'
+        self.meta.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_XS)};")
         lay.addWidget(self.meta, 1, 1)
         self.bar = QProgressBar()
         self.bar.setFixedHeight(6)
@@ -177,33 +222,31 @@ class FileCard(QFrame):
         if t:
             pct = t.done / t.size if t.size else 1
             self.bar.setValue(int(pct * 1000))
-            speed = f"  ·  {P.human_size(t.speed)}/s" if t.speed else ""
-            self.meta.setText(f"{P.human_size(t.done)} of {size}{speed}")
+            self.meta.setText(transfer_status(t))
             self.b_cancel.show()
         elif path:
-            self.meta.setText(f"{size}  ·  Downloaded")
+            self.meta.setText(f"{size}{SEP}Downloaded")
             self.b_open.show()
             self.b_folder.show()
             self.b_extract.setVisible(path.lower().endswith(".zip"))
         elif self.info.get("purged"):
-            self.meta.setText(f"{size}  ·  No longer on the server")
+            self.meta.setText(f"{size}{SEP}No longer on the server")
         else:
             self.meta.setText(size + self._expiry())
             self.b_download.show()
 
     def _expiry(self):
-        """'  ·  available until Sat 28 Sep' when the server deletes shared files after a while."""
+        """' · available until Sat 28 Sep' when the server deletes shared files after a while."""
         days = getattr(self.ctx.store, "file_retention_days", 0)
         if not days or not self.sent_ts:
             return ""
         until = self.sent_ts + days * 86400
         left = until - time.time()
         if left <= 0:
-            return "  ·  about to be removed from the server"
-        when = datetime.datetime.fromtimestamp(until)
+            return f"{SEP}about to be removed from the server"
         if left < 86400:
-            return f"  ·  download before {when:%H:%M} today" if when.date() == datetime.date.today()                 else f"  ·  download before {when:%a %H:%M}"
-        return f"  ·  available until {when:%a %d %b}"
+            return f"{SEP}download before {when_inline(until)}"
+        return f"{SEP}available until {fmt_date(until)}"
 
     def _on_transfer(self, t):
         if t.kind == "download" and t.file_id == self.info["id"]:
@@ -230,7 +273,7 @@ class FileCard(QFrame):
 
     def extract(self):
         if self.local_path():
-            self.meta.setText("Extracting...")
+            self.meta.setText("Extracting…")
             self.ctx.extract_zip(self.local_path())
 
 
@@ -282,11 +325,13 @@ class ImagePreview(QLabel):
         self.info = file_info
         self.msg = msg
         self.path = None
+        self.max_w = None                  # the bubble's room for it (set_max_width): a wide picture is scaled down
+        self._pm = None
         self.setCursor(Qt.PointingHandCursor)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(120, 80)
-        self.setStyleSheet(f"background: {T.TINT}; border-radius: 12px; color: {T.FAINT};")
-        self.setText("Loading preview...")
+        self.setStyleSheet(f"background: {T.TINT}; border-radius: 12px; color: {T.META};")
+        self.setText("Loading preview…")
         ctx.previews.ready.connect(self._ready)
         ctx.previews.failed.connect(self._failed)
         path = ctx.previews.request(file_info)
@@ -307,10 +352,24 @@ class ImagePreview(QLabel):
             self.setText("No preview")
             return
         self.path = path
+        self._pm = pm
         self.setStyleSheet("background: transparent;")
+        self._fit()
+        self.setToolTip("Click to view (← → for the other pictures in this chat)")
+
+    def set_max_width(self, w):
+        self.max_w = w
+        self._fit()
+
+    def _fit(self):
+        """The thumbnail, scaled down when the bubble is narrower than it (compact view)."""
+        pm = self._pm
+        if pm is None:
+            return
+        if self.max_w and pm.width() > self.max_w > 60:
+            pm = pm.scaledToWidth(self.max_w, Qt.SmoothTransformation)
         self.setPixmap(pm)
         self.setFixedSize(pm.size())
-        self.setToolTip("Click to view (← → for the other pictures in this chat)")
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and self.path:
@@ -323,11 +382,14 @@ class ImagePreview(QLabel):
 class PathCard(QFrame):
     """A studio folder or file named in a message: its name, where it is, and Open / Copy buttons."""
 
+    MIN_WIDTH = 260
+
     def __init__(self, path):
         super().__init__()
         self.path = path
         self.setObjectName("pathcard")
         self.setStyleSheet(f"#pathcard {{ background: {T.TINT}; border-radius: 12px; }}")
+        self.setMinimumWidth(self.MIN_WIDTH)            # narrower only when the bubble is (set_max_width)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 7, 6, 7)
         lay.setSpacing(10)
@@ -340,12 +402,13 @@ class PathCard(QFrame):
         col = QVBoxLayout()
         col.setSpacing(0)
         full = windows_path(path)
-        name = plain(QLabel(os.path.basename(full.rstrip("\\")) or full))
-        name.setStyleSheet("font-weight: 700; font-size: 9.5pt; background: transparent;")
-        where = plain(QLabel(os.path.dirname(full) or full))
-        where.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; background: transparent;")
-        where.setMinimumWidth(40)
-        where.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        # the middle of a long path is cut, so both the share and the last folder stay readable
+        self.name = name = ElidedLabel(os.path.basename(full.rstrip("\\")) or full, mode=Qt.ElideMiddle)
+        name.setStyleSheet(f"font-weight: 700; font-size: {text_pt(9.5)}; background: transparent;")
+        self.where = where = ElidedLabel(os.path.dirname(full) or full, mode=Qt.ElideMiddle)
+        where.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_XS)}; background: transparent;")
+        for lbl in (name, where):
+            lbl.setToolTip(full)
         self.setToolTip(full)
         col.addWidget(name)
         col.addWidget(where)
@@ -405,25 +468,28 @@ class SnippetCard(QFrame):
     """Long text / Nuke script: monospace preview, Copy, Show all, Save as file. Never lays out
     thousands of lines as rich text (that is what freezes other chat programs)."""
 
-    def __init__(self, ctx, text):
+    def __init__(self, ctx, text, bare=False):
+        """bare: the card is all the bubble holds, so it draws no box of its own (bubble → code box, not three
+        boxes inside each other); with a reply quote or a file above it, it keeps its tinted card."""
         super().__init__()
         self.ctx, self.text = ctx, text
         self.nuke = is_nuke(text)
         self.preview = NUKE_PREVIEW_LINES if self.nuke else PREVIEW_LINES
         self.setObjectName("snippet")
-        self.setStyleSheet(f"#snippet {{ background: {T.TINT}; border-radius: 14px; }}")
+        self.setStyleSheet(f"#snippet {{ background: {'transparent' if bare else T.TINT}; border-radius: 14px; }}")
         self.setMinimumWidth(220)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 8, 10)
+        lay.setContentsMargins(*((0, 2, 0, 4) if bare else (12, 8, 8, 10)))
         lay.setSpacing(6)
         head = QHBoxLayout()
         head.setSpacing(6)
         lines = text.count("\n") + 1
         kind = "NUKE SCRIPT" if self.nuke else "TEXT"
-        tag = QLabel(f"{kind}  ·  {lines:,} line{'s' if lines != 1 else ''}  ·  {P.human_size(len(text.encode('utf-8')))}")
-        tag.setStyleSheet(f"color: {T.ACCENT}; font-size: 8pt; font-weight: 800;")
+        tag = ElidedLabel(f"{kind}{SEP}{lines:,} line{'s' if lines != 1 else ''}{SEP}"
+                          f"{P.human_size(len(text.encode('utf-8')))}")
+        tag.setStyleSheet(f"color: {T.ACCENT}; font-size: {text_pt(T.FONT_XS)}; font-weight: 800;")
         head.addWidget(tag, 1)
-        for ic, tip, fn in (("list", "Copy (then paste into Nuke with Ctrl+V)" if self.nuke else "Copy", self.copy),
+        for ic, tip, fn in (("copy", "Copy (then paste into Nuke with Ctrl+V)" if self.nuke else "Copy", self.copy),
                             ("download", "Save as a file", self.save)):
             b = IconButton(ic, tip, 30, 16, round_=False)
             b.clicked.connect(fn)
@@ -433,11 +499,12 @@ class SnippetCard(QFrame):
         self.view.setReadOnly(True)
         self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.view.setStyleSheet(f"QPlainTextEdit {{ background: {T.BG}; border: 1px solid {T.HAIR};"
-                                " border-radius: 10px; font-family: Consolas; font-size: 9pt; padding: 4px; }")
+                                f" border-radius: 10px; font-family: Consolas; font-size: {text_pt(T.FONT_S)};"
+                                " padding: 4px; }")
         lay.addWidget(self.view)
         self.more = QPushButton()
         T.polish(self.more, flat=True)
-        self.more.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; padding: 2px 4px; text-align: left;")
+        self.more.setStyleSheet(f"color: {T.ACCENT}; font-size: {text_pt(8.5)}; padding: 2px 4px; text-align: left;")
         self.more.setCursor(Qt.PointingHandCursor)
         self.more.clicked.connect(self.toggle)
         lay.addWidget(self.more, 0, Qt.AlignLeft)
@@ -475,23 +542,27 @@ class SnippetCard(QFrame):
 
 
 class ReplyQuote(QFrame):
+    """The message a reply answers: who wrote it ("You" for your own) and one line of it, cut with '…'."""
     clicked = Signal(int)
 
-    def __init__(self, ctx, reply):
+    def __init__(self, ctx, reply, mine=False):
         super().__init__()
         self.reply = reply
         self.setObjectName("quote")
         self.setCursor(Qt.PointingHandCursor)
-        color = T.avatar_color(reply.get("sender_name", ""))
+        name = reply.get("sender_name", "")
+        # readable on the bubble it sits in (your own bubble is tinted with the accent)
+        color = T.name_color(name, [T.BUBBLE_ME if mine else T.BUBBLE_OTHER, T.PANEL])
         self.setStyleSheet(f"#quote {{ background: {T.TINT}; border-left: 3px solid {color};"
                            f" border-radius: 6px; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(0)
-        who = plain(QLabel(reply.get("sender_name", "")))
-        who.setStyleSheet(f"color: {color}; font-weight: 700; font-size: 8.5pt; background: transparent;")
-        text = plain(QLabel(reply.get("snippet", "")[:140].replace("\n", " ")))
-        text.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt; background: transparent;")
+        is_me = reply.get("sender_id") is not None and reply.get("sender_id") == ctx.store.my_id
+        self.who = who = ElidedLabel("You" if is_me else name)
+        who.setStyleSheet(f"color: {color}; font-weight: 700; font-size: {text_pt(8.5)}; background: transparent;")
+        self.snippet = text = ElidedLabel(" ".join(str(reply.get("snippet") or "").split()))
+        text.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_S)}; background: transparent;")
         lay.addWidget(who)
         lay.addWidget(text)
 
@@ -521,8 +592,8 @@ class ReactionBar(QWidget):
                                    + f" reacted {r['emoji']}"))
             mine = r.get("mine")
             b.setStyleSheet(
-                f"QPushButton {{ font-family: 'Segoe UI Emoji', 'Segoe UI'; font-size: 9pt; font-weight: 600;"
-                f" padding: 1px 8px; border-radius: 11px; min-height: 20px;"
+                f"QPushButton {{ font-family: 'Segoe UI Emoji', 'Segoe UI'; font-size: {text_pt(T.FONT_S)};"
+                f" font-weight: 600; padding: 1px 8px; border-radius: 11px; min-height: 20px;"
                 f" background: {T.ACCENT_SOFT if mine else T.TINT};"
                 f" border: 1px solid {T.ACCENT_FOCUS if mine else 'transparent'}; }}"
                 f"QPushButton:hover {{ border: 1px solid {T.ACCENT}; }}")
@@ -617,7 +688,7 @@ class PollOption(QWidget):
             p.drawLine(box.left() + 4, box.center().y(), box.left() + 7, box.bottom() - 4)
             p.drawLine(box.left() + 7, box.bottom() - 4, box.right() - 3, box.top() + 4)
         f = QFont("Segoe UI")
-        f.setPixelSize(13)
+        f.setPixelSize(T.px(T.FONT_M, ZOOM["pct"] / 100))
         f.setBold(self.mine)
         p.setFont(f)
         p.setPen(QColor(T.TEXT))
@@ -630,7 +701,7 @@ class PollOption(QWidget):
         p.setPen(QColor(T.MUTED))
         count = self.option["count"]
         p.drawText(QRectF(self.width() - right_w, 0, right_w - 12, self.height()), Qt.AlignVCenter | Qt.AlignRight,
-                   f"{pct}  ·  {count}" if self.total else "")
+                   f"{pct}{SEP}{count}" if self.total else "")
 
 
 class PollCard(QWidget):
@@ -649,13 +720,13 @@ class PollCard(QWidget):
         ic.setPixmap(pixmap("chart", T.ACCENT, 14))
         head.addWidget(ic)
         tag = QLabel("CLOSED POLL" if poll["closed"] else "POLL")
-        tag.setStyleSheet(f"color: {T.ACCENT}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;")
+        tag.setStyleSheet(f"color: {T.ACCENT}; font-size: {text_pt(T.FONT_XS)}; font-weight: 800; letter-spacing: 1px;")
         head.addWidget(tag)
         head.addStretch(1)
         lay.addLayout(head)
         q = plain(QLabel(poll["question"]))
         q.setWordWrap(True)
-        q.setStyleSheet("font-size: 11.5pt; font-weight: 700;")
+        q.setStyleSheet(f"font-size: {text_pt(T.FONT_L)}; font-weight: 700;")
         lay.addWidget(q)
         lay.addSpacing(2)
         mine = set(poll.get("mine", []))
@@ -673,13 +744,13 @@ class PollCard(QWidget):
             bits.append("pick any")
         if poll["anonymous"]:
             bits.append("anonymous")
-        info = QLabel("  ·  ".join(bits))
-        info.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt;")
+        info = QLabel(SEP.join(bits))
+        info.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(8.5)};")
         foot.addWidget(info, 1)
         if not poll["anonymous"] and poll["total"]:
             who = QPushButton("View votes")
             T.polish(who, flat=True)
-            who.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; padding: 2px 6px;")
+            who.setStyleSheet(f"color: {T.ACCENT}; font-size: {text_pt(8.5)}; padding: 2px 6px;")
             who.setCursor(Qt.PointingHandCursor)
             who.clicked.connect(self.show_votes)
             foot.addWidget(who)
@@ -734,15 +805,17 @@ class MessageRow(QWidget):
 
         sender = ctx.store.user_name(msg["sender_id"])
         if show_name and is_room and not mine:
-            name = plain(QLabel(sender))
-            name.setStyleSheet(f"color: {T.avatar_color(sender)}; font-weight: 700; font-size: 9pt;")
+            name = ElidedLabel(sender)
+            # stickers have no bubble padding: the name still lines up with the names in text bubbles
+            name.setStyleSheet(f"color: {T.name_color(sender)}; font-weight: 700; font-size: {text_pt(T.FONT_S)};"
+                               + (" padding-left: 12px;" if self.sticker else ""))
             b.addWidget(name)
 
         self.text = None
         self._ideal = None
         if deleted:
             gone = plain(QLabel("This message was deleted"))
-            gone.setStyleSheet(f"color: {T.FAINT}; font-style: italic;")
+            gone.setStyleSheet(f"color: {T.META}; font-style: italic; font-size: {text_pt(T.FONT_M)};")
             b.addWidget(gone)
         elif self.sticker:
             from client import stickers
@@ -754,19 +827,19 @@ class MessageRow(QWidget):
                 # the old sticker set used two-digit names (desi_chat/03.webp) and has been retired
                 old = re.search(r"/[0-9]{2}\.webp$", msg["body"] or "")
                 art.setText("Old sticker (no longer in Quillo)" if old else "Sticker (update Quillo to see it)")
-                art.setStyleSheet(f"color: {T.FAINT}; font-style: italic;")
+                art.setStyleSheet(f"color: {T.META}; font-style: italic;")
             if msg.get("reply"):
-                q = ReplyQuote(ctx, msg["reply"])
+                q = ReplyQuote(ctx, msg["reply"], mine)
                 q.clicked.connect(lambda mid: ctx.chat.scroll_to(mid))
                 b.addWidget(q)
             b.addWidget(art, 0, Qt.AlignRight if mine else Qt.AlignLeft)
         else:
             if msg.get("forwarded"):
                 fwd = plain(QLabel("↪ Forwarded"))
-                fwd.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt; font-style: italic;")
+                fwd.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(8.5)}; font-style: italic;")
                 b.addWidget(fwd)
             if msg.get("reply"):
-                q = ReplyQuote(ctx, msg["reply"])
+                q = ReplyQuote(ctx, msg["reply"], mine)
                 q.clicked.connect(lambda mid: ctx.chat.scroll_to(mid))
                 b.addWidget(q)
             f = msg.get("file")
@@ -777,7 +850,8 @@ class MessageRow(QWidget):
             if msg.get("kind") == "poll" and msg.get("poll"):
                 b.addWidget(PollCard(ctx, msg))
             elif msg.get("body") and is_snippet(msg["body"]):
-                b.addWidget(SnippetCard(ctx, msg["body"]))
+                b.addWidget(SnippetCard(ctx, msg["body"],
+                                        bare=not (f or msg.get("reply") or msg.get("forwarded"))))
             elif msg.get("body"):
                 self.text = QLabel(linkify(msg["body"], ctx.store.mention_marker()
                                            if msg["conv"].startswith("r:") and "@" in msg["body"] else None))
@@ -802,20 +876,19 @@ class MessageRow(QWidget):
         if not in_thread and msg.get("thread_broadcast"):
             b.addWidget(self._thread_link("↳ also a reply in a thread", msg["thread_root"]))
         if not in_thread and msg.get("thread_count"):
-            last = datetime.datetime.fromtimestamp(msg.get("thread_last") or msg["ts"])
-            day = {0: "today", 1: "yesterday"}.get((datetime.date.today() - last.date()).days, f"{last:%d %b}")
             n = msg["thread_count"]
-            b.addWidget(self._thread_link(f"💬 {n} {'reply' if n == 1 else 'replies'}  ·  last {day} {last:%H:%M}",
+            b.addWidget(self._thread_link(f"💬 {n} {'reply' if n == 1 else 'replies'}{SEP}"
+                                          f"last reply {thread_when(msg.get('thread_last') or msg['ts'])}",
                                           msg["id"]))
 
         self.meta = QLabel()
         self.meta.setTextFormat(Qt.RichText)
         if self.sticker:
-            self.meta.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; background: {T.TINT};"
+            self.meta.setStyleSheet(f"color: {T.MUTED}; font-size: {text_pt(T.FONT_XS)}; background: {T.TINT};"
                                     " border-radius: 8px; padding: 1px 8px;")
             b.addWidget(self.meta, 0, Qt.AlignRight if mine else Qt.AlignLeft)
         else:
-            self.meta.setStyleSheet(f"color: {T.FAINT}; font-size: 8pt;")
+            self.meta.setStyleSheet(f"color: {T.META}; font-size: {text_pt(T.FONT_XS)};")
             self.meta.setAlignment(Qt.AlignRight)
             b.addWidget(self.meta)
         self.update_meta()
@@ -838,7 +911,8 @@ class MessageRow(QWidget):
         link = QPushButton(text)
         T.polish(link, flat=True)
         link.setCursor(Qt.PointingHandCursor)
-        link.setStyleSheet(f"QPushButton {{ color: {T.ACCENT}; font-size: 9pt; font-weight: 700; text-align: left;"
+        link.setStyleSheet(f"QPushButton {{ color: {T.ACCENT}; font-size: {text_pt(T.FONT_S)}; font-weight: 700;"
+                           " text-align: left;"
                            f" padding: 2px 0; background: transparent; border: none; }}")
         link.clicked.connect(lambda: self.ctx.open_thread(self.msg["conv"], root_id))
         return link
@@ -850,7 +924,8 @@ class MessageRow(QWidget):
         bg = T.BUBBLE_ME if self.mine else T.BUBBLE_OTHER
         border = ""
         if self.mention:
-            bg = T.mix(T.ACCENT, T.BUBBLE_OTHER, 0.16)
+            # a faint wash plus the accent edge: it must not look like one of my own (accent) bubbles
+            bg = T.mix(T.ACCENT, T.BUBBLE_OTHER, 0.07)
             border = f"border-left: 3px solid {T.ACCENT};"
         elif not T.DARK and not self.mine:
             border = f"border: 1px solid {T.HAIR};"
@@ -864,12 +939,14 @@ class MessageRow(QWidget):
                 f" border-bottom-left-radius: {r[3]}px; }}")
 
     def update_meta(self):
-        t = datetime.datetime.fromtimestamp(self.msg["ts"]).strftime("%H:%M")
+        t = fmt_time(self.msg["ts"])
         if self.msg.get("edited") and not self.msg.get("deleted"):
             t = f"edited&nbsp;·&nbsp;{t}"
         if self.seen:
             t = f"{esc(self.seen)}&nbsp;·&nbsp;{t}"
-        if self.mine and not self.is_room and not self.msg.get("deleted"):
+        # no ticks in My space: nobody else reads notes to yourself
+        own_space = self.msg.get("conv") == P.direct_conv(self.ctx.store.my_id)
+        if self.mine and not self.is_room and not own_space and not self.msg.get("deleted"):
             read, delivered = self.msg.get("read"), self.msg.get("delivered")
             path = T.tick_image(bool(read or delivered), T.ACCENT if read else T.MUTED)
             tip = "Read" if read else "Delivered" if delivered else "Sent"
@@ -890,6 +967,11 @@ class MessageRow(QWidget):
 
     def set_max_width(self, w):
         self.bubble.setMaximumWidth(w)
+        inner = w if self.sticker else w - 24          # the bubble's padding
+        for card in [c for kind in (FileCard, PathCard, SnippetCard) for c in self.bubble.findChildren(kind)]:
+            card.setMinimumWidth(max(120, min(getattr(card, "MIN_WIDTH", 220), inner)))
+        for pic in self.bubble.findChildren(ImagePreview):
+            pic.set_max_width(inner)
         if self.text:
             # word-wrapped QLabels shrink to a narrow column; size them to their text instead
             if self._ideal is None:
@@ -923,55 +1005,60 @@ class MessageRow(QWidget):
             return None
         m = QMenu(self)
         chat = ctx.chat
-        m.addAction(icon("smile", T.TEXT, 16), "React...", lambda: chat.react_menu(msg, QCursor.pos()))
+        # answer it
+        m.addAction(icon("smile", T.TEXT, 16), "React…", lambda: chat.react_menu(msg, row=self))
         if not self.in_thread:
             m.addAction(icon("reply", T.TEXT, 16), "Reply", lambda: chat.start_reply(msg))
         if msg["kind"] != "system":
             m.addAction(icon("chat", T.TEXT, 16), "Open the thread" if msg.get("thread_count") or self.in_thread
                         else "Reply in a thread",
                         lambda: ctx.open_thread(msg["conv"], msg.get("thread_root") or msg["id"]))
-        from client.ui.planner_ui import when_menu
-        m.addMenu(when_menu(m, "Remind me about this",
-                            lambda ts: ctx.add_reminder(ts, "", msg["conv"], msg["id"])))
+        if msg["kind"] != "poll":
+            m.addAction(icon("forward", T.TEXT, 16), "Forward…", lambda: ctx.forward_message(msg))
+        m.addSeparator()
+        # keep track of it
         if self.mine and msg["kind"] in ("text", "file"):
             m.addAction(icon("edit", T.TEXT, 16), "Edit", lambda: chat.start_edit(msg))
-        if msg["kind"] != "poll":
-            m.addAction(icon("forward", T.TEXT, 16), "Forward...", lambda: ctx.forward_message(msg))
         poll = msg.get("poll")
         if poll and (poll["creator_id"] == ctx.store.my_id or ctx.store.me.get("is_admin")):
             m.addAction(icon("chart", T.TEXT, 16), "Reopen poll" if poll["closed"] else "Close poll (stop voting)",
                         lambda: ctx.conn.request("close_poll", None, poll_id=poll["id"], reopen=poll["closed"]))
+        pinned = any(p["id"] == msg["id"] for p in ctx.store.conversation(msg["conv"]).pins)
+        m.addAction(icon("pin", T.TEXT, 16), "Unpin message" if pinned else "Pin message",
+                    lambda: ctx.conn.request("pin", lambda r: None if r.get("ok") else ctx.toast(r.get("error")),
+                                             conv=msg["conv"], message_id=msg["id"], pinned=not pinned))
         saved = ctx.store.is_saved(msg["id"])
         m.addAction(icon("bookmark", T.TEXT, 16), "Remove from saved" if saved else "Save for later",
                     lambda: ctx.save_for_later(msg, not saved))
+        from client.ui.planner_ui import when_menu
+        m.addMenu(when_menu(m, "Remind me about this",
+                            lambda ts: ctx.add_reminder(ts, "", msg["conv"], msg["id"]), pick_time_text()))
         from client.ui.widgets import shot_names
         shots = shot_names(msg.get("body") or "")[:3] if not self.sticker else []
         for shot in shots:
-            sub = m.addMenu(icon("check", T.TEXT, 16), f"Shot status: {shot}" if len(shots) > 1 else
-                            f"Set {shot} status")
+            sub = m.addMenu(icon("badge", T.TEXT, 16), menu_text(f"Shot status: {shot}" if len(shots) > 1 else
+                                                                 f"Set {shot} status"))
             current = (ctx.store.shot_status(shot) or (None,))[0]
             for key, emoji, label in P.SHOT_STATUSES:
-                a = sub.addAction(f"{emoji}  {label}", lambda s=shot, k=key: ctx.set_shot_status(s, k, msg["conv"]))
+                a = sub.addAction(menu_text(f"{emoji}  {label}"),
+                                  lambda s=shot, k=key: ctx.set_shot_status(s, k, msg["conv"]))
                 a.setCheckable(True)
                 a.setChecked(key == current)
-        pinned = any(p["id"] == msg["id"] for p in ctx.store.conversation(msg["conv"]).pins)
-        m.addAction(icon("pin", T.TEXT, 16), "Unpin" if pinned else "Pin to the top",
-                    lambda: ctx.conn.request("pin", lambda r: None if r.get("ok") else ctx.toast(r.get("error")),
-                                             conv=msg["conv"], message_id=msg["id"], pinned=not pinned))
         if self.is_room and self.mine:
-            m.addAction(icon("users", T.TEXT, 16), "Seen by...", lambda: chat.show_seen_by(msg))
+            m.addAction(icon("users", T.TEXT, 16), "Seen by…", lambda: chat.show_seen_by(msg))
         m.addSeparator()
+        # copy and open
         if self.sticker:
             m.addAction(icon("sticker", T.TEXT, 16), "Send this sticker", lambda: chat.send_sticker(msg["body"]))
         paths = [x.rstrip(".,;:)") for x in _PATH_RE.findall(msg.get("body") or "")] if not self.sticker else []
         for path in paths[:5]:
-            short = path if len(path) < 50 else "..." + path[-47:]
-            sub = m.addMenu(icon("folder", T.TEXT, 16), short)
-            sub.addAction("Copy path", lambda p=path: QGuiApplication.clipboard().setText(p))
-            sub.addAction("Open folder", lambda p=path: open_path(p))
+            short = path if len(path) <= 50 else f"{path[:20]}…{path[-29:]}"      # keep the share and the end
+            sub = m.addMenu(icon("folder", T.TEXT, 16), menu_text(short))
+            sub.addAction(icon("copy", T.TEXT, 16), "Copy path", lambda p=path: QGuiApplication.clipboard().setText(p))
+            sub.addAction(icon("open", T.TEXT, 16), "Open folder", lambda p=path: open_path(p))
         if msg.get("body") and not self.sticker:
             sel = self.text.selectedText() if self.text else ""
-            m.addAction(icon("list", T.TEXT, 16), "Copy selection" if sel else "Copy text",
+            m.addAction(icon("copy", T.TEXT, 16), "Copy selection" if sel else "Copy text",
                         lambda: QGuiApplication.clipboard().setText(sel or msg["body"]))
         f = msg.get("file")
         if f:
@@ -981,11 +1068,13 @@ class MessageRow(QWidget):
                 m.addAction(icon("folder", T.TEXT, 16), "Show in folder", lambda: show_in_folder(path))
             elif not f.get("purged"):
                 m.addAction(icon("download", T.TEXT, 16), "Download", lambda: ctx.download_file(f, msg["conv"]))
-                m.addAction(icon("download", T.TEXT, 16), "Save as...", lambda: ctx.download_file_as(f, msg["conv"]))
-            m.addAction("Copy file name", lambda: QGuiApplication.clipboard().setText(f["name"]))
+                m.addAction(icon("download", T.TEXT, 16), "Save as…", lambda: ctx.download_file_as(f, msg["conv"]))
+            m.addAction(icon("copy", T.TEXT, 16), "Copy file name",
+                        lambda: QGuiApplication.clipboard().setText(f["name"]))
         if self.mine or ctx.store.me.get("is_admin"):
             m.addSeparator()
-            m.addAction(icon("trash", T.DANGER, 16), "Delete for everyone" if self.mine else "Delete (moderation)",
+            m.addAction(icon("trash", T.DANGER, 16),
+                        "Delete for everyone" if self.mine else "Delete for everyone (as admin)",
                         lambda: chat.delete_message(msg))
         return m
 
@@ -998,7 +1087,8 @@ class HoverBar(QFrame):
         self.chat = chat
         self.row = None
         self.setObjectName("hoverbar")
-        self.setStyleSheet(f"#hoverbar {{ background: {T.PANEL}; border: 1px solid {T.HAIR}; border-radius: 14px; }}")
+        self.setStyleSheet(f"#hoverbar {{ background: {T.PANEL}; border: 1px solid {T.FLOAT_BORDER};"
+                           " border-radius: 14px; }")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(3, 3, 3, 3)
         lay.setSpacing(0)
@@ -1032,7 +1122,7 @@ class HoverBar(QFrame):
 
     def _react(self):
         if self.row:
-            self.chat.react_menu(self.row.msg, self.mapToGlobal(self.rect().bottomLeft()))
+            self.chat.react_menu(self.row.msg, row=self.row)
 
     def _reply(self):
         if self.row:
@@ -1046,7 +1136,7 @@ class HoverBar(QFrame):
         if self.row:
             m = self.row.build_menu()
             if m:
-                m.exec(self.mapToGlobal(self.rect().bottomLeft()))
+                m.exec(popup_pos(self, m.sizeHint(), align_right=self.row.mine))
 
 
 # ============================================================ composer
@@ -1058,26 +1148,43 @@ class MentionPopup(QListWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.ToolTip)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setStyleSheet(f"QListWidget {{ background: {T.PANEL}; border: 1px solid {T.HAIR};"
-                           f" border-radius: 14px; padding: 6px; }} QListWidget::item {{ padding: 6px 8px; }}"
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # the rounded panel is painted by paintEvent: a see-through list window paints no style-sheet background
+        self.setStyleSheet("QListWidget { background: transparent; border: none; padding: 0; }"
+                           f" QListWidget::item {{ margin: 3px 6px; padding: 6px 8px; border-radius: 9px;"
+                           f" color: {T.TEXT}; }}"
                            f" QListWidget::item:selected {{ background: {T.ACCENT_SOFT}; }}")
+        T.round_popup(self)
         self.itemClicked.connect(lambda it: self.picked.emit(it.data(Qt.UserRole)))
+
+    def paintEvent(self, e):
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(T.FLOAT_BORDER), 1))
+        p.setBrush(QColor(T.PANEL))
+        p.drawRoundedRect(QRectF(self.viewport().rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        p.end()
+        super().paintEvent(e)
 
     def show_for(self, items, anchor: QWidget):
         """items: (token, label, kind) - kind 'group' (everyone, here, a team) or 'person'."""
         self.clear()
         for token, label, kind in items[:8]:
             it = QListWidgetItem(icon("users" if kind == "group" else "user", T.ACCENT if kind == "group" else T.MUTED, 15),
-                                 f"@{token}   ·   {label}" if kind == "group" else f"{label}   @{token}")
+                                 f"@{token}{SEP}{label}" if kind == "group" else f"{label}{SEP}@{token}")
             it.setData(Qt.UserRole, token)
             self.addItem(it)
         if not self.count():
             self.hide()
             return
         self.setCurrentRow(0)
-        h = min(8, self.count()) * 30 + 12
-        self.setFixedSize(340, h)
-        pos = anchor.mapToGlobal(anchor.rect().topLeft())
+        # as tall as its rows really are (a guessed 30 px a row cut the last one off)
+        self.ensurePolished()
+        n = min(8, self.count())
+        rows = sum(max(self.sizeHintForRow(i), 24) for i in range(n))
+        h = rows + 2 * self.frameWidth() + 6
+        self.setFixedSize(min(340, max(240, anchor.width())), h)
+        pos = anchor.mapToGlobal(QPoint(0, 0))
         self.move(pos.x(), pos.y() - h - 4)
         self.show()
 
@@ -1109,13 +1216,19 @@ class MessageInput(QPlainTextEdit):
     def __init__(self):
         super().__init__()
         self.popup = None
-        self.setPlaceholderText("Write a message...")
+        self.setPlaceholderText("Write a message…")
         self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setStyleSheet("QPlainTextEdit { background: transparent; border: none; padding: 6px 4px;"
-                           " font-size: 10.5pt; }"
-                           "QPlainTextEdit:focus { background: transparent; border: none; }")
+        self.setMinimumWidth(80)             # a squeezed composer still shows a few words, not 'Wri'
         self.document().contentsChanged.connect(self._fit)
+        self.apply_zoom()
+
+    def apply_zoom(self):
+        """Typed text follows the chat's text size (Ctrl + / Ctrl −) like the messages do."""
+        self.setStyleSheet("QPlainTextEdit { background: transparent; border: none; padding: 6px 4px;"
+                           f" font-size: {text_pt()}; }}"
+                           "QPlainTextEdit:focus { background: transparent; border: none; }")
+        self.ensurePolished()
         self._fit()
 
     def _fit(self):
@@ -1214,7 +1327,9 @@ class StickerPicker(QFrame):
         self.config = config
         self.packs = stickers.packs()
         self.setObjectName("stickers")
-        self.setStyleSheet(f"#stickers {{ background: {T.PANEL}; border: 1px solid {T.HAIR}; border-radius: 18px; }}")
+        self.setStyleSheet(f"#stickers {{ background: {T.PANEL}; border: 1px solid {T.FLOAT_BORDER};"
+                           " border-radius: 18px; }")
+        T.round_popup(self)
         self.setFixedSize(self.CELL * 5 + 34, 420)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -1232,10 +1347,18 @@ class StickerPicker(QFrame):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self.scroll, 1)
         tabs_area = QScrollArea()
-        tabs_area.setFixedHeight(50)
+        tabs_area.setFixedHeight(56)
         tabs_area.setWidgetResizable(True)
         tabs_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        tabs_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # a slim bar under the packs says there are more than fit (the wheel scrolls it too)
+        tabs_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        tabs_area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:horizontal { height: 5px; background: transparent; margin: 0 6px; }"
+            f"QScrollBar::handle:horizontal {{ background: {T.SCROLL}; border-radius: 2px; min-width: 30px; }}"
+            f"QScrollBar::handle:horizontal:hover {{ background: {T.SCROLL_HOVER}; }}"
+            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
         tabs = QWidget()
         T.bg_pane(tabs, T.PANEL)
         tl = QHBoxLayout(tabs)
@@ -1260,7 +1383,7 @@ class StickerPicker(QFrame):
                     from PySide6.QtGui import QIcon
                     b.setIcon(QIcon(pm))
             else:
-                b.setIcon(icon("refresh", T.MUTED, 18))
+                b.setIcon(icon("recent", T.MUTED, 18))
             b.setIconSize(QSize(34, 34) if cover else QSize(18, 18))
             b.setStyleSheet(f"QToolButton {{ border: none; border-radius: 10px; background: transparent; }}"
                             f"QToolButton:hover {{ background: {T.SURFACE_HOVER}; }}"
@@ -1275,6 +1398,15 @@ class StickerPicker(QFrame):
         tabs_area.wheelEvent = horizontal_wheel
         self.show_pack(self.first_pack())
 
+    def paintEvent(self, e):
+        """The rounded panel (a see-through pop-up window paints no style-sheet background of its own)."""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(T.FLOAT_BORDER), 1))
+        p.setBrush(QColor(T.PANEL))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 18, 18)
+        p.end()
+
     def first_pack(self):
         """The festival's own pack on its day, else recently used, else the first pack."""
         fest = (T.FESTIVAL or {}).get("stickers")
@@ -1286,6 +1418,8 @@ class StickerPicker(QFrame):
         from client import stickers
         for k, b in self.tab_buttons:
             b.setChecked(k == key)
+            if k == key:
+                self.tabs_area.ensureWidgetVisible(b, 8, 0)
         if key == "recent":
             ids, title = [x for x in self.config["recent_stickers"] if stickers.path(x)], "RECENTLY USED"
         else:
@@ -1313,7 +1447,7 @@ class StickerPicker(QFrame):
         if not ids:
             empty = QLabel("Stickers you send show up here.\nPick a pack below.")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(f"color: {T.FAINT}; padding: 40px;")
+            empty.setStyleSheet(f"color: {T.META}; padding: 40px;")
             grid.addWidget(empty, 0, 0)
         grid.setRowStretch(grid.rowCount(), 1)
         self.scroll.setWidget(grid_w)
@@ -1329,7 +1463,7 @@ class UploadStrip(QFrame):
         self.conv = None
         self.rows = {}
         self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(12, 0, 12, 0)
+        self.lay.setContentsMargins(20, 0, 20, 4)       # the composer's own side margins: the edges line up
         self.lay.setSpacing(4)
         ctx.transfers.added.connect(self._changed)
         ctx.transfers.changed.connect(self._changed)
@@ -1355,14 +1489,17 @@ class UploadStrip(QFrame):
             return
         if not row:
             row = QFrame()
-            row.setStyleSheet(f"background: {T.PANEL}; border-radius: 10px;")
+            # scoped: an unscoped background also painted the progress bar's track, which then vanished
+            row.setObjectName("uploadRow")
+            row.setStyleSheet(f"#uploadRow {{ background: {T.PANEL}; border-radius: 10px; }}")
             h = QHBoxLayout(row)
             h.setContentsMargins(10, 6, 6, 6)
             ic = QLabel()
             ic.setPixmap(pixmap("upload", T.ACCENT, 16))
             h.addWidget(ic)
             row.label = QLabel()
-            row.label.setStyleSheet("background: transparent;")
+            row.label.setWordWrap(True)
+            row.label.setStyleSheet(f"background: transparent; font-size: {T.pt(T.FONT_S)};")
             h.addWidget(row.label, 1)
             row.bar = QProgressBar()
             row.bar.setFixedSize(140, 6)
@@ -1374,12 +1511,12 @@ class UploadStrip(QFrame):
             self.rows[id(t)] = row
             self.lay.addWidget(row)
         if t.state == "failed":
-            row.label.setText(f"<span style='color:{T.DANGER}'>Upload failed:</span> {esc(t.name)} — {esc(t.error)}")
+            row.label.setText(f"<span style='color:{T.DANGER}'>Upload failed:</span> {esc(t.name)}{SEP}{esc(t.error)}")
             row.bar.hide()
         else:
-            speed = f" · {P.human_size(t.speed)}/s" if t.speed else ""
             verb = "Packing folder" if hasattr(t, "files") else "Sending"
-            row.label.setText(f"{verb} <b>{esc(t.name)}</b>  {P.human_size(t.done)} / {P.human_size(t.size)}{speed}")
+            row.label.setText(f"{verb} <b>{esc(t.name)}</b>{SEP}"
+                              f"<span style='color:{T.MUTED}'>{esc(transfer_status(t))}</span>")
             row.bar.setValue(int(t.done / t.size * 1000) if t.size else 0)
         self.show()
 
@@ -1402,7 +1539,7 @@ class OutboxStrip(QFrame):
         self.ctx = ctx
         self.conv = None
         self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(12, 0, 12, 4)
+        self.lay.setContentsMargins(20, 0, 20, 4)
         self.lay.setSpacing(3)
         self._timer = QTimer(self, singleShot=True, timeout=self.refresh)
         ctx.outbox.changed.connect(lambda conv: conv == self.conv and self.refresh())
@@ -1426,18 +1563,18 @@ class OutboxStrip(QFrame):
             self._timer.start(self.GRACE_MS)
         for item in shown:
             row = QFrame()
-            row.setStyleSheet(f"background: {T.PANEL}; border-radius: 10px;")
+            row.setObjectName("outboxRow")
+            row.setStyleSheet(f"#outboxRow {{ background: {T.PANEL}; border-radius: 10px; }}")
             h = QHBoxLayout(row)
             h.setContentsMargins(10, 5, 6, 5)
             ic = QLabel()
-            ic.setPixmap(pixmap("clock", T.FAINT, 15))
+            ic.setPixmap(pixmap("time", T.META, 15))
             h.addWidget(ic)
-            text = (item.get("label") or "").replace("\n", " ")
-            label = plain(QLabel(esc(text[:160]) + ("…" if len(text) > 160 else "")))
+            label = ElidedLabel(clip(item.get("label"), 160))
             label.setStyleSheet(f"color: {T.MUTED}; background: transparent;")
             h.addWidget(label, 1)
             why = QLabel("waiting for the server" if not self.ctx.conn.online else "sending…")
-            why.setStyleSheet(f"color: {T.FAINT}; font-size: 8pt; background: transparent;")
+            why.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_XS)}; background: transparent;")
             h.addWidget(why)
             cancel = IconButton("close", "Don't send", 26, 13)
             cancel.clicked.connect(lambda _=False, cid=item["client_id"]: self.ctx.outbox.cancel(cid))
@@ -1449,6 +1586,7 @@ class OutboxStrip(QFrame):
 # ============================================================ chat view
 class ChatView(QWidget):
     back = Signal()
+    MIN_WIDTH = 320              # beside the chat list and a thread: the composer never shrinks to a few letters
 
     def __init__(self, ctx):
         super().__init__()
@@ -1484,10 +1622,12 @@ class ChatView(QWidget):
         hl.addWidget(self.avatar)
         col = QVBoxLayout()
         col.setSpacing(1)
-        self.title = plain(QLabel())
-        self.title.setStyleSheet("font-size: 12.5pt; font-weight: 700;")
-        self.subtitle = QLabel()
-        self.subtitle.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
+        # one line each, cut with '…' when the column is narrow (the header buttons keep their size)
+        self.title = ElidedLabel()
+        self.title.setStyleSheet(f"font-size: {T.pt(T.FONT_XL)}; font-weight: 700;")
+        self.subtitle = ElidedLabel()
+        self._sub_style = f"font-size: {T.pt(T.FONT_S)};"
+        self.subtitle.setStyleSheet(f"color: {T.MUTED}; {self._sub_style}")
         col.addStretch(1)
         col.addWidget(self.title)
         col.addWidget(self.subtitle)
@@ -1497,13 +1637,13 @@ class ChatView(QWidget):
         self.b_buzz.clicked.connect(self.buzz)
         self.b_screen = IconButton("screen", "Share screen", 38, 19)
         self.b_screen.clicked.connect(self.screen_menu)
-        self.b_search = IconButton("search", "Search messages (Ctrl+F)", 38, 18)
+        self.b_search = IconButton("search", "Search messages (Ctrl+F)", 38, 19)
         self.b_search.clicked.connect(lambda: self.ctx.show_search())
         self.b_members = IconButton("users", "Members", 38, 19)
         self.b_members.clicked.connect(lambda: self.ctx.show_room_info(self.conv))
         self.b_calendar = IconButton("calendar", "This room's calendar - meetings, deadlines and notes", 38, 19)
         self.b_calendar.clicked.connect(lambda: self.ctx.open_calendar(room_id=P.parse_conv(self.conv)[1]))
-        self.b_more = IconButton("more_options", "More", 38, 18)
+        self.b_more = IconButton("more_options", "More", 38, 19)
         self.b_more.clicked.connect(self.more_menu)
         for b in (self.b_buzz, self.b_screen, self.b_search, self.b_calendar, self.b_members, self.b_more):
             hl.addWidget(b)
@@ -1533,7 +1673,7 @@ class ChatView(QWidget):
         pcol.setSpacing(0)
         self.pin_title = QLabel("Pinned message")
         self.pin_title.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; font-weight: 700;")
-        self.pin_text = plain(QLabel())
+        self.pin_text = ElidedLabel()
         self.pin_text.setStyleSheet(f"color: {T.TEXT}; font-size: 9.5pt;")
         pcol.addWidget(self.pin_title)
         pcol.addWidget(self.pin_text)
@@ -1555,10 +1695,16 @@ class ChatView(QWidget):
         self.mlay = QVBoxLayout(self.container)
         self.mlay.setContentsMargins(24, 10, 24, 14)
         self.mlay.setSpacing(0)
-        self.loading = plain(QLabel("Loading..."))
+        # grows only while the chat is empty, so the empty-chat note sits in the middle, not near the top
+        self._empty_space = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Minimum)
+        self.mlay.addItem(self._empty_space)
+        self.loading = plain(QLabel("Loading…"))
         self.loading.setAlignment(Qt.AlignCenter)
-        self.loading.setStyleSheet(f"color: {T.FAINT}; padding: 8px;")
+        self.loading.setStyleSheet(f"color: {T.META}; padding: 8px;")
         self.mlay.addWidget(self.loading)
+        self.empty = EmptyState("chat", compact=True)
+        self.empty.hide()
+        self.mlay.addWidget(self.empty)
         self.mlay.addStretch(1)
         self.scroll.setWidget(self.container)
         self.hover_bar = HoverBar(self, self.container)
@@ -1613,7 +1759,8 @@ class ChatView(QWidget):
         self.b_sticker.clicked.connect(self.open_stickers)
         self.b_later = IconButton("clock", "Send later, or remind me", 36, 19)
         self.b_later.clicked.connect(self.later_menu)
-        self.b_shot = IconButton("image", "Screenshot — pick an area of the screen and send it (Ctrl+Shift+S)", 36, 19)
+        self.b_shot = IconButton("screenshot", "Screenshot — pick an area of the screen and send it (Ctrl+Shift+S)",
+                                 36, 19)
         self.b_shot.clicked.connect(self.take_screenshot)
         self.sticker_picker = None
         self.input = MessageInput()
@@ -1658,10 +1805,10 @@ class ChatView(QWidget):
         ab.addWidget(self.action_icon)
         acol = QVBoxLayout()
         acol.setSpacing(0)
-        self.action_title = plain(QLabel())
+        self.action_title = ElidedLabel()
         self.action_title.setStyleSheet(f"color: {T.ACCENT}; font-size: 8.5pt; font-weight: 700;")
-        self.action_label = plain(QLabel())
-        self.action_label.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
+        self.action_label = ElidedLabel()
+        self.action_label.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_S)};")
         acol.addWidget(self.action_title)
         acol.addWidget(self.action_label)
         ab.addLayout(acol, 1)
@@ -1699,12 +1846,13 @@ class ChatView(QWidget):
         cw.addWidget(self.composer)
         self.offline_note = plain(QLabel())
         self.offline_note.setWordWrap(True)
-        self.offline_note.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; padding: 6px 14px 0 14px;")
+        self.offline_note.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_XS)}; padding: 6px 14px 0 14px;")
         self.offline_note.hide()
         cw.addWidget(self.offline_note)
         lay.addWidget(comp_wrap)
         self._style_composer()
         self._update_send_button()
+        self.setMinimumWidth(self.MIN_WIDTH)
 
         # drop overlay
         self.drop_overlay = QLabel("Drop files to send", self)
@@ -1726,6 +1874,8 @@ class ChatView(QWidget):
         s.message_updated.connect(self._on_message_updated)
         s.pins_changed.connect(self._on_pins_changed)
         s.planner_changed.connect(self._update_scheduled_bar)
+        ctx.conn.logged_in.connect(lambda *_: self.update_header())
+        ctx.conn.connection_lost.connect(lambda *_: self.update_header())
         self.seen_timer = QTimer(self, interval=15000, timeout=self._update_seen)
 
     # ------------------------------------------------------------ open
@@ -1757,6 +1907,8 @@ class ChatView(QWidget):
         self.input.setPlainText(c.draft)
         self.input.blockSignals(False)
         self.input.moveCursor(QTextCursor.End)
+        self._update_send_button()               # signals were off: the send button / long-text bar follow now
+        self._update_long_bar()
         self.update_header()
         self._update_scheduled_bar()
         self.uploads.set_conv(conv)
@@ -1790,9 +1942,9 @@ class ChatView(QWidget):
                 names = [self.store.user_name(u) for u in room["members"] if u != self.store.my_id]
                 sub = f"{len(room['members'])} members"
                 if room.get("auto"):
-                    sub += "  ·  Automatic room"
+                    sub += f"{SEP}Automatic room"
                 if room.get("topic"):
-                    sub = f"{room['topic']}  ·  {sub}"
+                    sub = f"{' '.join(room['topic'].split())}{SEP}{sub}"
                 self.subtitle.setToolTip(rich_safe(", ".join(sorted(names))))
             else:
                 sub = ""
@@ -1800,7 +1952,7 @@ class ChatView(QWidget):
         elif target == self.store.my_id:
             me = self.store.me
             self.avatar.set(title, title, status=me.get("status", "online"), uid=target)
-            sub = "Your personal space: notes, to-dos, links and files  ·  only you can see it"
+            sub = f"Your personal space: notes, to-dos, links and files{SEP}only you can see it"
             self.subtitle.setToolTip("")
             self.offline_note.hide()
         else:
@@ -1817,24 +1969,33 @@ class ChatView(QWidget):
             manager = self.store.manager_name(target)
             if manager:
                 parts.append(f"Reports to {manager}")
-            sub = "  ·  ".join(parts)
+            sub = SEP.join(parts)
             self.subtitle.setToolTip("")
             if status == "offline":
-                self.offline_note.setText(f"{title} is offline — messages and files will be delivered when they log in.")
+                away = " They are on leave." if u.get("on_leave") else ""
+                self.offline_note.setText(f"{title} is offline — messages and files will be delivered when they "
+                                          f"sign in.{away}")
                 self.offline_note.show()
             else:
                 self.offline_note.hide()
-        self._base_subtitle = esc(sub)
+        if not getattr(self.ctx.conn, "online", True):
+            # the server is gone: say what happens to what you send (the outbox keeps it)
+            self.offline_note.setText("Not connected to the server — what you send waits here and goes out when "
+                                      "it's back.")
+            self.offline_note.show()
+        self._base_subtitle = sub
         self._show_subtitle()
 
     def _show_subtitle(self):
         now = time.time()
         typers = [uid for uid, exp in self.typing_users.items() if exp > now]
         if typers:
-            names = [esc(first_name(self.store.user_name(u), "Someone")) for u in typers]
-            text = (f"{names[0]} is typing..." if len(names) == 1 else f"{', '.join(names)} are typing...")
-            self.subtitle.setText(f"<span style='color:{T.ACCENT}'>{text}</span>")
+            names = [first_name(self.store.user_name(u), "Someone") for u in typers]
+            text = (f"{names[0]} is typing…" if len(names) == 1 else f"{', '.join(names)} are typing…")
+            self.subtitle.setStyleSheet(f"color: {T.ACCENT}; {self._sub_style}")
+            self.subtitle.setText(text)
         else:
+            self.subtitle.setStyleSheet(f"color: {T.MUTED}; {self._sub_style}")
             self.subtitle.setText(self._base_subtitle)
 
     # ---------------------------------------------------------- render
@@ -1872,24 +2033,31 @@ class ChatView(QWidget):
             self._append(m, prev)
             prev = m
         self.rendered = len(msgs) - cut
-        empty = not msgs and c.complete
-        self.loading.setText(self._empty_text() if empty else "Loading...")
-        self.loading.setStyleSheet(f"color: {T.MUTED if empty else T.FAINT}; font-size: {'11pt' if empty else '10pt'};"
-                                   f" padding: {'80px 20px' if empty else '8px'};")
-        self.loading.setVisible(empty or (not c.complete and bool(c.history_requested) and not msgs))
+        self._set_empty(not msgs and c.complete)
+        self.loading.setVisible(not c.complete and bool(c.history_requested) and not msgs)
         self.setUpdatesEnabled(True)
         self._apply_widths()
         QTimer.singleShot(300, self._update_seen)
         QTimer.singleShot(0, self._update_jumps)
 
+    def _set_empty(self, empty):
+        """The empty-chat note (icon, a line, a hint), centred in the message area."""
+        if empty and self.conv:
+            self.empty.set("chat", *self._empty_text())
+        self.empty.setVisible(empty)
+        self._empty_space.changeSize(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding if empty else QSizePolicy.Minimum)
+        self.mlay.invalidate()
+
     def _empty_text(self):
+        """(title, text) of the empty-chat note."""
         kind, target = P.parse_conv(self.conv)
+        drop = "You can also drop files here."
         if kind == "r":
-            return f"No messages in {self.store.title(self.conv)} yet.\nSay hello to the room 👋"
+            return f"No messages in {self.store.title(self.conv)} yet", f"Say hello to the room 👋\n{drop}"
         if target == self.store.my_id:
-            return "Your own space: notes, links and files for later.\nOnly you can see this chat."
+            return "Your own space", "Notes, links and files for later.\nOnly you can see this chat."
         first = first_name(self.store.user_name(target))
-        return f"No messages yet.\nSay hi to {first} 👋"
+        return "No messages yet", f"Say hi to {first} 👋\n{drop}"
 
     def _append(self, m, prev):
         is_room = self.conv.startswith("r:")
@@ -1937,7 +2105,13 @@ class ChatView(QWidget):
         return w
 
     def _bubble_width(self):
-        return int(max(300, self.scroll.viewport().width() - 40) * 0.72)
+        """The widest a bubble may be. A narrow chat (compact view, a thread open) gives bubbles a bigger share, and
+        a bubble never runs past the list's margins (plus the avatar column in a room)."""
+        vw = self.scroll.viewport().width()
+        share = 0.88 if vw < 440 else 0.72 if vw >= 680 else 0.88 - 0.16 * (vw - 440) / 240
+        m = self.mlay.contentsMargins()
+        room = vw - m.left() - m.right() - (44 if (self.conv or "").startswith("r:") else 0) - 8
+        return int(max(200, min((vw - 40) * share, room)))
 
     def _apply_widths(self):
         w = self._bubble_width()
@@ -2047,6 +2221,10 @@ class ChatView(QWidget):
         ZOOM["pct"] = new
         self.ctx.config["chat_zoom"] = new
         self.ctx.config.save()
+        self.input.apply_zoom()
+        thread = getattr(self.ctx, "thread_panel", None)
+        if thread is not None:
+            thread.input.apply_zoom()
         if self.conv:
             at_bottom = self._at_bottom()
             self._stick_bottom = at_bottom
@@ -2090,6 +2268,8 @@ class ChatView(QWidget):
         if isinstance(w, (MessageRow, GalleryRow, SystemLine)):
             w.set_max_width(self._bubble_width())
         self.loading.hide()
+        if self.empty.isVisible():
+            self._set_empty(False)
         if near_bottom:
             self._stick_bottom = True
         QTimer.singleShot(500, self._update_seen)
@@ -2240,8 +2420,8 @@ class ChatView(QWidget):
             return
         nuke = is_nuke(text)
         lines = text.count("\n") + 1
-        self.long_label.setText(f"📄 {'Nuke script' if nuke else 'Long text'} · {lines:,} lines — "
-                                f"sends as a compact card  ·")
+        self.long_label.setText(f"📄 {'Nuke script' if nuke else 'Long text'}{SEP}{lines:,} lines — "
+                                f"sends as a compact card{SEP.rstrip()}")
         self.long_file.setText(f"Send as {'.nk' if nuke else '.txt'} file instead")
         self.long_bar.show()
 
@@ -2283,10 +2463,8 @@ class ChatView(QWidget):
         self._snipper.start()
 
     def _popup_pos(self, button, popup):
-        """Open a popup above a composer button, kept inside the window."""
-        g = button.mapToGlobal(button.rect().topRight())
-        size = popup.sizeHint()
-        return QPoint(g.x() - size.width(), g.y() - size.height() - 8)
+        """Open a popup above a composer button, right edges lined up, kept on the screen."""
+        return popup_pos(button, popup.sizeHint(), above=True, gap=8)
 
     def _style_composer(self):
         focus = self.input.hasFocus()
@@ -2306,21 +2484,20 @@ class ChatView(QWidget):
 
     def attach_menu(self):
         m = QMenu(self)
-        m.addAction(icon("attachment", T.TEXT, 16), "Send files...", self.pick_files)
-        m.addAction(icon("folder", T.TEXT, 16), "Send a folder (zipped)...", self.pick_folder)
-        m.addAction(icon("image", T.TEXT, 16), "Take a screenshot...   Ctrl+Shift+S", self.take_screenshot)
+        m.addAction(icon("attachment", T.TEXT, 16), "Send files…", self.pick_files)
+        m.addAction(icon("folder", T.TEXT, 16), "Send a folder (zipped)…", self.pick_folder)
+        m.addAction(icon("screenshot", T.TEXT, 16), "Take a screenshot…\tCtrl+Shift+S", self.take_screenshot)
         m.addSeparator()
-        m.addAction(icon("chart", T.TEXT, 16), "Create a poll...", self.create_poll)
-        g = self.b_attach.mapToGlobal(self.b_attach.rect().topLeft())
-        m.exec(QPoint(g.x(), g.y() - m.sizeHint().height() - 8))
+        m.addAction(icon("chart", T.TEXT, 16), "Create a poll…", self.create_poll)
+        m.exec(popup_pos(self.b_attach, m.sizeHint(), above=True, align_right=False, gap=8))
 
     def screen_menu(self):
         kind, target = P.parse_conv(self.conv)
         m = QMenu(self)
-        m.addAction(icon("screen", T.TEXT, 16), "Share my screen...", lambda: self.ctx.screens.invite(target, "offer"))
-        m.addAction(icon("search", T.TEXT, 16), "Ask to see their screen...",
+        m.addAction(icon("screen", T.TEXT, 16), "Share my screen…", lambda: self.ctx.screens.invite(target, "offer"))
+        m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen…",
                     lambda: self.ctx.screens.invite(target, "request"))
-        m.exec(self.b_screen.mapToGlobal(self.b_screen.rect().bottomLeft()))
+        m.exec(popup_pos(self.b_screen, m.sizeHint()))
 
     # ----------------------------------------------------------- compact
     compact = False
@@ -2330,9 +2507,13 @@ class ChatView(QWidget):
         self._labelled = None
         self._label_header()
         self.b_back.setVisible(on)
-        self.input.setPlaceholderText("Message..." if on else "Write a message...")
+        self.b_shot.setVisible(not on)           # a crowded composer; the attach menu still has it
+        self.input.setPlaceholderText("Message…" if on else "Write a message…")
         self.head.layout().setContentsMargins(8 if on else 22, 10, 10 if on else 16, 10)
+        self.mlay.setContentsMargins(14 if on else 24, 10, 14 if on else 24, 14)
+        self.setMinimumWidth(0 if on else self.MIN_WIDTH)
         self.update_header()
+        self._apply_widths()
 
     def _go_back(self):
         if self.store.conv_exists(self.conv or ""):
@@ -2351,27 +2532,25 @@ class ChatView(QWidget):
         m = QMenu(self)
         text = self.input.toPlainText().strip()
         if text:
-            sub = when_menu(m, "Send this message later", self.schedule_text, "Pick a date & time...")
+            sub = when_menu(m, "Send this message later", self.schedule_text, pick_time_text())
             sub.setIcon(icon("send", T.TEXT, 16))
             m.addMenu(sub)
         else:
             a = m.addAction(icon("send", T.FAINT, 16), "Send later — type a message first")
             a.setEnabled(False)
         m.addMenu(when_menu(m, "Remind me about this chat",
-                            lambda ts: self.ctx.add_reminder(ts, "", self.conv)))
-        m.addAction(icon("edit", T.TEXT, 16), "New reminder with a note...", lambda: self.ctx.new_reminder(self.conv))
-        g = self.b_later.mapToGlobal(self.b_later.rect().topLeft())
-        m.exec(QPoint(g.x(), g.y() - m.sizeHint().height() - 8))
+                            lambda ts: self.ctx.add_reminder(ts, "", self.conv), pick_time_text()))
+        m.addAction(icon("edit", T.TEXT, 16), "New reminder with a note…", lambda: self.ctx.new_reminder(self.conv))
+        m.exec(popup_pos(self.b_later, m.sizeHint(), above=True, gap=8))
 
     def schedule_text(self, due_at):
-        from client.ui.planner_ui import fmt_due
         text = self.input.toPlainText().strip()
         if not text or not self.conv:
             return
 
         def done(reply):
             if reply.get("ok"):
-                self.ctx.toast(f"🕒 Will be sent {fmt_due(due_at)}")
+                self.ctx.toast(f"🕒 Will be sent {when_inline(due_at)}")
             else:
                 self.ctx.toast(f"Not scheduled: {reply.get('error')}")
                 if not self.input.toPlainText():
@@ -2380,32 +2559,33 @@ class ChatView(QWidget):
         self.ctx.conn.request("schedule_add", done, conv=self.conv, text=text, due_at=due_at)
 
     def _update_scheduled_bar(self):
-        from client.ui.planner_ui import fmt_due
         mine = [x for x in self.store.scheduled if x["conv"] == self.conv]
         waiting = [x for x in mine if x["state"] == "pending"]
         failed = [x for x in mine if x["state"] == "failed"]
-        if not mine:
+        if not waiting and not failed:
             self.sched_bar.hide()
             return
+        # '1 message scheduled for tomorrow at 09:30 · View': a sentence, then the action
         if failed:
-            text = f"{len(failed)} scheduled message{'s' if len(failed) > 1 else ''} could not be sent — view"
+            text = f"{len(failed)} scheduled message{'s' if len(failed) > 1 else ''} could not be sent{SEP}View"
         elif len(waiting) == 1:
-            text = f"1 message scheduled for {fmt_due(waiting[0]['due_at'])} — view"
+            text = f"1 message scheduled for {when_inline(waiting[0]['due_at'])}{SEP}View"
         else:
-            text = f"{len(waiting)} messages scheduled, next {fmt_due(waiting[0]['due_at'])} — view"
+            nxt = min(x["due_at"] for x in waiting)
+            text = f"{len(waiting)} messages scheduled, next {when_inline(nxt)}{SEP}View"
         self.sched_bar.setText(" " + text)
         self.sched_bar.show()
 
     def scheduled_menu(self):
-        from client.ui.planner_ui import TimeDialog, fmt_due
+        from client.ui.planner_ui import TimeDialog
         m = QMenu(self)
         for x in [x for x in self.store.scheduled if x["conv"] == self.conv]:
-            label = "Sticker" if x["sticker"] else x["text"].replace("\n", " ")[:50]
+            label = menu_text("Sticker" if x["sticker"] else clip(x["text"], 50))
             if x["state"] == "failed":
                 sub = m.addMenu(icon("close", T.DANGER, 16), f"Not sent: {label}")
-                sub.addAction(x["error"] or "Could not be sent").setEnabled(False)
+                sub.addAction(menu_text(x["error"] or "Could not be sent")).setEnabled(False)
                 continue
-            sub = m.addMenu(icon("clock", T.TEXT, 16), f"{fmt_due(x['due_at'])}  ·  {label}")
+            sub = m.addMenu(icon("clock", T.TEXT, 16), f"{fmt_when(x['due_at'])}{SEP}{label}")
             sub.addAction(icon("send", T.TEXT, 16), "Send now",
                           lambda sid=x["id"]: self.ctx.conn.request("schedule_send_now", None, id=sid))
 
@@ -2418,16 +2598,20 @@ class ChatView(QWidget):
                     self.ctx.conn.request("schedule_update", lambda r: None if r.get("ok") else self.ctx.toast(
                         r.get("error")), id=x["id"], text=dlg.message() if not x["sticker"] else "",
                         due_at=dlg.timestamp())
-            sub.addAction(icon("edit", T.TEXT, 16), "Edit text or time...", edit)
+            sub.addAction(icon("edit", T.TEXT, 16), "Edit text or time…", edit)
             sub.addAction(icon("trash", T.DANGER, 16), "Delete",
                           lambda sid=x["id"]: self.ctx.conn.request("schedule_delete", None, id=sid))
-        m.exec(self.sched_bar.mapToGlobal(self.sched_bar.rect().topLeft()) - QPoint(0, m.sizeHint().height() + 4))
+        m.exec(popup_pos(self.sched_bar, m.sizeHint(), above=True, align_right=False, gap=4))
 
     # --------------------------------------------------------- reactions
-    def react_menu(self, msg, pos):
+    def react_menu(self, msg, pos=None, row=None):
+        """The quick reactions, opened above the message (row) so it stays readable - below it when there is no
+        room above - or at pos."""
         m = ReactionPicker(self)
         m.picked.connect(lambda e: self.toggle_reaction(msg, e, only_add=True))
-        m.exec(pos)
+        if pos is None and row is not None:
+            pos = popup_pos(row.bubble, m.sizeHint(), above=True, align_right=row.mine)
+        m.exec(pos if pos is not None else QCursor.pos())
 
     def toggle_reaction(self, msg, emoji, only_add=False):
         mine = any(r["emoji"] == emoji and r.get("mine") for r in msg.get("reactions", []))
@@ -2463,8 +2647,7 @@ class ChatView(QWidget):
         else:
             self.sticker_picker.show_pack(self.sticker_picker.first_pack())
         pk = self.sticker_picker
-        g = self.b_sticker.mapToGlobal(self.b_sticker.rect().topRight())
-        pk.move(g.x() - pk.width() + 20, g.y() - pk.height() - 10)
+        pk.move(popup_pos(self.b_sticker, pk.size(), above=True, gap=10))
         pk.show()
 
     def send_sticker(self, sticker_id):
@@ -2483,11 +2666,12 @@ class ChatView(QWidget):
         m = QMenu(self)
         kind, target = P.parse_conv(self.conv)
         muted = self.store.is_muted(self.conv)
-        m.addAction(icon("bell", T.TEXT, 16), "Unmute notifications" if muted else "Mute notifications",
+        m.addAction(icon("bell" if muted else "bell_off", T.TEXT, 16),
+                    "Unmute notifications" if muted else "Mute notifications",
                     lambda: self.ctx.set_muted(self.conv, not muted))
         m.addAction(icon("search", T.TEXT, 16), "Search messages", self.ctx.show_search)
-        m.addAction(icon("attachment", T.TEXT, 16), "Send files...", self.pick_files)
-        m.addAction(icon("folder", T.TEXT, 16), "Send a folder (zipped)...", self.pick_folder)
+        m.addAction(icon("attachment", T.TEXT, 16), "Send files…", self.pick_files)
+        m.addAction(icon("folder", T.TEXT, 16), "Send a folder (zipped)…", self.pick_folder)
         if kind == "r":
             m.addAction(icon("users", T.TEXT, 16), "Room members", lambda: self.ctx.show_room_info(self.conv))
             if not self.store.rooms.get(target, {}).get("auto"):
@@ -2495,18 +2679,18 @@ class ChatView(QWidget):
                 m.addAction(icon("logout", T.DANGER, 16), "Leave room", lambda: self.ctx.leave_room(target))
         else:
             m.addSeparator()
-            m.addAction(icon("screen", T.TEXT, 16), "Share my screen...",
+            m.addAction(icon("screen", T.TEXT, 16), "Share my screen…",
                         lambda: self.ctx.screens.invite(target, "offer"))
-            m.addAction(icon("search", T.TEXT, 16), "Ask to see their screen...",
+            m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen…",
                         lambda: self.ctx.screens.invite(target, "request"))
             self.ctx.add_manage_actions(m, target)
-        m.exec(self.b_more.mapToGlobal(self.b_more.rect().bottomLeft()))
+        m.exec(popup_pos(self.b_more, m.sizeHint()))
 
     # ------------------------------------------------ reply / edit / delete
     def _show_action(self, icon_name, title, text):
         self.action_icon.setPixmap(pixmap(icon_name, T.ACCENT, 18))
         self.action_title.setText(title)
-        self.action_label.setText(text.replace("\n", " ")[:110])
+        self.action_label.setText(" ".join(str(text or "").split()))
         self.action_bar.show()
         self._style_composer()
 
@@ -2514,7 +2698,8 @@ class ChatView(QWidget):
         from client import stickers
         self.editing = None
         self.reply_to = msg
-        self._show_action("reply", f"Replying to {self.store.user_name(msg['sender_id'])}", stickers.summary(msg))
+        who = "yourself" if msg["sender_id"] == self.store.my_id else self.store.user_name(msg["sender_id"])
+        self._show_action("reply", f"Replying to {who}", stickers.summary(msg))
         self.input.setFocus()
 
     def start_edit(self, msg):
@@ -2543,10 +2728,17 @@ class ChatView(QWidget):
 
     def delete_message(self, msg):
         mine = msg["sender_id"] == self.store.my_id
-        text = ("Delete this message for everyone?" if mine else
+        text = ("Delete this message for everyone? It can't be undone." if mine else
                 f"Delete this message from {self.store.user_name(msg['sender_id'])} for everyone? "
-                "(recorded in the audit log)")
-        if QMessageBox.question(self, "Delete message", rich_safe(text)) == QMessageBox.Yes:
+                "Everyone in the chat loses it, and it is recorded in the audit log.")
+        box = QMessageBox(QMessageBox.Question, "Delete message", rich_safe(text), QMessageBox.NoButton, self)
+        delete = box.addButton("Delete for everyone", QMessageBox.DestructiveRole)
+        T.polish(delete, danger=True)
+        cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel)               # a stray Enter must not delete
+        box.setEscapeButton(cancel)
+        box.exec()
+        if box.clickedButton() is delete:
             self.ctx.conn.request("delete_message", lambda r: None if r.get("ok") else self.ctx.toast(
                 r.get("error", "Not deleted")), id=msg["id"])
 
@@ -2560,7 +2752,7 @@ class ChatView(QWidget):
                 new = MessageRow(self.ctx, msg, r.mine, r.first, r.first, r.is_room)
                 new.seen = r.seen
                 new.update_meta()
-                new.set_max_width(int(max(300, self.scroll.viewport().width() - 40) * 0.72))
+                new.set_max_width(self._bubble_width())
                 if self.hover_bar.row is r:
                     self.hover_bar.hide()
                     self.hover_bar.row = None
@@ -2595,9 +2787,9 @@ class ChatView(QWidget):
             return
         from client import stickers
         latest = pins[0]
-        self.pin_title.setText("Pinned message" if len(pins) == 1 else f"Pinned message  ·  1 of {len(pins)}")
+        self.pin_title.setText("Pinned message" if len(pins) == 1 else f"Pinned message{SEP}1 of {len(pins)}")
         self.pin_text.setText(f"{self.store.user_name(latest['sender_id'])}: "
-                              + stickers.summary(latest).replace("\n", " ")[:120])
+                              + " ".join(stickers.summary(latest).split()))
         self.pin_bar.show()
 
     def _pin_clicked(self, e):
@@ -2610,12 +2802,12 @@ class ChatView(QWidget):
         m = QMenu(self)
         from client import stickers
         for p in pins:
-            label = f"{self.store.user_name(p['sender_id'])}: {stickers.summary(p)[:60]}"
-            sub = m.addMenu(label)
-            sub.addAction("Show in chat", lambda mid=p["id"]: self.scroll_to(mid))
-            sub.addAction("Unpin", lambda mid=p["id"]: self.ctx.conn.request(
+            label = clip(f"{self.store.user_name(p['sender_id'])}: {stickers.summary(p)}", 60)
+            sub = m.addMenu(menu_text(label))
+            sub.addAction(icon("chat", T.TEXT, 16), "Show in chat", lambda mid=p["id"]: self.scroll_to(mid))
+            sub.addAction(icon("pin", T.TEXT, 16), "Unpin", lambda mid=p["id"]: self.ctx.conn.request(
                 "pin", None, conv=self.conv, message_id=mid, pinned=False))
-        m.exec(self.pin_list.mapToGlobal(self.pin_list.rect().bottomLeft()))
+        m.exec(popup_pos(self.pin_list, m.sizeHint()))
 
     # ---------------------------------------------------------- mentions
     def _update_mention_popup(self):
@@ -2626,12 +2818,9 @@ class ChatView(QWidget):
         if q is None:
             self.mention_popup.hide()
             return
-        from client import mentions
-        room = self.store.rooms.get(P.parse_conv(self.conv)[1], {})
-        members = [self.store.me if uid == self.store.my_id else self.store.users.get(uid)
-                   for uid in room.get("members", [])]
-        self.mention_popup.show_for(mentions.suggestions(q, [u for u in members if u], self.store.my_id),
-                                    self.composer)
+        # above the reply / edit strip when it shows, so 'Replying to …' stays readable
+        anchor = self.action_bar if self.action_bar.isVisible() else self.composer
+        self.mention_popup.show_for(mention_items(self.store, self.conv, q), anchor)
 
     def _pick_mention(self, username):
         self.input.complete_mention(username)
@@ -2669,12 +2858,15 @@ class ChatView(QWidget):
             if not reply.get("ok"):
                 self.ctx.toast(reply.get("error", "Not available"))
                 return
+            from client import stickers
+            from client.ui.dialogs import ReadReceiptsDialog
             names = reply.get("names", {})
             read = sorted(names[str(u)] for u in reply["read"] if str(u) in names)
             unread = sorted(n for u, n in names.items() if int(u) not in reply["read"])
-            QMessageBox.information(self, "Seen by", rich_safe(
-                f"Seen by {len(read)} of {reply['total']}:\n" + ("\n".join(read) or "nobody yet")
-                + ("\n\nNot yet:\n" + "\n".join(unread) if unread else "")))
+            # the same list as announcement read receipts: ticks for who has seen it, the rest below
+            ReadReceiptsDialog(self, clip(stickers.summary(msg), 80),
+                               {"read": [{"name": n} for n in read], "unread": [{"name": n} for n in unread]},
+                               window_title="Seen by", verb="Seen").exec()
         self.ctx.conn.request("read_by", done, conv=self.conv, message_id=msg["id"])
 
     # ------------------------------------------------------ drag & drop

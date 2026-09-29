@@ -6,11 +6,11 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu,
-    QMessageBox, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QMessageBox, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from common import protocol as P
@@ -24,7 +24,10 @@ from client.ui.dialogs import (
 from client.ui.pages import AnnouncementsPage, DirectoryPage, HomePage, TransfersPage
 from client.ui.sidebar import Sidebar
 from client import stickers
-from client.ui.widgets import MeButton, RailButton, first_name, plain, rich_safe
+from client.ui.widgets import (
+    ELLIPSIS, SEP, Avatar, ElidedLabel, MeButton, RailButton, clip, first_name, fmt_time, menu_text,
+    plain, rich_safe,
+)
 
 
 def bring_to_front(window):
@@ -93,6 +96,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
         self.banner = plain(QLabel())
         self.banner.setAlignment(Qt.AlignCenter)
+        self.banner.setWordWrap(True)
         self.banner.setStyleSheet(f"background: {T.WARN_BG}; color: {T.WARN_TEXT}; padding: 7px; font-weight: 600;")
         self.banner.hide()
         outer.addWidget(self.banner)
@@ -117,7 +121,12 @@ class MainWindow(QMainWindow):
         self.focus_bar.setStyleSheet(f"QFrame {{ background: {T.ACCENT_SOFT}; }}")
         fb = QHBoxLayout(self.focus_bar)
         fb.setContentsMargins(16, 4, 10, 4)
-        self.focus_label = plain(QLabel())
+        fb.setSpacing(T.SPACE_S)
+        focus_icon = QLabel()
+        focus_icon.setPixmap(icon("target", T.ACCENT, 16).pixmap(16, 16))
+        focus_icon.setStyleSheet("background: transparent;")
+        fb.addWidget(focus_icon)
+        self.focus_label = ElidedLabel()               # a long "who gets through" is cut, whole in the tooltip
         self.focus_label.setStyleSheet(f"color: {T.TEXT}; font-weight: 600; background: transparent;")
         fb.addWidget(self.focus_label, 1)
         focus_end = QPushButton("End now")
@@ -134,35 +143,40 @@ class MainWindow(QMainWindow):
         outer.addWidget(license_label())            # the licence line, very small, at the very bottom
 
         # ---- navigation rail
-        rail = QFrame()
+        rail = self.rail_frame = QFrame()
         rail.setObjectName("rail")
         rail.setFixedWidth(RailButton.W)
         rail.setStyleSheet(f"#rail {{ background: {T.RAIL}; }}")
-        rl = QVBoxLayout(rail)
-        rl.setContentsMargins(0, 16, 0, 10)
+        rl = self.rail_layout = QVBoxLayout(rail)
+        rl.setContentsMargins(0, 11, 0, 10)
         rl.setSpacing(2)
-        home_logo = logo_widget(34)
+        home_logo = self.home_logo = logo_widget(34)
+        home_logo.setFixedSize(44, 44)                  # the 34 px mark with room for a hover halo around it
+        home_logo.setAlignment(Qt.AlignCenter)
         home_logo.setCursor(Qt.PointingHandCursor)
         home_logo.setToolTip("Home")
         home_logo.mousePressEvent = lambda _e: self.go_home()
+        home_logo.installEventFilter(self)
         rl.addWidget(home_logo, 0, Qt.AlignHCenter)
-        rl.addSpacing(18)
+        rl.addSpacing(13)                               # under the logo (less on a short window: _fit_rail)
         self.rail_group = QButtonGroup(self)
         self.rail = {}
         for key, ic, label, tip in [("chats", "chat", "Chats", "Chats"), ("contacts", "users", "People", "People"),
-                                    ("rooms", "hash", "Rooms", "Chat rooms"),
-                                    ("directory", "org", "Org", "Directory / org chart"),
-                                    ("calendar", "calendar", "Calendar", "Calendar - meetings, holidays, deadlines, leave"),
-                                    ("announcements", "megaphone", "News", "Announcements"),
+                                    ("rooms", "hash", "Rooms", "Rooms"),
+                                    ("directory", "org", "Org", "Org chart and directory"),
+                                    ("calendar", "calendar", "Calendar",
+                                     "Calendar — meetings, holidays, deadlines and leave"),
+                                    ("announcements", "megaphone", "News", "News — studio and team announcements"),
                                     ("transfers", "download", "Files", "File transfers"),
-                                    ("myspace", "edit", "Me", "My space — notes, to-dos and files only you can see")]:
+                                    ("myspace", "note", "My space",
+                                     "My space — notes, to-dos and files only you can see")]:
             b = RailButton(ic, tip, label)
             b.clicked.connect(lambda _=False, k=key: self.rail_clicked(k))
             self.rail_group.addButton(b)
             self.rail[key] = b
             rl.addWidget(b, 0, Qt.AlignHCenter)
         rl.addStretch(1)
-        self.b_pin = RailButton("pin", "Keep on top of other windows")
+        self.b_pin = RailButton("on_top", "Keep on top of other windows")
         self.b_pin.clicked.connect(lambda: self.set_on_top(self.b_pin.isChecked()))
         self.b_pin.hide()
         rl.addWidget(self.b_pin, 0, Qt.AlignHCenter)
@@ -181,9 +195,13 @@ class MainWindow(QMainWindow):
         self.me_btn = MeButton()
         self.me_btn.clicked.connect(self.me_menu)
         rl.addWidget(self.me_btn, 0, Qt.AlignHCenter)
+        self.rail_level = 0                             # 0 full, 1 no labels, 2 tighter, 3 tightest (_fit_rail)
+        rail.installEventFilter(self)                   # its height changes with the window and the bars above it
+        self.stripe = None
         if T.FESTIVAL:
             from client.ui.festive import FestiveStripe
-            body.addWidget(FestiveStripe())
+            self.stripe = FestiveStripe()
+            body.addWidget(self.stripe)
         body.addWidget(rail)
 
         # ---- sidebar
@@ -193,6 +211,9 @@ class MainWindow(QMainWindow):
         self.sidebar.conv_menu.connect(self.conv_menu)
         self.sidebar.go_page.connect(lambda key: (self.rail[key].setChecked(True), self.rail_clicked(key)))
         self.sidebar.show_saved.connect(self.show_saved)
+        self.sidebar.toast.connect(self.toast)
+        self.sidebar.search_messages.connect(lambda q: SearchDialog(self, q).exec())
+        self._sidebar_want = 330                        # the width asked for; the window may leave less room
         self._set_sidebar_width(config.get("sidebar_width", 330), save=False)
         body.addWidget(self.sidebar)
         from client.ui.sidebar import SidebarEdge
@@ -227,11 +248,13 @@ class MainWindow(QMainWindow):
         body.addWidget(self.stack, 1)
         from client.ui.thread_panel import ThreadPanel
         self.thread_panel = ThreadPanel(self)
+        self.thread_panel.installEventFilter(self)       # opening / closing it changes the room for the list
         body.addWidget(self.thread_panel)
         self.stack.currentChanged.connect(
             lambda _i: self.stack.currentWidget() is not self.chat and self.thread_panel.close_thread())
 
         self.toast_label = plain(QLabel(self))
+        self.toast_label.setAlignment(Qt.AlignCenter)
         self.toast_label.setStyleSheet(f"background: {T.TOOLTIP}; color: #eef0f5; border-radius: 16px;"
                                        " padding: 10px 18px; font-weight: 600;")
         self.toast_label.hide()
@@ -290,7 +313,8 @@ class MainWindow(QMainWindow):
         self._drafts_timer = QTimer(self, interval=15_000, timeout=self._save_drafts)
         self._drafts_timer.start()
         from client.ui.popups import PopupStack
-        self.popup_stack = PopupStack(store, self._quick_reply, self._popup_open)
+        self.popup_stack = PopupStack(store, self._quick_reply, self._popup_open, screen=self.screen,
+                                      below=lambda: list(self.reminder_cards.values()))
         store.prefs_changed.connect(self._prefs_changed)
         self._focus_timer = QTimer(self, interval=20_000, timeout=self._update_focus)
         self._focus_timer.start()
@@ -308,7 +332,7 @@ class MainWindow(QMainWindow):
         self.tray_compact.setCheckable(True)
         status_menu = m.addMenu("Status")
         for st in P.STATUSES:
-            status_menu.addAction(icon("user", T.STATUS_COLORS[st], 16), T.STATUS_LABELS[st],
+            status_menu.addAction(icon("circle", T.STATUS_COLORS[st], 16), T.STATUS_LABELS[st],
                                   lambda st=st: self.set_status(st))
         m.addSeparator()
         m.addAction("Sign out", self.confirm_logout)
@@ -368,6 +392,7 @@ class MainWindow(QMainWindow):
             self.config.save()
         self.chat.set_compact(on)
         self.b_pin.setVisible(on)
+        QTimer.singleShot(0, self._fit_rail)
         if on:
             self._normal_geometry = self.saveGeometry()
             if self.isMaximized() or self.isFullScreen():
@@ -382,10 +407,10 @@ class MainWindow(QMainWindow):
             self.set_on_top(self.config["compact_on_top"], save=False)
         else:
             self.set_on_top(False, save=False)
-            self._set_sidebar_width(self.config.get("sidebar_width", 330), save=False)
             self.sidebar_edge.show()
             self.sidebar.show()
             self.stack.show()
+            self._set_sidebar_width(self.config.get("sidebar_width", 330), save=False)
             self.setMinimumSize(960, 600)
             if self._normal_geometry:
                 self.restoreGeometry(self._normal_geometry)
@@ -399,11 +424,95 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             w = Sidebar.WIDTH
         w = max(Sidebar.MIN_WIDTH, min(Sidebar.MAX_WIDTH, w))
-        if not self.compact:
-            self.sidebar.setFixedWidth(w)
+        self._sidebar_want = w
+        self._fit_columns()
         if save:
             self.config["sidebar_width"] = w
             self.config.save()
+
+    # ---- a small window: the columns and the rail give way instead of overlapping
+    CHAT_MIN = 380          # the chat never gets narrower than this while the list or a thread is beside it
+
+    def _fit_columns(self):
+        """The chat list gets the width asked for (dragged or saved) when there is room, less when the window is
+        narrow, and steps aside while a thread is open in a window too narrow for three columns. The asked-for
+        width is kept (not saved smaller), so it comes back when the window grows."""
+        from client.ui.sidebar import Sidebar
+        if self.compact:
+            return
+        if not hasattr(self, "thread_panel"):         # still being built
+            self.sidebar.setFixedWidth(self._sidebar_want)
+            return
+        thread = self.thread_panel.minimumWidth() if not self.thread_panel.isHidden() else 0
+        used = self.rail_frame.width() + (self.stripe.width() if self.stripe else 0) + self.sidebar_edge.width()
+        room = self.width() - used - thread - self.CHAT_MIN
+        fits = room >= Sidebar.MIN_WIDTH or not thread
+        self.sidebar.setFixedWidth(max(Sidebar.MIN_WIDTH, min(self._sidebar_want, room)))
+        if fits == self.sidebar.isHidden():
+            self.sidebar.setVisible(fits)
+            self.sidebar_edge.setVisible(fits)
+
+    RAIL_LEVELS = 5         # 0 full, 1 no labels, 2 tight gaps, 3 Search in the Me menu, 4 Compact view too
+
+    def _rail_need(self, level):
+        """The height the rail's contents take at a level (see RAIL_LEVELS)."""
+        nav = RailButton.H if level == 0 else RailButton.H_COMPACT
+        toggles = ([self.b_pin] if not self.b_pin.isHidden() else []) + [self.b_compact, self.b_search, self.b_settings]
+        if level >= 3:
+            toggles.remove(self.b_search)
+        if level >= 4:
+            toggles.remove(self.b_compact)
+        top, bottom, gap, spacing, me_gap = (11, 10, 13, 2, 6) if level < 2 else (6, 4, 4, 0, 2)
+        items = 1 + len(self.rail) + len(toggles) + 1              # logo, pages, toggles, me
+        return (top + bottom + self.home_logo.height() + gap + nav * len(self.rail)
+                + sum(b.height() for b in toggles) + me_gap + self.me_btn.height() + spacing * (items - 1))
+
+    def _fit_rail(self):
+        """A short window (or one with the focus / update / reconnect bar showing): first the page labels go
+        (the tooltips still name the pages), then the gaps shrink, then Search and Compact view move from the
+        rail into the Me menu - so the icons never run into each other."""
+        h = self.rail_frame.height()
+        last = self.RAIL_LEVELS - 1
+        level = next((lv for lv in range(last) if self._rail_need(lv) <= h), last)
+        if level == self.rail_level:
+            return
+        self.rail_level = level
+        for b in self.rail.values():
+            b.set_compact(level >= 1)
+        rl = self.rail_layout
+        tight = level >= 2
+        rl.setContentsMargins(0, 6 if tight else 11, 0, 4 if tight else 10)
+        rl.setSpacing(0 if tight else 2)
+        logo_gap = rl.itemAt(rl.indexOf(self.home_logo) + 1)
+        if logo_gap is not None and logo_gap.spacerItem() is not None:
+            logo_gap.spacerItem().changeSize(0, 4 if tight else 13)
+        me_gap = rl.itemAt(rl.indexOf(self.me_btn) - 1)
+        if me_gap is not None and me_gap.spacerItem() is not None:
+            me_gap.spacerItem().changeSize(0, 2 if tight else 6)
+        self.b_search.setVisible(level < 3)
+        self.b_compact.setVisible(level < 4)
+        rl.invalidate()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if not hasattr(self, "toast_label"):            # still being built
+            return
+        self._fit_columns()
+        if self.toast_label.isVisible():
+            QTimer.singleShot(0, self._place_toast)
+        QTimer.singleShot(0, self._fit_columns)        # again once the thread panel has followed the new width
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if obj is getattr(self, "rail_frame", None) and t == QEvent.Resize:
+            self._fit_rail()
+        elif obj is getattr(self, "thread_panel", None) and t in (QEvent.Show, QEvent.Hide):
+            QTimer.singleShot(0, self._fit_columns)
+        elif obj is getattr(self, "home_logo", None) and t in (QEvent.Enter, QEvent.Leave):
+            # the logo is the way Home: a soft halo on hover, like the rail buttons' pill
+            obj.setStyleSheet(f"background: {T.SURFACE_HOVER}; border-radius: {T.RADIUS_M}px;"
+                              if t == QEvent.Enter else "background: transparent;")
+        return super().eventFilter(obj, e)
 
     def _dock_right(self):
         screen = self.screen() or QApplication.primaryScreen()
@@ -465,9 +574,13 @@ class MainWindow(QMainWindow):
         set_link_policy(boot.get("trusted_link_hosts", []), self.config)
         set_shot_pattern(self.store.shot_pattern)
         self._update_focus()
+        if self.banner.isVisible() or getattr(self, "_was_offline", False):
+            self.toast("Back online")
+        self._was_offline = False
         self.banner.hide()
+        self.sidebar.set_offline(False)
         self.home.set_name(self.store.me.get("name", ""), self.store.server_name)
-        self.setWindowTitle(f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}")
+        self.setWindowTitle(self._title())
         self._me_changed()
         if self.chat.conv and self.stack.currentWidget() is self.chat:
             if self.store.conv_exists(self.chat.conv):
@@ -501,36 +614,105 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(900, self._maybe_tour)
 
     def _on_connection_lost(self, reason):
-        self.banner.setText(f"Connection to the server lost — reconnecting...  ({reason})")
+        # what people care about: it is being fixed, and what they send is not lost (the outbox keeps it)
+        self.banner.setText(f"Can't reach the Quillo server — reconnecting{ELLIPSIS} "
+                            "Messages you send will go out when it's back.")
+        self.banner.setToolTip(rich_safe(str(reason or "")))
         self.banner.show()
+        self._was_offline = True
+        self.sidebar.set_offline(True)
         self._show_me(connected=False)
+
+    def _title(self):
+        return f"Quillo — {self.store.me.get('name', '')}{SEP}{self.store.server_name}"
 
     def _show_me(self, connected=True):
         me = self.store.me
         status = me.get("status", "online") if connected else "offline"
-        line = "Reconnecting..." if not connected else (self.store.status_text(me) or T.STATUS_LABELS.get(status, status))
+        line = ("Reconnecting" + ELLIPSIS) if not connected else (
+            self.store.status_text(me) or T.STATUS_LABELS.get(status, status))
         if connected and self.store.focus_until():
-            line += f"\n🎯 Focus time until {datetime.datetime.fromtimestamp(self.store.focus_until()):%H:%M}"
-        self.me_btn.set_me(me.get("name", ""), status, f"{me.get('name', '')}\n{line}", uid=self.store.my_id)
+            line += f"\nFocus time until {self._until(self.store.focus_until())}"
+        self.me_btn.set_me(me.get("name", ""), status, rich_safe(f"{me.get('name', '')}\n{line}"),
+                           uid=self.store.my_id)
+
+    @staticmethod
+    def _menu_note(menu, text, widget=None):
+        """A row at the top of a menu that says something (not a greyed-out, 'unavailable' item)."""
+        w = widget
+        if w is None:
+            w = plain(QLabel(text))
+            w.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)}; padding: 6px 12px 4px 12px;"
+                            " background: transparent;")
+        a = QWidgetAction(menu)
+        a.setDefaultWidget(w)
+        menu.addAction(a)
+        return a
+
+    def _me_card(self):
+        """The Me menu's header: my avatar, my name and what the others see as my status."""
+        me = self.store.me
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(w)
+        row.setContentsMargins(10, 6, 16, 6)
+        row.setSpacing(10)
+        status = me.get("status", "online") if self.conn.online else "offline"
+        av = Avatar(36)
+        av.set(me.get("name", ""), me.get("name", ""), status=status, ring=T.PANEL, uid=self.store.my_id)
+        row.addWidget(av)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        name = plain(QLabel(me.get("name", "")))
+        name.setStyleSheet(f"font-weight: 700; font-size: {T.pt(T.FONT_M)};")
+        col.addWidget(name)
+        line = ("Reconnecting" + ELLIPSIS) if not self.conn.online else (
+            self.store.status_text(me) or T.STATUS_LABELS.get(status, status))
+        sub = plain(QLabel(clip(line, 40)))
+        sub.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)};")
+        col.addWidget(sub)
+        row.addLayout(col, 1)
+        return w
+
+    @staticmethod
+    def _beside(anchor, size, gap=6):
+        """A pop-up to the right of a rail button, its bottom level with the button's (the rail's lowest button
+        opens upwards, so the menu never runs off the bottom of the screen)."""
+        g = anchor.mapToGlobal(QPoint(anchor.width() + gap, anchor.height()))
+        x, y = g.x(), g.y() - size.height()
+        screen = anchor.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = max(area.left(), min(x, area.right() + 1 - size.width()))
+            y = max(area.top(), min(y, area.bottom() + 1 - size.height()))
+        return QPoint(x, y)
 
     def me_menu(self):
         """My name, status choices, status message, settings and sign out."""
         me = self.store.me
         m = QMenu(self)
-        head = m.addAction(me.get("name", ""))
-        head.setEnabled(False)
+        self._menu_note(m, "", self._me_card())
         m.addSeparator()
         for st in P.STATUSES:
-            a = m.addAction(icon("user", T.STATUS_COLORS[st], 16), T.STATUS_LABELS[st],
-                            lambda st=st: self.set_status(st))
-            a.setCheckable(True)
-            a.setChecked(me.get("status") == st)
-        m.addAction(icon("smile", T.TEXT, 16), "Profile photo & status...", self.edit_status_message)
+            current = me.get("status") == st
+            # the one I am on: bold with a tick on the right (the status icons leave no room for Qt's own tick)
+            a = m.addAction(icon("circle", T.STATUS_COLORS[st], 16),
+                            T.STATUS_LABELS[st] + ("\t✓" if current else ""), lambda st=st: self.set_status(st))
+            if current:
+                f = a.font()
+                f.setBold(True)
+                a.setFont(f)
+        m.addAction(icon("smile", T.TEXT, 16), menu_text("Profile photo & status" + ELLIPSIS),
+                    self.edit_status_message)
         m.addMenu(self.focus_menu(m))
-        m.addAction(icon("clock", T.TEXT, 16), "New reminder...", self.new_reminder)
+        m.addAction(icon("clock", T.TEXT, 16), "New reminder" + ELLIPSIS, self.new_reminder)
         m.addSeparator()
         m.addAction(icon("bookmark", T.TEXT, 16), "Saved for later", self.show_saved)
-        m.addAction(icon("list", T.TEXT, 16), "Keyboard shortcuts   Ctrl+/", self.show_shortcuts)
+        if self.b_search.isHidden():            # a short window moved these from the rail to here
+            m.addAction(icon("search", T.TEXT, 16), "Search messages\tCtrl+F", self.show_search)
+        if self.b_compact.isHidden() and not self.compact:
+            m.addAction(icon("compact", T.TEXT, 16), "Compact view\tCtrl+Shift+M", lambda: self.set_compact(True))
+        m.addAction(icon("list", T.TEXT, 16), "Keyboard shortcuts\tCtrl+/", self.show_shortcuts)
         m.addAction(icon("info", T.TEXT, 16), "Welcome tour", self.show_tour)
         m.addSeparator()
         dark = T.DARK
@@ -538,7 +720,7 @@ class MainWindow(QMainWindow):
                     lambda: self.switch_mode("light" if dark else "midnight"))
         m.addAction(icon("settings", T.TEXT, 16), "Settings", self.show_settings)
         m.addAction(icon("logout", T.DANGER, 16), "Sign out", self.confirm_logout)
-        m.exec(self.me_btn.mapToGlobal(self.me_btn.rect().topRight()))
+        m.exec(self._beside(self.me_btn, m.sizeHint()))
 
     def _me_changed(self):
         self._show_me(connected=self.conn.online)
@@ -553,11 +735,12 @@ class MainWindow(QMainWindow):
         total = n + a
         self.tray.setIcon(self._tray_icon(total))
         self.tray.setToolTip(f"Quillo — {total} unread" if total else "Quillo")
-        title = f"Quillo — {self.store.me.get('name', '')}  ·  {self.store.server_name}"
+        title = self._title()
         self.setWindowTitle(f"({total}) {title}" if total else title)
 
     def _update_transfers_badge(self):
-        self.rail["transfers"].set_badge(self.transfers_page.active_count())
+        # work in progress, not something wrong: the calm accent badge, not the red one of unread messages
+        self.rail["transfers"].set_badge(self.transfers_page.active_count(), kind="neutral")
 
     def _check_open_conv(self):
         if self.chat.conv and not self.store.conv_exists(self.chat.conv) and self.stack.currentWidget() is self.chat:
@@ -577,13 +760,19 @@ class MainWindow(QMainWindow):
         self.rail[key].setChecked(True)
         self._compact_show("list" if key in ("chats", "contacts", "rooms") else "content")
         if key in ("chats", "contacts", "rooms"):
+            if self.sidebar.isHidden() and not self.compact:
+                self.thread_panel.close_thread()        # the list stepped aside for a thread: asked for, it's back
             self.sidebar.show_page(key)
             if self.stack.currentWidget() in (self.announcements, self.transfers_page, self.directory, self.calendar):
                 if self.chat.conv and getattr(self, "chat_stale", False):
                     self.chat_stale = False
                     self.chat.open(self.chat.conv)
                 self.stack.setCurrentWidget(self.chat if self.chat.conv else self.home)
-        elif key == "directory":
+            # the list marks the chat on the right again (another page cleared it)
+            self.sidebar.set_active(self.chat.conv if self.stack.currentWidget() is self.chat else None)
+            return
+        self.sidebar.set_active(None)               # a page is showing, not a chat: no row looks open
+        if key == "directory":
             self.stack.setCurrentWidget(self.directory)
         elif key == "announcements":
             self.stack.setCurrentWidget(self.announcements)
@@ -676,7 +865,7 @@ class MainWindow(QMainWindow):
         from client.ui.planner_ui import fmt_due
 
         def done(reply):
-            self.toast(f"⏰ Reminder set for {fmt_due(due_at)}" if reply.get("ok")
+            self.toast(f"⏰ Reminder set for {fmt_due(due_at, inline=True)}" if reply.get("ok")
                        else f"Reminder not set: {reply.get('error')}")
         self.conn.request("reminder_add", done, due_at=due_at, text=text, conv=conv, message_id=message_id)
 
@@ -698,10 +887,15 @@ class MainWindow(QMainWindow):
         card.done.connect(lambda rid: self.conn.request("reminder_done", None, id=rid))
         card.snooze.connect(lambda rid, ts: self.conn.request("reminder_snooze", None, id=rid, due_at=ts))
         card.open_chat.connect(lambda conv: (self.show_normal(), self.open_conv(conv)))
-        card.destroyed.connect(lambda *_, rid=r["id"], c=card: self.reminder_cards.get(rid) is c
-                               and self.reminder_cards.pop(rid, None))
+        card.destroyed.connect(lambda *_, rid=r["id"], c=card: (
+            self.reminder_cards.get(rid) is c and self.reminder_cards.pop(rid, None),
+            QTimer.singleShot(0, self.popup_stack.place)))
         self.reminder_cards[r["id"]] = card
-        card.show_at(len(self.reminder_cards) - 1)
+        # one column with the message pop-ups: reminders at the bottom, messages above - never on top of each other
+        card.adjustSize()
+        card.show()
+        card.raise_()
+        self.popup_stack.place()
         if sound and self.config["sounds"]:
             play_sound()
         if sound:
@@ -793,7 +987,7 @@ class MainWindow(QMainWindow):
                 thread = msg.get("thread_root") if not msg.get("thread_broadcast") else None
                 self.popup_stack.show(msg["conv"], title, text, msg["sender_id"], thread)
             else:
-                self.tray.showMessage(title, text[:200], self.base_icon, 5000)
+                self.tray.showMessage(title, clip(text, 200), self.base_icon, 5000)
         if self.config["sounds"]:
             play_sound()
         QApplication.alert(self, 0)
@@ -814,33 +1008,49 @@ class MainWindow(QMainWindow):
     def focus_menu(self, parent):
         """Focus time: silence everything except @mentions, my lead and a few people I choose."""
         m = QMenu("Focus time", parent)
-        m.setIcon(icon("clock", T.TEXT, 16))
+        m.setIcon(icon("target", T.TEXT, 16))
         until = self.store.focus_until()
         now = datetime.datetime.now()
         if until:
-            end = datetime.datetime.fromtimestamp(until)
-            head = m.addAction(f"On until {end:%H:%M}" if end.date() == now.date() else f"On until {end:%a %H:%M}")
-            head.setEnabled(False)
-            m.addAction("End focus time", self.end_focus)
+            self._menu_note(m, f"On until {self._until(until)}")
+            m.addAction(icon("close", T.TEXT, 16), "End focus time", self.end_focus)
             m.addSeparator()
         for label, minutes in (("30 minutes", 30), ("1 hour", 60), ("2 hours", 120), ("4 hours", 240)):
             m.addAction(label, lambda minutes=minutes: self.start_focus(time.time() + minutes * 60))
         evening = now.replace(hour=18, minute=0, second=0, microsecond=0)
         if now < evening - datetime.timedelta(minutes=30):
-            m.addAction("Until 6 PM", lambda: self.start_focus(evening.timestamp()))
+            m.addAction("Until 18:00", lambda: self.start_focus(evening.timestamp()))
         m.addSeparator()
         n = len(self.store.focus_people())
-        m.addAction(icon("users", T.TEXT, 16), "Who can still reach me..." + (f"  ({n} chosen)" if n else ""),
+        m.addAction(icon("users", T.TEXT, 16), "Who can still reach me" + ELLIPSIS + (f"{SEP}{n} chosen" if n else ""),
                     self.choose_focus_people)
         return m
+
+    @staticmethod
+    def _until(ts):
+        """'16:00' today, 'tomorrow at 00:40' past midnight, 'Fri 2 Oct at 09:00' further away."""
+        from client.ui.planner_ui import fmt_due
+        end = datetime.datetime.fromtimestamp(ts)
+        return fmt_time(end) if end.date() == datetime.date.today() else fmt_due(ts, inline=True)
+
+    def _focus_reach(self):
+        """Who still gets through focus time, as one phrase: '@mentions, Lea Kapoor (your lead) and 2 people you
+        chose' - the same words in the bar and in the toast."""
+        parts = ["@mentions"]
+        lead = self.store.manager_name(self.store.my_id)
+        if lead:
+            parts.append(f"{lead} (your lead)")
+        n = len(self.store.focus_people())
+        if n:
+            parts.append(f"{n} {'person' if n == 1 else 'people'} you chose")
+        return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
     def start_focus(self, until):
         f = dict(self.store.prefs.get("focus") or {})
         f["until"] = until
         self.focus_missed = 0
         self.store.set_pref("focus", f)
-        end = datetime.datetime.fromtimestamp(until)
-        self.toast(f"🎯 Focus time until {end:%H:%M} — only @mentions, your lead and the people you chose get through")
+        self.toast(f"🎯 Focus time until {self._until(until)} — only {self._focus_reach()} get through")
 
     def end_focus(self):
         f = dict(self.store.prefs.get("focus") or {})
@@ -870,12 +1080,9 @@ class MainWindow(QMainWindow):
         until = self.store.focus_until() if self.store.me else 0
         was_on = self.focus_bar.isVisible()
         if until:
-            end = datetime.datetime.fromtimestamp(until)
-            n = len(self.store.focus_people())
-            lead = self.store.manager_name(self.store.my_id)
-            who = ["@mentions"] + ([lead] if lead else []) + ([f"{n} more"] if n else [])
-            waiting = f"  ·  {self.focus_missed} waiting" if self.focus_missed else ""
-            self.focus_label.setText(f"🎯  Focus time until {end:%H:%M}  ·  only {', '.join(who)} get through{waiting}")
+            waiting = f"{SEP}{self.focus_missed} waiting" if self.focus_missed else ""
+            self.focus_label.setText(f"Focus time until {self._until(until)}{SEP}"
+                                     f"Only {self._focus_reach()} get through{waiting}")
             self.focus_bar.show()
         else:
             self.focus_bar.hide()
@@ -1033,15 +1240,40 @@ class MainWindow(QMainWindow):
         self.store.mark_announcement_read(ann_id)
 
     def toast(self, text, ms=3500):
+        """A short note over the content: centred on the chat (or page), not on the window, sitting just above
+        the chat's composer (on other pages near the bottom), and wrapped if long."""
         self.toast_label.setText(text)
-        self.toast_label.adjustSize()
-        offset = 150 if self.width() > 700 else 0          # centred over the chat, not the list
-        x = (self.width() - self.toast_label.width()) // 2 + offset
-        self.toast_label.move(max(8, min(x, self.width() - self.toast_label.width() - 8)),
-                              self.height() - self.toast_label.height() - 110)
+        self._place_toast()
         self.toast_label.raise_()
         self.toast_label.show()
         self.toast_timer.start(ms)
+
+    def _place_toast(self):
+        lab = self.toast_label
+        text = lab.text()
+        central = self.centralWidget()
+        if self.stack.isVisible():
+            area = QRect(self.stack.mapTo(self, QPoint(0, 0)), self.stack.size())
+        else:
+            area = QRect(central.mapTo(self, QPoint(0, 0)), central.size())
+        max_w = max(160, min(640, area.width() - 48))
+        lab.setWordWrap(False)
+        lab.setMinimumSize(0, 0)
+        lab.setMaximumSize(16777215, 16777215)
+        lab.setText(text)
+        lab.adjustSize()
+        if lab.width() > max_w:
+            lab.setWordWrap(True)
+            lab.setFixedWidth(max_w)
+            lab.setFixedHeight(lab.heightForWidth(max_w))
+        x = area.center().x() - lab.width() // 2
+        composer = getattr(self.chat, "composer", None)
+        if (self.stack.isVisible() and self.stack.currentWidget() is self.chat and composer is not None
+                and composer.isVisible()):
+            y = composer.mapTo(self, QPoint(0, 0)).y() - lab.height() - 12
+        else:
+            y = area.bottom() - lab.height() - 28
+        lab.move(max(8, min(x, self.width() - lab.width() - 8)), max(8, y))
 
     # ============================================================ status
     def set_status(self, status, auto=False):
@@ -1258,17 +1490,18 @@ class MainWindow(QMainWindow):
             self._reminded.add(key)
             start = datetime.datetime.fromtimestamp(item["start"])
             room = self.store.rooms.get(int(item["scope_ref"])) if item["scope"] == "room" else None
-            where = f"  ·  # {room['name']}" if room else (f"  ·  {item['location']}" if item.get("location") else "")
+            where = f"{SEP}{room['name']}" if room else (f"{SEP}{item['location']}" if item.get("location") else "")
             target = f"r:{room['id']}" if room else f"calendar:{start.date().isoformat()}"
             self.last_notified_conv = target
-            self.tray.showMessage(f"📅 {item['title']} at {start:%H:%M}",
-                                  f"In {max(1, round((item['start'] - now) / 60))} minutes{where}", self.base_icon, 8000)
-            self.toast(f"📅 {item['title']} at {start:%H:%M}{where}", 6000)
+            mins = max(1, round((item['start'] - now) / 60))
+            self.tray.showMessage(f"📅 {item['title']} at {fmt_time(start)}",
+                                  f"In {mins} minute{'s' if mins != 1 else ''}{where}", self.base_icon, 8000)
+            self.toast(f"📅 {item['title']} at {fmt_time(start)}{where}", 6000)
             if self.config["sounds"]:
                 play_sound()
 
     def _on_event_invite(self, ev):
-        self.notify(f"📅 {ev.get('from', 'Someone')} invited you", f"{ev.get('title', '')} · {ev.get('when', '')}",
+        self.notify(f"📅 {ev.get('from', 'Someone')} invited you", f"{ev.get('title', '')}{SEP}{ev.get('when', '')}",
                     "calendar:" + datetime.date.today().isoformat())
 
     def open_my_space(self):
@@ -1279,31 +1512,39 @@ class MainWindow(QMainWindow):
     def conv_menu(self, conv, pos):
         m = QMenu(self)
         kind, target = P.parse_conv(conv)
+        mine = kind == "u" and target == self.store.my_id
+        # the chat itself: open, read, pin, mute
         m.addAction(icon("chat", T.TEXT, 16), "Open chat", lambda: self.open_conv(conv))
+        if self.store.conversation(conv).unread:
+            m.addAction(icon("check_all", T.TEXT, 16), "Mark as read", lambda: self.store.mark_read(conv))
         pinned = self.store.is_pinned(conv)
-        m.addAction(icon("pin", T.TEXT, 16), "Unpin from the top" if pinned else "Pin to the top",
-                    lambda: self.pin_chat(conv, not pinned))
+        m.addAction(icon("pin", T.TEXT, 16), "Unpin" if pinned else "Pin", lambda: self.pin_chat(conv, not pinned))
         muted = self.store.is_muted(conv)
-        m.addAction(icon("bell", T.TEXT, 16), "Unmute notifications" if muted else "Mute notifications",
+        m.addAction(icon("bell" if muted else "bell_off", T.TEXT, 16),
+                    "Unmute notifications" if muted else "Mute notifications",
                     lambda: self.set_muted(conv, not muted))
-        if getattr(self.store, "buzz_enabled", False) and not (kind == "u" and target == self.store.my_id):
+        if mine:
+            m.exec(pos)
+            return
+        # doing something with the person or the room
+        m.addSeparator()
+        if getattr(self.store, "buzz_enabled", False):
             m.addAction(icon("zap", T.TEXT, 16), "Buzz the room" if kind == "r" else "Buzz",
                         lambda: self.buzz_conv(conv))
-        if kind == "u" and target == self.store.my_id:
-            pass
-        elif kind == "u":
-            m.addAction(icon("attachment", T.TEXT, 16), "Send files...", lambda: self._send_files_to(conv))
+        if kind == "u":
+            m.addAction(icon("attachment", T.TEXT, 16), "Send files" + ELLIPSIS, lambda: self._send_files_to(conv))
             if self.store.perm("create_rooms"):
                 m.addAction(icon("hash", T.TEXT, 16), "Create room with this person",
                             lambda: self.new_room([target]))
-            m.addAction(icon("dashboard", T.TEXT, 16), "Share my screen...",
+            m.addSeparator()
+            m.addAction(icon("screen", T.TEXT, 16), "Share my screen" + ELLIPSIS,
                         lambda: self.screens.invite(target, "offer"))
-            m.addAction(icon("search", T.TEXT, 16), "Ask to see their screen...",
+            m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen" + ELLIPSIS,
                         lambda: self.screens.invite(target, "request"))
             self.add_manage_actions(m, target)
         else:
             m.addAction(icon("users", T.TEXT, 16), "Members", lambda: self.show_room_info(conv))
-            m.addAction(icon("attachment", T.TEXT, 16), "Send files...", lambda: self._send_files_to(conv))
+            m.addAction(icon("attachment", T.TEXT, 16), "Send files" + ELLIPSIS, lambda: self._send_files_to(conv))
             if not self.store.rooms.get(target, {}).get("auto"):
                 m.addSeparator()
                 m.addAction(icon("logout", T.DANGER, 16), "Leave room", lambda: self.leave_room(target))
@@ -1364,7 +1605,7 @@ class MainWindow(QMainWindow):
                 self._on_update_available(info)
                 QMessageBox.information(parent or self, "Updates",
                                         f"Quillo {info['version']} is available (this PC has {APP_VERSION}).\n"
-                                        + ("Use 'Update now' in the bar at the top of the window."
+                                        + ("Use 'Install now' in the bar at the top of the window."
                                            if self.update_btn.isVisible() else "Please ask IT to update this PC."))
             else:
                 QMessageBox.information(parent or self, "Updates", f"Quillo {APP_VERSION} is up to date.")
@@ -1379,7 +1620,7 @@ class MainWindow(QMainWindow):
                             os.path.basename(str(info["name"]).replace("\\", "/")) or "LANMessenger-update.exe")
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         self.update_btn.setEnabled(False)
-        self.update_label.setText(f"Downloading version {info['version']}...")
+        self.update_label.setText(f"Downloading Quillo {info['version']}{ELLIPSIS}")
         t = self.transfers.download({"id": "client-update", "name": info["name"], "size": info["size"]},
                                     dest_path=dest, hidden=True)
 
@@ -1388,7 +1629,7 @@ class MainWindow(QMainWindow):
                 self.update_label.setText(f"Update download failed: {tr.error}")
                 self.update_btn.setEnabled(True)
                 return
-            self.update_label.setText("Installing the update — Quillo restarts by itself...")
+            self.update_label.setText(f"Installing the update — Quillo restarts by itself{ELLIPSIS}")
             # The installer closes this app (Restart Manager) and opens it again afterwards.
             args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE"
             if self._per_user_install():         # same place, same mode: no administrator prompt
@@ -1450,26 +1691,47 @@ class MainWindow(QMainWindow):
             return
         if u.get("is_admin") and not self.store.me.get("is_admin"):
             return
+        first = first_name(u["name"])
         menu.addSeparator()
-        menu.addAction(icon("key", T.TEXT, 16), f"Reset {first_name(u['name'])}'s password...",
+        menu.addAction(icon("key", T.TEXT, 16), menu_text(f"Reset {first}'s password{ELLIPSIS}"),
                        lambda: self.reset_user_password(uid))
-        menu.addAction(icon("power", T.DANGER, 16), "Disable account...", lambda: self.disable_user(uid))
+        menu.addAction(icon("power", T.DANGER, 16), menu_text(f"Disable {first}'s account{ELLIPSIS}"),
+                       lambda: self.disable_user(uid))
 
     def reset_user_password(self, uid):
-        from PySide6.QtWidgets import QInputDialog, QLineEdit
+        """A new password for someone (HR / IT): one field with the show-password eye, and what happens next."""
+        from PySide6.QtWidgets import QDialogButtonBox, QLineEdit
+        from common.icons import add_show_password
+        from client.ui.dialogs import Dialog, _buttons
         name = self.store.user_name(uid)
-        pw, ok = QInputDialog.getText(self, "Reset password", rich_safe(f"New password for {name}:"),
-                                      QLineEdit.Password)
-        if ok and pw:
+        dlg = Dialog(self, "Reset password", 420)
+        lab = plain(QLabel(f"New password for {name}"))
+        lab.setStyleSheet("font-weight: 700;")
+        dlg.lay.addWidget(lab)
+        pw = QLineEdit()
+        pw.setEchoMode(QLineEdit.Password)
+        add_show_password(pw)
+        dlg.lay.addWidget(pw)
+        note = plain(QLabel(f"{first_name(name)} is signed out right away and signs in with this password."))
+        note.setWordWrap(True)
+        T.polish(note, muted=True)
+        dlg.lay.addWidget(note)
+        bb = _buttons(dlg, "Reset password", ok_enabled=False)
+        ok = bb.button(QDialogButtonBox.Ok)
+        pw.textChanged.connect(lambda t: ok.setEnabled(bool(t.strip())))
+        dlg.lay.addWidget(bb)
+        pw.setFocus()
+        if dlg.exec() and pw.text().strip():
             self.conn.request("manage_user", lambda r: QMessageBox.information(
-                self, "Reset password", "Password changed." if r.get("ok") else r.get("error", "Failed")),
-                user_id=uid, action="reset_password", password=pw)
+                self, "Reset password", f"{name}'s password was changed." if r.get("ok")
+                else r.get("error", "Failed")), user_id=uid, action="reset_password", password=pw.text())
 
     def disable_user(self, uid):
         name = self.store.user_name(uid)
         if QMessageBox.question(self, "Disable account", rich_safe(
                 f"Disable {name}'s account? They are signed out and "
-                "cannot sign in until the admin enables it again.")) == QMessageBox.Yes:
+                "cannot sign in until the admin enables it again."),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             self.conn.request("manage_user", lambda r: self.toast(
                 f"{name}'s account was disabled." if r.get("ok") else r.get("error", "Failed")),
                 user_id=uid, action="disable")
@@ -1514,9 +1776,14 @@ class MainWindow(QMainWindow):
             self.toast("The new look is used from the next start.")
 
     def focus_search(self):
-        """Ctrl+K: jump to the people / rooms search in the sidebar."""
+        """Ctrl+K / Home's New chat: the Chats search, which finds every chat, person and room (Enter opens the
+        first match, arrow keys pick another)."""
         if self.sidebar.page != "chats":
             self.rail_clicked("chats")
+        if self.compact:
+            self._compact_show("list")
+        if self.sidebar.isHidden():                     # stepped aside for a thread on a narrow window
+            self.thread_panel.close_thread()
         self.sidebar.search.setFocus()
         self.sidebar.search.selectAll()
 
@@ -1571,7 +1838,8 @@ class MainWindow(QMainWindow):
             return
         active = [t for t in self.transfers.transfers if t.active and not getattr(t, "hidden", False)]
         if active and QMessageBox.question(
-                self, "Quit", f"{len(active)} file transfer(s) are still running. Quit anyway?") != QMessageBox.Yes:
+                self, "Quit", f"{len(active)} file transfer{'s are' if len(active) != 1 else ' is'} still running. "
+                "Quit anyway?") != QMessageBox.Yes:
             return
         self.quitting = True
         self._save_drafts()

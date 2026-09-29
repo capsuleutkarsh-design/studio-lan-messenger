@@ -11,10 +11,11 @@ designation, level, manager_id, status, status_msg, status_emoji, avatar).
 import math
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from common import theme as T
+from common.fmt import ELLIPSIS, SEP
 
 # Painter for avatars: (painter, rect, name, key, status=, ring=, uid=). The client plugs in its own
 # (with profile photos); the default draws coloured initials.
@@ -87,6 +88,28 @@ def department_groups(lead, children, kids):
     return groups
 
 
+def branch_size(uid, kids, seen=None):
+    """How many people are below uid in the chart (kids: uid or department-label id -> children)."""
+    seen = set() if seen is None else seen
+    n = 0
+    for c in kids.get(uid, []):
+        if c["id"] in seen:
+            continue
+        seen.add(c["id"])
+        n += (0 if "group" in c else 1) + branch_size(c["id"], kids, seen)
+    return n
+
+
+def _meta():
+    """Small text people still need to read (META; MUTED before a theme has set it)."""
+    return T.META or T.MUTED
+
+
+def _lead(u):
+    """Leads and above (their designation is written a little stronger)."""
+    return (u.get("level") or 0) >= 60
+
+
 def _status_line(u):
     custom = " ".join(x for x in (u.get("status_emoji", ""), u.get("status_msg", "")) if x)
     return custom
@@ -98,14 +121,20 @@ class PeopleGrid(QWidget):
     open_person = Signal(int)                 # double-click or the card's Chat button
     person_menu = Signal(int, QPoint)
     person_selected = Signal(int)
+    edit_me = Signal()                        # the button on my own card (me_action_text)
 
+    # cards are CARD_MIN_W..CARD_MAX_W wide: the columns share the width instead of leaving a strip on the right
     CARD_W, CARD_H, GAP, MARGIN = 210, 184, 14, 4
+    CARD_MIN_W, CARD_MAX_W = 190, 240
+    HEAD_H, HEAD_GAP, DEPT_GAP = 34, 12, 22   # department heading, heading -> its cards, cards -> next heading
 
-    def __init__(self, parent=None, action_text="Chat"):
+    def __init__(self, parent=None, action_text="Chat", me_action_text=""):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.action_text = action_text
+        self.me_action_text = me_action_text  # e.g. "Set status" on my own card ('' = no button there)
+        self.card_w = self.CARD_W
         self.groups = []                      # [(dept, [(section, [users])])]
         self.me_id = None
         self.items = []                       # [(kind, QRect, payload)]
@@ -133,17 +162,27 @@ class PeopleGrid(QWidget):
         return sum(len(p) for _, secs in self.groups for _, p in secs)
 
     # ---------------------------------------------------------------- layout
+    def _columns(self, w):
+        """(columns, card width) for the width w: as many columns as fit at the smallest card width, then the
+        cards grow to share the row (up to CARD_MAX_W)."""
+        inner = max(w - 2 * self.MARGIN, self.CARD_MIN_W)
+        cols = max(1, (inner + self.GAP) // (self.CARD_MIN_W + self.GAP))
+        card_w = min(self.CARD_MAX_W, (inner - (cols - 1) * self.GAP) // cols)
+        return cols, max(card_w, min(self.CARD_MIN_W, inner))
+
     def _relayout(self):
-        w = max(self.width(), self.CARD_W + 2 * self.MARGIN)
-        cols = max(1, (w - 2 * self.MARGIN + self.GAP) // (self.CARD_W + self.GAP))
+        w = max(self.width(), self.CARD_MIN_W + 2 * self.MARGIN)
+        cols, self.card_w = self._columns(w)
         self.items = []
         y = 0
-        for dept, sections in self.groups:
+        for n, (dept, sections) in enumerate(self.groups):
+            if n:
+                y += self.DEPT_GAP
             people = [u for _, us in sections for u in us]
             online = sum(1 for u in people if u.get("status", "offline") != "offline")
-            self.items.append(("dept", QRect(self.MARGIN, y, w - 2 * self.MARGIN, 34),
+            self.items.append(("dept", QRect(self.MARGIN, y, w - 2 * self.MARGIN, self.HEAD_H),
                                (dept, f"{online}/{len(people)} online")))
-            y += 38
+            y += self.HEAD_H + self.HEAD_GAP
             for section, users in sections:
                 if section:
                     self.items.append(("section", QRect(self.MARGIN, y, w - 2 * self.MARGIN, 26),
@@ -151,13 +190,12 @@ class PeopleGrid(QWidget):
                     y += 30
                 for i, u in enumerate(users):
                     r, c = divmod(i, cols)
-                    rect = QRect(self.MARGIN + c * (self.CARD_W + self.GAP), y + r * (self.CARD_H + self.GAP),
-                                 self.CARD_W, self.CARD_H)
+                    rect = QRect(self.MARGIN + c * (self.card_w + self.GAP), y + r * (self.CARD_H + self.GAP),
+                                 self.card_w, self.CARD_H)
                     self.items.append(("card", rect, u))
                 rows = math.ceil(len(users) / cols)
-                y += rows * (self.CARD_H + self.GAP) + 6
-            y += 10
-        self.setMinimumHeight(max(y, 60))
+                y += rows * (self.CARD_H + self.GAP) - self.GAP if rows else 0
+        self.setMinimumHeight(max(y + self.MARGIN, 60))
         self.update()
 
     def resizeEvent(self, e):
@@ -168,6 +206,9 @@ class PeopleGrid(QWidget):
 
     def sizeHint(self):
         return QSize(self.CARD_W * 3, self.minimumHeight())
+
+    def _has_button(self, u):
+        return bool(self.me_action_text if u["id"] == self.me_id else self.action_text)
 
     # ------------------------------------------------------------- painting
     def paintEvent(self, e):
@@ -180,17 +221,18 @@ class PeopleGrid(QWidget):
             if kind == "dept":
                 p.setFont(_font(12, True))
                 p.setPen(QColor(T.TEXT))
-                name_w = QFontMetrics(p.font()).horizontalAdvance(data[0].upper()) + 12
+                name_w = QFontMetrics(p.font()).horizontalAdvance(data[0].upper()) + 10
                 p.drawText(rect.adjusted(2, 8, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, data[0].upper())
                 p.setFont(_font(11))
                 p.setPen(QColor(T.MUTED))
-                p.drawText(rect.adjusted(2 + name_w, 8, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, data[1])
+                p.drawText(rect.adjusted(2 + name_w, 8, 0, 0), Qt.AlignLeft | Qt.AlignVCenter,
+                           SEP.lstrip() + data[1])
                 p.setPen(QPen(QColor(T.BORDER), 1))
                 p.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
             elif kind == "section":
                 p.setFont(_font(11, True))
                 p.setPen(QColor(T.ACCENT))
-                p.drawText(rect.adjusted(2, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, f"# {data[0]}  ·  {data[1]}")
+                p.drawText(rect.adjusted(2, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, f"# {data[0]}{SEP}{data[1]}")
             else:
                 self._paint_card(p, rect, data)
 
@@ -206,28 +248,32 @@ class PeopleGrid(QWidget):
         inner = rect.adjusted(10, 0, -10, 0)
         p.setFont(_font(13, True))
         p.setPen(QColor(T.TEXT))
-        name = u["name"] + ("  (you)" if me else "")
+        name = u["name"] + (" (you)" if me else "")
         p.drawText(QRect(inner.left(), rect.top() + 84, inner.width(), 20), Qt.AlignCenter,
                    QFontMetrics(p.font()).elidedText(name, Qt.ElideRight, inner.width()))
-        p.setFont(_font(11))
-        lead = (u.get("level") or 0) >= 60
-        p.setPen(QColor(T.ACCENT if lead else T.MUTED))
-        role = " · ".join(x for x in (u.get("designation") or u.get("title"), u.get("section")) if x)
+        # a lead's designation: a little stronger, in the text colour (the accent colour means "a link")
+        lead = _lead(u)
+        p.setFont(_font(11, weight=QFont.DemiBold if lead else None))
+        p.setPen(QColor(T.TEXT if lead else T.MUTED))
+        role = SEP.join(x for x in (u.get("designation") or u.get("title"), u.get("section")) if x)
         p.drawText(QRect(inner.left(), rect.top() + 104, inner.width(), 16), Qt.AlignCenter,
                    QFontMetrics(p.font()).elidedText(role, Qt.ElideRight, inner.width()))
+        p.setFont(_font(11))
         status = u.get("status", "offline")
         line = _status_line(u) or T.STATUS_LABELS.get(status, status)
-        p.setPen(QColor(T.FAINT if status == "offline" and not _status_line(u) else T.MUTED))
+        p.setPen(QColor(_meta() if status == "offline" and not _status_line(u) else T.MUTED))
         p.drawText(QRect(inner.left(), rect.top() + 121, inner.width(), 16), Qt.AlignCenter,
                    QFontMetrics(p.font()).elidedText(line, Qt.ElideRight, inner.width()))
-        if not me and self.action_text:
+        text = self.me_action_text if me else self.action_text
+        if text:
             btn = self._button_rect(rect)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T.ACCENT if hover else T.ACCENT_SOFT))
+            # my own card has the soft accent fill already: its button is the panel colour instead
+            p.setBrush(QColor(T.ACCENT if hover else (T.PANEL if me else T.ACCENT_SOFT)))
             p.drawRoundedRect(QRectF(btn), 10, 10)
             p.setFont(_font(11, True))
             p.setPen(QColor(T.ACCENT_TEXT if hover else T.ACCENT))
-            p.drawText(btn, Qt.AlignCenter, self.action_text)
+            p.drawText(btn, Qt.AlignCenter, text)
 
     def _button_rect(self, rect):
         return QRect(rect.center().x() - 48, rect.bottom() - 38, 96, 26)
@@ -258,9 +304,12 @@ class PeopleGrid(QWidget):
         self.selected = u["id"]
         self.update()
         self.person_selected.emit(u["id"])
-        if e.button() == Qt.LeftButton and u["id"] != self.me_id and self.action_text \
+        if e.button() == Qt.LeftButton and self._has_button(u) \
                 and self._button_rect(rect).contains(e.position().toPoint()):
-            self.open_person.emit(u["id"])
+            if u["id"] == self.me_id:
+                self.edit_me.emit()
+            else:
+                self.open_person.emit(u["id"])
 
     def mouseDoubleClickEvent(self, e):
         rect, u = self._card_at(e.position().toPoint())
@@ -288,11 +337,16 @@ class OrgChart(QWidget):
     BOX_W, BOX_H, HGAP, VGAP, STACK_GAP, STACK_ROWS = 200, 72, 20, 58, 14, 6
     GROUP_H = 30                  # department label between a lead and that department's people
     PAD = 30
+    # after the "not in a reporting line" heading: where 'Reports to' is set. The console's wording is the default;
+    # the client sets its own (or '' for people who can't change it).
+    LONER_HINT = "set 'Reports to' on the Users page"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, loner_hint=None):
         super().__init__(parent)
         self.setMouseTracking(True)
+        self.loner_hint = self.LONER_HINT if loner_hint is None else loner_hint
         self.zoom = 1.0
+        self.user_zoomed = False      # zoomed by hand (wheel, buttons): the browser stops fitting the chart
         self.boxes = {}               # uid -> QRectF (chart units)
         self.group_boxes = []         # [(QRectF, department label node)]
         self.lines = []               # [(QPointF...)] polylines
@@ -324,6 +378,10 @@ class OrgChart(QWidget):
         for uid, u in self.people.items():
             if kids.get(uid):
                 kids[uid] = department_groups(u, kids[uid], kids)
+        for k in list(kids.values()):             # a department pill counts everyone in its branch, not only
+            for g in k:                           # the lead's direct reports (people read it as the team size)
+                if "group" in g:
+                    g["count"] = branch_size(g["id"], kids)
         self.boxes, self.group_boxes, self.lines, self.labels = {}, [], [], []
         W, H = self.BOX_W, self.BOX_H
 
@@ -403,8 +461,11 @@ class OrgChart(QWidget):
         total_w = max(x - self.HGAP * 3, W * 5 + self.HGAP * 4)
         if loners:
             top = (bottom + self.VGAP) if trees else 0.0
-            self.labels.append((QRectF(0, top, total_w, 24),
-                                f"NOT IN A REPORTING LINE  ·  {len(loners)}   (set 'Reports to' in the console)"))
+            hint = (self.loner_hint or "").strip()
+            if hint.startswith("(") and hint.endswith(")"):
+                hint = hint[1:-1]                 # given with its brackets already
+            hint = f"  ({hint})" if hint else ""
+            self.labels.append((QRectF(0, top, total_w, 24), f"NOT IN A REPORTING LINE{SEP}{len(loners)}{hint}"))
             top += 32
             per_row = max(1, int((total_w + self.HGAP) // (W + self.HGAP)))
             for i, u in enumerate(loners):
@@ -430,6 +491,13 @@ class OrgChart(QWidget):
         z = min((viewport_size.width() - 10) / (self.bounds.width() + 2 * self.PAD),
                 (viewport_size.height() - 10) / (self.bounds.height() + 2 * self.PAD), 1.0)
         self.set_zoom(z)
+
+    def root_rect(self):
+        """Widget coordinates of the top person of the first (widest) reporting tree, or None."""
+        tops = [b for uid, b in self.boxes.items() if self.reports.get(uid)]
+        if not tops:
+            return None
+        return self._to_widget(min(tops, key=lambda b: (b.top(), b.left())))
 
     def first_match_rect(self):
         """Widget coordinates of the first search match (to scroll to it)."""
@@ -464,15 +532,16 @@ class OrgChart(QWidget):
             self._paint_box(p, box, self.people[uid])
 
     def _paint_group(self, p, box, g):
-        """Department label under a lead whose team spans several departments."""
+        """Department label under a lead whose team spans several departments: its name and how many people
+        are in that branch. Muted text - it is a label, not a link."""
         p.setPen(QPen(QColor(T.BORDER), 1))
         p.setBrush(QColor(T.SURFACE))
         p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
-        p.setFont(_font(10, True))
+        p.setFont(_font(11, True))
         fm = QFontMetrics(p.font())
-        count = f"  ·  {g['count']}"
+        count = f"{SEP}{g['count']}"
         name = fm.elidedText(g["group"].upper(), Qt.ElideRight, int(box.width() - 28 - fm.horizontalAdvance(count)))
-        p.setPen(QColor(T.ACCENT))
+        p.setPen(QColor(T.MUTED))
         p.drawText(box, Qt.AlignCenter, name + count)
 
     def _paint_box(self, p, box, u):
@@ -483,25 +552,32 @@ class OrgChart(QWidget):
         p.setPen(pen)
         p.setBrush(QColor(T.ACCENT_SOFT if me else (T.SURFACE if hover else T.PANEL)))
         p.drawRoundedRect(box, 12, 12)
-        if (u.get("level") or 0) >= 60:                        # leads and above: accent stripe
+        if _lead(u):                          # leads and above: the box's top edge in the accent colour
+            p.save()
+            edge = QPainterPath()
+            edge.addRoundedRect(box, 12, 12)
+            p.setClipPath(edge)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(T.ACCENT))
-            p.drawRoundedRect(QRectF(box.left() + 14, box.top() - 1, box.width() - 28, 3), 1.5, 1.5)
+            p.drawRect(QRectF(box.left(), box.top(), box.width(), 3))
+            p.restore()
         av = QRect(int(box.left()) + 12, int(box.top()) + 14, 40, 40)
         _paint_avatar(p, av, u, T.SURFACE if hover else T.PANEL)
         tx = box.left() + 62
         tw = box.width() - 70
         p.setFont(_font(12, True))
         p.setPen(QColor(T.TEXT))
-        p.drawText(QRectF(tx, box.top() + 10, tw, 18), Qt.AlignLeft | Qt.AlignVCenter,
+        p.drawText(QRectF(tx, box.top() + 9, tw, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(p.font()).elidedText(u["name"], Qt.ElideRight, int(tw)))
-        p.setFont(_font(10))
-        p.setPen(QColor(T.ACCENT if (u.get("level") or 0) >= 60 else T.MUTED))
-        p.drawText(QRectF(tx, box.top() + 28, tw, 14), Qt.AlignLeft | Qt.AlignVCenter,
+        # designation: a lead's a little stronger in the text colour (accent is for links); department in META
+        p.setFont(_font(11, weight=QFont.DemiBold if _lead(u) else None))
+        p.setPen(QColor(T.TEXT if _lead(u) else T.MUTED))
+        p.drawText(QRectF(tx, box.top() + 27, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(p.font()).elidedText(u.get("designation") or "", Qt.ElideRight, int(tw)))
-        p.setPen(QColor(T.FAINT))
-        where = " · ".join(x for x in (u.get("department"), u.get("section")) if x)
-        p.drawText(QRectF(tx, box.top() + 43, tw, 14), Qt.AlignLeft | Qt.AlignVCenter,
+        p.setFont(_font(11))
+        p.setPen(QColor(_meta()))
+        where = SEP.join(x for x in (u.get("department"), u.get("section")) if x)
+        p.drawText(QRectF(tx, box.top() + 43, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(p.font()).elidedText(where, Qt.ElideRight, int(tw)))
         n = self.reports.get(uid, 0)
         if n:                                                 # team size badge on the bottom edge
@@ -559,6 +635,7 @@ class OrgChart(QWidget):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
+            self.user_zoomed = True
             self.set_zoom(self.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1))
             e.accept()
         else:
@@ -567,17 +644,24 @@ class OrgChart(QWidget):
 
 # ======================================================================== browser
 class OrgBrowser(QWidget):
-    """Search + [Cards | Org chart | List] switch + department filter, used by the client and the console."""
+    """Search + [Cards | Org chart | List] switch + department filter, used by the client and the console.
+
+    loner_hint: the note after the chart's "Not in a reporting line" heading (None: the console's wording, '': no
+    note - for people who can't set 'Reports to'). me_action_text: a button on my own card (e.g. "Set status"),
+    which emits edit_me."""
     open_person = Signal(int)
     person_menu = Signal(int, QPoint)
     view_changed = Signal(str)
+    edit_me = Signal()
 
     VIEWS = (("cards", "Cards"), ("chart", "Org chart"), ("list", "List"))
+    MIN_FIT_ZOOM = 0.6            # the chart shrinks to fit the width when it opens, but never below this
 
-    def __init__(self, parent=None, action_text="Chat", view="cards"):
+    def __init__(self, parent=None, action_text="Chat", view="cards", loner_hint=None, me_action_text=""):
         super().__init__(parent)
+        from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import (
-            QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout,
+            QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout,
         )
         from common import orgtree
         from common.icons import icon
@@ -596,8 +680,10 @@ class OrgBrowser(QWidget):
         self.tools.setSpacing(8)
         self.tools_widget = tools
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search name, department, section or designation...")
-        self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.search.setPlaceholderText(f"Search people, teams or roles{ELLIPSIS}")
+        self.search.setToolTip("Search by name, username, department, section or designation")
+        self.search.setMinimumWidth(240)          # the list view's extra drop-down must not squeeze it to a stub
+        self.search.addAction(icon("search", _meta(), 16), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda _: self.refresh())
         bar.addWidget(self.search, 0, 0)
@@ -615,7 +701,7 @@ class OrgBrowser(QWidget):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
-            T.polish(b, chip=True)
+            T.polish(b, chip=True, tall=True)     # as tall as the search box and the drop-downs next to them
             b.clicked.connect(lambda _=False, k=key: self.set_view(k))
             self.tools.addWidget(b)
             self.view_buttons[key] = b
@@ -626,32 +712,46 @@ class OrgBrowser(QWidget):
 
         self.stack = QStackedWidget()
         # cards
-        self.grid = PeopleGrid(action_text=action_text)
+        self.grid = PeopleGrid(action_text=action_text, me_action_text=me_action_text)
         self.grid_area = QScrollArea()
         self.grid_area.setWidgetResizable(True)
         self.grid_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.grid_area.setWidget(self.grid)
         self.grid.setAutoFillBackground(False)
         self.stack.addWidget(self.grid_area)
-        # chart
+        # chart: a rounded frame around a plain scroll area (a scroll area's own square viewport painted over
+        # rounded corners and broke the frame's edge)
         chart_page = QWidget()
         cl = QVBoxLayout(chart_page)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
-        self.chart = OrgChart()
+        self.chart = OrgChart(loner_hint=loner_hint)
+        self.chart_frame = QFrame()
+        self.chart_frame.setObjectName("orgChartFrame")
+        self.chart_frame.setStyleSheet(f"#orgChartFrame {{ background: {T.BG}; border: 1px solid {T.HAIR};"
+                                       f" border-radius: {T.RADIUS_L}px; }}")
+        fl = QVBoxLayout(self.chart_frame)
+        fl.setContentsMargins(5, 5, 5, 5)          # clear of the rounded corners
         self.chart_area = QScrollArea()
+        self.chart_area.setFrameShape(QFrame.NoFrame)
         self.chart_area.setWidgetResizable(False)
         self.chart_area.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.chart_area.setWidget(self.chart)
-        self.chart_area.setStyleSheet(f"QScrollArea {{ background: {T.BG}; border: 1px solid {T.HAIR};"
-                                      " border-radius: 20px; }")
+        self.chart_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         self.chart_area.viewport().setAutoFillBackground(False)
         T.bg_pane(self.chart_area.viewport())
-        cl.addWidget(self.chart_area, 1)
+        fl.addWidget(self.chart_area)
+        cl.addWidget(self.chart_frame, 1)
         zb = QHBoxLayout()
-        hint = QLabel(f"Ctrl + mouse wheel to zoom · double-click someone to {action_text.lower()}")
-        hint.setStyleSheet(f"color: {T.FAINT}; font-size: 8.5pt;")
+        hint = QLabel(f"Ctrl + mouse wheel to zoom{SEP}double-click someone to {action_text.lower()}")
+        hint.setStyleSheet(f"color: {_meta()}; font-size: {T.pt(T.FONT_S)};")
         zb.addWidget(hint, 1)
+
+        def by_hand(fn):
+            def run():
+                self.chart.user_zoomed = True     # from now on the chart keeps the zoom it was given
+                fn()
+            return run
         for text, fn in (("−", lambda: self.chart.set_zoom(self.chart.zoom / 1.2)),
                          ("100%", lambda: self.chart.set_zoom(1.0)),
                          ("+", lambda: self.chart.set_zoom(self.chart.zoom * 1.2)),
@@ -659,10 +759,11 @@ class OrgBrowser(QWidget):
             b = QPushButton(text)
             T.polish(b, chip=True)
             b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(fn)
+            b.clicked.connect(by_hand(fn))
             zb.addWidget(b)
             if text == "100%":
                 self.zoom_label = b
+                b.setToolTip("Back to 100%")
         self.chart.zoom_changed.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         cl.addLayout(zb)
         self.stack.addWidget(chart_page)
@@ -678,8 +779,18 @@ class OrgBrowser(QWidget):
         for w in (self.grid, self.chart):
             w.open_person.connect(self.open_person.emit)
             w.person_menu.connect(self.person_menu.emit)
+        self.grid.edit_me.connect(self.edit_me.emit)
+        # fit the chart to the width again when the window changes size (until someone zooms by hand)
+        self._fit_timer = QTimer(self, singleShot=True, interval=120, timeout=self._auto_fit)
         self.view = None
         self.set_view(view if view in dict(self.VIEWS) else "cards", announce=False)
+
+    def set_loner_hint(self, text):
+        """The note after the chart's "Not in a reporting line" heading ('' for none)."""
+        if text != self.chart.loner_hint:
+            self.chart.loner_hint = text
+            if self.view == "chart":
+                self.refresh()
 
     def resizeEvent(self, e):
         """Narrow window (e.g. compact view): filters and view switch go on a second row."""
@@ -692,6 +803,13 @@ class OrgBrowser(QWidget):
             else:
                 self.bar.addWidget(self.tools_widget, 0, 1)
         super().resizeEvent(e)
+        if self.view == "chart" and not self.chart.user_zoomed:
+            self._fit_timer.start()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.view == "chart":
+            self._fit_timer.start()
 
     def _tree_menu(self, pos):
         it = self.tree.itemAt(pos)
@@ -708,7 +826,7 @@ class OrgBrowser(QWidget):
         self.refresh()
         if key == "chart":
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(0, self._scroll_to_match)
+            QTimer.singleShot(0, self._fit_and_scroll)
         if announce:
             self.view_changed.emit(key)
 
@@ -733,13 +851,41 @@ class OrgBrowser(QWidget):
             self.grid.set_people(users, q, self.me_id)
         elif self.view == "chart":
             self.chart.set_people(users, q, self.me_id)
-            self._scroll_to_match()
+            self._fit_and_scroll()
         else:
-            self.orgtree.fill(self.tree, users, self.list_mode.currentData(), q, me_id=self.me_id)
+            mode = self.list_mode.currentData()
+            self.orgtree.fill(self.tree, users, mode, q, me_id=self.me_id)
+            # by department & section the department is already the group (and the section its sub-group):
+            # a "Department / Section" column would only repeat it on every row
+            self.tree.setColumnHidden(2, mode == "department")
 
     def update_views(self):
         self.grid.update()
         self.chart.update()
+
+    def _fit_and_scroll(self):
+        self._auto_fit()
+        self._scroll_to_match()
+
+    def _auto_fit(self):
+        """Until someone zooms by hand, the chart shows as big as possible up to 100%: shrunk (down to
+        MIN_FIT_ZOOM) when it is wider than the view, so no branch starts off-screen. When even that is too wide,
+        the view starts centred on the top person instead of at the left edge."""
+        if self.view != "chart" or self.chart.user_zoomed or not self.chart_area.isVisible():
+            return
+        view = self.chart_area.viewport().size()
+        if view.width() < 80:
+            return                              # not laid out yet
+        full = self.chart.bounds.width() + 2 * self.chart.PAD
+        z = min(1.0, max(self.MIN_FIT_ZOOM, (view.width() - 10) / full)) if full > 0 else 1.0
+        if abs(z - self.chart.zoom) > 0.005:
+            self.chart.set_zoom(z)
+        if self.chart.width() > view.width():
+            root = self.chart.root_rect()
+            if root is not None:
+                bar = self.chart_area.horizontalScrollBar()
+                bar.setRange(0, max(0, self.chart.width() - view.width()))
+                bar.setValue(int(root.center().x() - view.width() / 2))
 
     def _scroll_to_match(self):
         r = self.chart.first_match_rect() if self.search.text().strip() else None

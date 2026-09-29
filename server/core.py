@@ -38,6 +38,19 @@ log = logging.getLogger("server")
 ADMIN_SENDER_ID = 0          # sender id used for announcements made from the server console
 
 
+def is_console_account(u) -> bool:
+    """The built-in 'admin' account made at first start: the console's account, not a person at a PC. It stays out
+    of people lists (announcement readers, the org chart, room pickers) until someone signs in to the app with it
+    or gives it a department. `u` is a users row or a dict with the same keys."""
+    def get(key):
+        try:
+            return u[key]
+        except (KeyError, IndexError):
+            return None
+    return (str(get("username") or "").lower() == "admin" and bool(get("is_admin"))
+            and not (get("department") or "") and not (get("client_version") or ""))
+
+
 STICKER_RE = re.compile(r"^[a-z0-9_]{1,40}/[0-9]{2,3}\.webp$")
 
 
@@ -1055,6 +1068,11 @@ class ServerCore(PlannerMixin, CalendarMixin):
                            "last": self.msg_for(last, uid) if last else None})
         anns = [self.announcement_public(r, r["is_read"]) for r in self.db.recent_announcements(uid)
                 if r["sender_id"] == uid or self.org.receives(r["target_kind"], r["target_value"], uid)]
+        is_admin = bool((self.org.users.get(uid) or {}).get("is_admin"))
+        for a in anns[:100]:
+            if a["sender_id"] == uid or is_admin:
+                reads = self.announcement_reads(a["id"])
+                a["read_count"], a["total"] = len(reads["read"]), len(reads["read"]) + len(reads["unread"])
         return {
             "op": "login_ok", "token": token, "server_name": self.config["server_name"],
             "protocol": P.PROTOCOL_VERSION,
@@ -1870,7 +1888,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
         ann = self.db.get_announcement(ann_id)
         readers = self.db.announcement_reader_ids(ann_id)
         recipients = [u for u in self.org.users if u != ann["sender_id"]
-                      and self.org.receives(ann["target_kind"], ann["target_value"], u)]
+                      and self.org.receives(ann["target_kind"], ann["target_value"], u)
+                      and not self.is_console_account(u)
+                      and self.org.users[u]["username"] != self.BOT_USERNAME]      # the pipeline bot reads nothing
         people = lambda ids: sorted(({"id": u, "name": self._user_name(u)} for u in ids),  # noqa: E731
                                     key=lambda d: d["name"].lower())
         return {"read": people([u for u in recipients if u in readers]),
@@ -1888,6 +1908,13 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     def admin_announcement_reads(self, ann_id):
         return self.announcement_reads(int(ann_id))
+
+    def is_console_account(self, uid) -> bool:
+        """is_console_account() for a user id, and only while nobody is signed in to the app with it."""
+        row = self.org.users.get(uid) or self.db.get_user(uid)
+        if not row or not is_console_account(row):
+            return False
+        return not any(getattr(s, "token", None) for s in self.sessions.get(uid, ()))
 
     # ---------------------------------------------------- screen sharing
     # A share has a sharer (whose screen is shown) and a viewer. The sharer ALWAYS consents:
@@ -2003,7 +2030,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
         since = time.time() - float(days) * 86400
         msgs, files = self.db.activity(since)
         storage = self.db.storage_by_user()
-        users = [u for u in self.db.list_users() if u["username"] != self.BOT_USERNAME]
+        users = [u for u in self.db.list_users() if u["username"] != self.BOT_USERNAME
+                 and not self.is_console_account(u["id"])]
         people, depts = [], {}
         for u in users:
             sent = msgs.get(u["id"], 0)
@@ -2012,9 +2040,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
                            "section": u["section"], "messages": sent, "files": nfiles, "uploaded": nbytes,
                            "stored": storage.get(u["id"], 0), "last_seen": u["last_seen"],
                            "disabled": bool(u["disabled"])})
-            d = depts.setdefault(u["department"] or "(none)", {"department": u["department"] or "(none)",
-                                                               "users": 0, "active": 0, "messages": 0, "files": 0,
-                                                               "uploaded": 0})
+            dept = u["department"] or "No department"
+            d = depts.setdefault(dept, {"department": dept, "users": 0, "active": 0, "messages": 0, "files": 0,
+                                        "uploaded": 0})
             d["users"] += 1
             d["active"] += 1 if sent or nfiles else 0
             d["messages"] += sent
@@ -2623,9 +2651,37 @@ class ServerCore(PlannerMixin, CalendarMixin):
         if must_change:
             self.db.set_must_change(uid, True)
         self._after_user_change(uid)
-        self.audit(None, "user created", kw.get("username"),
-                   ", ".join(f"{k}={v}" for k, v in kw.items() if k != "password" and v not in ("", None)))
+        self.audit(None, "user created", kw.get("username"), self._audit_user(kw))
         return uid
+
+    AUDIT_FIELDS = {"username": "Username", "display_name": "Name", "department": "Department", "section": "Section",
+                    "role_id": "Designation", "manager_id": "Reports to", "title": "Job title",
+                    "is_admin": "Administrator", "employee_id": "Employee ID", "birthday": "Birthday",
+                    "joined_on": "Joining date", "can_broadcast": "Can send announcements"}
+
+    def _audit_value(self, key, value):
+        """A user field as the audit log shows it: names instead of database ids."""
+        if key == "role_id":
+            role = self.db.get_role(value) if value else None
+            return role["name"] if role else "none"
+        if key == "manager_id":
+            return self._user_name(value) if value else "nobody"
+        if key in ("is_admin", "can_broadcast", "disabled"):
+            return "yes" if value else "no"
+        return "none" if value in ("", None) else str(value)
+
+    def _audit_user(self, fields):
+        """'Ananya Bose · Paint · Paint Artist · reports to Sneha Kulkarni': a new account, for the audit log."""
+        parts = [str(fields[k]) for k in ("display_name", "department", "section") if fields.get(k)]
+        if fields.get("role_id"):
+            parts.append(self._audit_value("role_id", fields["role_id"]))
+        if fields.get("title"):
+            parts.append(f"job title {fields['title']}")
+        if fields.get("manager_id"):
+            parts.append("reports to " + self._audit_value("manager_id", fields["manager_id"]))
+        if fields.get("is_admin"):
+            parts.append("administrator")
+        return " · ".join(parts)
 
     def admin_update_user(self, uid, password=None, must_change=None, **fields):
         before = self.db.get_user(uid)
@@ -2639,14 +2695,13 @@ class ServerCore(PlannerMixin, CalendarMixin):
             self.db.set_password(uid, password, must_change=must_change)
             self.kick(uid, "Your password was reset. Please sign in with the new one.")
         self._after_user_change(uid)
-        changes = [f"{k}: {before[k]!r} -> {v!r}" for k, v in fields.items()
-                   if k in before.keys() and before[k] != v]
+        changes = [f"{self.AUDIT_FIELDS.get(k, k)}: {self._audit_value(k, before[k])} → {self._audit_value(k, v)}"
+                   for k, v in fields.items() if k in before.keys() and before[k] != v and k != "disabled"]
         name = before["username"]
         if "disabled" in fields and before["disabled"] != fields["disabled"]:
             self.audit(None, "account disabled" if fields["disabled"] else "account enabled", name)
-            changes = [c for c in changes if not c.startswith("disabled")]
         if changes:
-            self.audit(None, "user changed", name, "; ".join(changes))
+            self.audit(None, "user changed", name, " · ".join(changes))
         if password:
             self.audit(None, "password reset", name, "must change at next sign-in" if must_change else "")
 
@@ -2672,8 +2727,26 @@ class ServerCore(PlannerMixin, CalendarMixin):
         role_id = self.db.save_role(role_id, **fields)
         self.push_directory()
         self.audit(None, "designation created" if new else "designation changed", fields.get("name", role_id),
-                   ", ".join(f"{k}={v}" for k, v in fields.items() if k != "name"))
+                   self._audit_role(fields))
         return role_id
+
+    ROLE_AUDIT = {"announce": {"none": "no announcements", "team": "announcements to their team",
+                               "section": "announcements to their section",
+                               "department": "announcements to their department", "all": "announcements to everyone"},
+                  "create_rooms": ("can create rooms", "cannot create rooms"),
+                  "manage_users": ("can manage accounts", "cannot manage accounts"),
+                  "see_all": ("sees everyone", "sees a limited list"),
+                  "always_visible": ("always visible", "")}
+
+    def _audit_role(self, fields):
+        """'Level 30 · announcements to their department · can create rooms' for the audit log."""
+        parts = [f"level {fields['level']}"] if "level" in fields else []
+        if "announce" in fields:
+            parts.append(self.ROLE_AUDIT["announce"].get(fields["announce"] or "none", str(fields["announce"])))
+        for key in ("create_rooms", "manage_users", "see_all", "always_visible"):
+            if key in fields:
+                parts.append(self.ROLE_AUDIT[key][0 if fields[key] else 1])
+        return " · ".join(p for p in parts if p)
 
     def admin_delete_role(self, role_id):
         role = self.db.get_role(role_id)
@@ -2730,7 +2803,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
 
     def admin_org(self):
         """Users + reporting data for the console's org chart."""
-        return [self.user_public(self.db.get_user(u)) for u in self.org.users]
+        return [self.user_public(self.db.get_user(u)) for u in self.org.users if not self.is_console_account(u)]
 
     def admin_rooms(self):
         return [self.room_public(r) for r in self.db.list_rooms()]
@@ -2771,7 +2844,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
     def admin_announce(self, title, body, kind="all", department="", section=""):
         kind, value = self.announce_target(kind, department, section, ADMIN_SENDER_ID)
         ann_id = self.announce(ADMIN_SENDER_ID, title, body, kind, value)
-        self.audit(None, "announcement sent", title or "Announcement", kind + (f": {department} {section}" if department else ""))
+        label = self.announcement_public(self.db.get_announcement(ann_id))["target_label"]
+        self.audit(None, "announcement sent", title or "Announcement",
+                   "Everyone in the studio" if kind == "all" else label)
         return ann_id
 
     def admin_kick(self, uid):
@@ -2812,7 +2887,9 @@ class ServerCore(PlannerMixin, CalendarMixin):
                 "last_chat_backup": self.last_chat_backup, "chat_log_dir": archive.log_dir(self.config),
                 "last_safe_copy": self.last_safe_copy, "safe_copy_dir": safecopy.folder(self.config),
                 "last_user_list": self.last_user_list,
-                "user_list_dir": self.user_list_folder(), "backup_dir": self.backup_folder()}
+                "user_list_dir": self.user_list_folder(), "backup_dir": self.backup_folder(),
+                "backup_enabled": bool(self.config["backup_enabled"]), "backup_hour": int(self.config["backup_hour"]),
+                "chat_log_enabled": bool(self.config["chat_log_enabled"])}
 
     def admin_log_tail(self, lines=400):
         try:
@@ -2976,12 +3053,15 @@ class ServerCore(PlannerMixin, CalendarMixin):
                       unclaimed_days=float(self.config["unclaimed_file_days"] or 0))
         return report
 
-    def admin_cleanup_files(self, days):
-        """Delete every stored file older than `days` days now (at least 1 day)."""
+    def admin_cleanup_files(self, days, dry_run=False):
+        """Delete every stored file older than `days` days now (at least 1 day). dry_run: only count them."""
         days = float(days)
         if not days >= 1:
             raise ValueError("Choose at least 1 day")
-        removed, freed = self._delete_stored(self.db.files_older_than(time.time() - days * 86400))
+        rows = self.db.files_older_than(time.time() - days * 86400)
+        if dry_run:
+            return {"removed": len(rows), "bytes": sum(r["size"] or 0 for r in rows)}
+        removed, freed = self._delete_stored(rows)
         self.audit(None, "files cleaned up", f"older than {days:g} days", f"{removed} files, {P.human_size(freed)}")
         self._emit("stats")
         return {"removed": removed, "bytes": freed}

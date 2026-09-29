@@ -5,11 +5,12 @@ import datetime
 import functools
 import logging
 import os
+import re
 import socket
 import time
 
 from PySide6.QtCore import QDir, QObject, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -20,10 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from common import theme as T
-from common.icons import add_show_password, asset, icon
+from common.fmt import ELLIPSIS, SEP, fmt_date, fmt_when
+from common.icons import add_show_password, asset, icon, pixmap
 from common import protocol as P
 from common.protocol import human_size
-from server.core import ServerCore, local_ips, startup_error_text
+from server.core import ServerCore, is_console_account, local_ips, startup_error_text
 
 
 class _LogBridge(QObject, logging.Handler):
@@ -51,15 +53,17 @@ QTableWidget, QTreeWidget, QListWidget {{ background: {T.PANEL}; border: none; b
 QTableWidget::item {{ padding: 0 10px; border: none; }}
 QTreeWidget::item {{ padding: 8px 10px; border: none; }}
 QTreeWidget::indicator, QTableWidget::indicator, QListWidget::indicator {{ width: 16px; height: 16px;
-    border-radius: 5px; background: {T.SURFACE}; border: 1px solid {T.SCROLL}; }}
+    border-radius: 5px; background: {T.SURFACE}; border: 1px solid {T.CONTROL_EDGE}; }}
 QTreeWidget::indicator:checked, QTableWidget::indicator:checked, QListWidget::indicator:checked {{
     background: {T.ACCENT}; border: 1px solid {T.ACCENT}; image: url("{T.check_image()}"); }}
 QTableWidget::item:selected, QTreeWidget::item:selected, QListWidget::item:selected {{
     background: {T.ACCENT_SOFT}; color: {T.TEXT}; border-radius: 10px; }}
+QHeaderView {{ background: {T.PANEL}; border: none; }}
 QHeaderView::section {{ background: {T.PANEL}; border: none; border-bottom: 1px solid {hair}; padding: 12px 10px 10px 10px;
     color: {T.MUTED}; font-size: 8.5pt; font-weight: 600; }}
 QPushButton {{ border-radius: 12px; border: 1px solid {hair}; }}
 QPushButton[primary="true"] {{ border: none; }}
+QPushButton[danger="true"]:disabled {{ color: {T.FAINT}; }}
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateTimeEdit {{ border-radius: 12px; border: 1px solid {hair}; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; border: none; padding: 8px 14px; color: {T.MUTED}; font-weight: 600; }}
@@ -70,7 +74,9 @@ QTabBar::tab:selected {{ color: {T.TEXT}; border-bottom: 2px solid {T.ACCENT}; }
 def btn(text, icon_name=None, primary=False, danger=False):
     b = QPushButton(text)
     if icon_name:
-        b.setIcon(icon(icon_name, T.ACCENT_TEXT if primary else (T.DANGER if danger else T.TEXT), 16))
+        ic = icon(icon_name, T.ACCENT_TEXT if primary else (T.DANGER if danger else T.TEXT), 16)
+        ic.addPixmap(pixmap(icon_name, T.FAINT, 16), QIcon.Disabled, QIcon.Off)    # unavailable, not broken
+        b.setIcon(ic)
     b.setCursor(Qt.PointingHandCursor)
     T.polish(b, primary=primary, danger=danger)
     return b
@@ -91,6 +97,8 @@ def make_table(headers):
     t.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     t.horizontalHeader().setHighlightSections(False)
     t.verticalHeader().setDefaultSectionSize(44)
+    t.setWordWrap(False)                     # one line per row: long text ends in '…' (the tooltip has it all)
+    t.setTextElideMode(Qt.ElideRight)
     return t
 
 
@@ -154,13 +162,163 @@ def keeps_tables(refresh):
     return wrapper
 
 
-def cell(text, data=None, color=None):
+NUM = Qt.AlignRight | Qt.AlignVCenter          # counts and sizes: right-aligned, so the digits line up
+
+
+def cell(text, data=None, color=None, align=None, tip=None):
     it = QTableWidgetItem(str(text))
     if data is not None:
         it.setData(Qt.UserRole, data)
     if color:
         it.setForeground(QColor(color))
+    if align is not None:
+        it.setTextAlignment(align)
+    if tip is None and len(str(text)) > 48:        # may be cut to fit the column: the whole text on hover
+        tip = str(text)
+    if tip:
+        it.setToolTip(tip)
     return it
+
+
+def num(value, data=None, color=None):
+    """A count, right-aligned: '1,204'."""
+    return cell(f"{value:,}" if isinstance(value, (int, float)) else value, data, color, NUM)
+
+
+def size_cell(n):
+    """A size, right-aligned: '85.1 KB'. Nothing at all is a faint dash, not '0 B'."""
+    return cell(human_size(n) if n else "—", color=None if n else T.FAINT, align=NUM)
+
+
+def align_columns(table, columns, align=NUM):
+    """Headers of number columns sit over their numbers."""
+    for c in columns:
+        item = table.horizontalHeaderItem(c)
+        if item:
+            item.setTextAlignment(align)
+
+
+def numbers_last(table):
+    """A table whose last column is a number: no stretching, so that number stays next to the others instead of
+    at the far right edge."""
+    table.horizontalHeader().setStretchLastSection(False)
+
+
+def hide_empty_columns(table, columns):
+    """Optional columns that nobody filled in (Section, PC) take no room and don't look like missing data."""
+    for c in columns:
+        table.setColumnHidden(c, not any(table.item(r, c) and table.item(r, c).text().strip()
+                                         for r in range(table.rowCount())))
+
+
+def bind_selection(view, buttons, then=None):
+    """Buttons that act on the selected row are enabled only while a row is selected (they used to look
+    clickable and do nothing). `then` runs too, e.g. to relabel a button for the selected row."""
+    def sync():
+        try:
+            chosen = bool(view.selectedItems())
+        except RuntimeError:                       # the page is being deleted
+            return
+        for b in buttons:
+            b.setEnabled(chosen)
+        if then:
+            then()
+    view.itemSelectionChanged.connect(sync)
+    sync()
+    return sync
+
+
+def confirm(parent, title, text, action, danger=True, detail=""):
+    """Ask before a risky action. The button says what happens ('Delete', 'Disable') and Cancel is the default,
+    so a stray Enter never confirms something that can't be undone. Plain text: names can't format it."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning if danger else QMessageBox.Question)
+    box.setWindowTitle(title)
+    box.setTextFormat(Qt.PlainText)
+    box.setText(text)
+    if detail:
+        box.setInformativeText(detail)
+    yes = box.addButton(action, QMessageBox.AcceptRole)
+    cancel = box.addButton(QMessageBox.Cancel)
+    T.polish(yes, danger=danger, primary=not danger)
+    box.setDefaultButton(cancel)
+    box.setEscapeButton(cancel)
+    box.exec()
+    return box.clickedButton() is yes
+
+
+def ask_text(parent, title, label, text="", ok="Save"):
+    """A one-line question whose main button says what it does, in the main-button style."""
+    dlg = QInputDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setInputMode(QInputDialog.TextInput)
+    dlg.setLabelText(label)
+    dlg.setTextValue(text)
+    dlg.setOkButtonText(ok)
+    for box in dlg.findChildren(QDialogButtonBox):
+        if box.button(QDialogButtonBox.Ok):
+            T.polish(box.button(QDialogButtonBox.Ok), primary=True)
+    if not dlg.exec():
+        return "", False
+    return dlg.textValue(), True
+
+
+def hint_label(text):
+    """A small readable note under a form field."""
+    lbl = QLabel(text)
+    lbl.setWordWrap(True)
+    lbl.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)};")
+    return lbl
+
+
+def add_row_with_hint(form, label, field, text):
+    """A form row with a small note right under its field (as a row of its own, the note sat as far from its
+    field as from the next one). Returns the note."""
+    box = QWidget()
+    v = QVBoxLayout(box)
+    v.setContentsMargins(0, 0, 0, 0)
+    v.setSpacing(3)
+    v.addWidget(field)
+    hint = hint_label(text)
+    v.addWidget(hint)
+    v.addStretch(1)
+    side = QWidget()                            # the label stays level with the field, not with field + note
+    s = QVBoxLayout(side)
+    s.setContentsMargins(0, 0, 0, 0)
+    lbl = QLabel(label)
+    lbl.setFixedHeight(max(20, field.sizeHint().height()))
+    lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    s.addWidget(lbl)
+    s.addStretch(1)
+    form.addRow(side, box)
+    return hint
+
+
+def on_server_pc(api):
+    """True when the console runs on the server PC itself (its folders are this PC's folders)."""
+    return not api.remote or getattr(api, "host", "").lower() in (
+        "127.0.0.1", "localhost", "::1", socket.gethostname().lower())
+
+
+def version_text(v):
+    """A Quillo version for people: '1.11.1', 'older than 1.6.2' (those didn't say), 'no version seen yet'."""
+    if not v:
+        return "no version seen yet"
+    if str(v).startswith("older"):
+        return "older than 1.6.2"
+    return str(v)
+
+
+def uptime_text(seconds):
+    """'up 5 min', 'up 3 h 20 min', 'up 2 days 4 h'."""
+    mins = max(0, int(seconds // 60))
+    if mins < 60:
+        return f"up {mins} min"
+    if mins < 1440:
+        h, m = divmod(mins, 60)
+        return f"up {h} h" + (f" {m} min" if m else "")
+    days, h = mins // 1440, mins // 60 % 24
+    return f"up {days} day{'s' if days != 1 else ''}" + (f" {h} h" if h else "")
 
 
 def safe_text(text):
@@ -179,9 +337,15 @@ def keep_files_text(days, default_days):
 
 
 def fmt_time(ts):
+    """'Today 16:05', 'Tue 29 Sep, 16:05', '3 Mar 2025, 16:05': a moment, written like everywhere in Quillo."""
     if not ts:
-        return "never"
-    return datetime.datetime.fromtimestamp(ts).strftime("%d %b %Y %H:%M")
+        return "Never"
+    return fmt_when(ts)
+
+
+def iso_time(ts):
+    """'2026-09-29 16:05' for CSV files (a spreadsheet sorts it)."""
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
 
 
 class Page(QWidget):
@@ -194,9 +358,23 @@ class Page(QWidget):
         if "refresh" in cls.__dict__:
             cls.refresh = keeps_tables(cls.__dict__["refresh"])
 
-    def __init__(self, title, subtitle=""):
+    def __init__(self, title, subtitle="", scroll=False):
         super().__init__()
         self.lay = QVBoxLayout(self)
+        self.scroll_area = None
+        if scroll:
+            # the whole page scrolls on a short screen (a laptop, a half-height window) instead of squeezing
+            self.lay.setContentsMargins(0, 0, 0, 0)
+            area = self.scroll_area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            body = QWidget()
+            T.bg_pane(body)
+            area.setWidget(body)
+            T.bg_pane(area.viewport())
+            self.lay.addWidget(area)
+            self.lay = QVBoxLayout(body)
         self.lay.setContentsMargins(40, 32, 40, 28)
         self.lay.setSpacing(16)
         head = QLabel(title)
@@ -247,7 +425,8 @@ class DashboardPage(Page):
 
     def __init__(self, win):
         super().__init__("Dashboard", "Install this server on one always-on PC. Clients on the LAN "
-                                      "find it automatically, or can connect to one of the addresses below.")
+                                      "find it automatically, or can connect to one of the addresses below.",
+                         scroll=True)
         self.win = win
         grid = QGridLayout()
         grid.setSpacing(16)
@@ -255,7 +434,7 @@ class DashboardPage(Page):
         for i, (key, title, ic) in enumerate([
                 ("online", "Users online", "users"), ("users", "Accounts", "user"),
                 ("rooms", "Chat rooms", "hash"), ("messages", "Messages stored", "chat"),
-                ("files", "Files stored", "file"), ("files_bytes", "Storage used", "folder")]):
+                ("files", "Files stored", "file"), ("files_bytes", "Storage used", "hdd")]):
             card = StatCard(title, ic)
             self.cards[key] = card
             grid.addWidget(card, i // 3, i % 3)
@@ -296,79 +475,93 @@ class DashboardPage(Page):
                  else f"<span style='color:{T.DANGER}'>&#9679; Stopped</span>")
         uptime = ""
         if running and info.get("started_at"):
-            mins = int((time.time() - info["started_at"]) // 60)
-            uptime = f" &nbsp;·&nbsp; up {mins // 1440}d {mins // 60 % 24}h {mins % 60}m"
-        b = info.get("last_backup")
-        if b and b.get("ok"):
-            backup = f"<span style='color:{T.ACCENT}'>OK</span> {fmt_time(b['time'])} ({human_size(b.get('size', 0))})"
-        elif b:
-            backup = f"<span style='color:{T.DANGER}'>FAILED {fmt_time(b['time'])}: {b.get('error', '')}</span>"
-        else:
-            backup = "none since the server started"
-        self._show_details(info, running, state, uptime, backup)
+            uptime = f" &nbsp;·&nbsp; {uptime_text(time.time() - info['started_at'])}"
+        self._show_details(info, running, state, uptime)
         if not running:
             for c in self.cards.values():
-                c.value.setText("-")
+                c.value.setText("–")
             return
         stats = api.call("admin_stats")
         for key, card in self.cards.items():
             v = stats.get(key, 0)
             card.value.setText(human_size(v) if key == "files_bytes" else f"{v:,}")
 
-    def _show_details(self, info, running, state, uptime, backup):
-        self.headline.setText(f"<span style='font-size:12.5pt; font-weight:600'>{info['server_name']}</span>"
-                              f" &nbsp; {state}<span style='color:{T.MUTED}'>{uptime} &nbsp;·&nbsp; "
+    def _show_details(self, info, running, state, uptime, _backup=None):
+        import html
+        esc = lambda t: html.escape(str(t or ""), quote=False)                       # noqa: E731
+        muted = lambda t: f"<span style='color:{T.META}'>{t}</span>"                  # noqa: E731
+        failed = lambda t: f"<span style='color:{T.DANGER}'>{t}</span>"               # noqa: E731
+        ok = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;"
+        nightly = f"every night at {int(info.get('backup_hour', 2)):02d}:00"
+        stopped = muted("Not while the server is stopped")
+        self.headline.setText(f"<span style='font-size:12.5pt; font-weight:600'>{esc(info['server_name'])}</span>"
+                              f" &nbsp; {state}<span style='color:{T.META}'>{uptime} &nbsp;·&nbsp; "
                               f"version {info.get('version', '')}</span>")
         warn = []
         if running and info.get("discovery_error"):
-            warn.append(f"Automatic discovery is off: {info['discovery_error']}. Clients must type this server's "
-                        "address, or change the discovery port in Settings.")
+            warn.append(f"Automatic discovery is off: {esc(info['discovery_error'])}. Clients must type this "
+                        "server's address, or change the discovery port in Settings.")
         if running and info.get("storage_error"):
-            warn.append(f"{info['storage_error']}. Chat works; file uploads are refused until the folder is "
+            warn.append(f"{esc(info['storage_error'])}. Chat works; file uploads are refused until the folder is "
                         "reachable (check the share, or change it in Settings).")
-        self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
-        self.warnings.setVisible(bool(warn))
-        cb = info.get("last_chat_backup")
-        if not cb:
-            chat_backup = "—"
-        elif cb.get("ok"):
-            chat_backup = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(cb['time'])} ({cb['messages']} new)"
+        b = info.get("last_backup")
+        if b and b.get("ok"):
+            backup = f"{ok}{fmt_time(b['time'])} &nbsp;·&nbsp; {human_size(b.get('size', 0))}"
+        elif b:
+            backup = failed(f"Failed {fmt_time(b['time'])} — {esc(b.get('error', ''))}")
+        elif not running:
+            backup = stopped
+        elif info.get("backup_enabled", True):
+            backup = muted(f"None since the server started — the next one runs {nightly}")
         else:
-            chat_backup = f"<span style='color:{T.DANGER}'>Failed: {cb.get('error', '')}</span>"
+            backup = muted("Off — turn it on in Settings &gt; Backups")
+        cb = info.get("last_chat_backup")
+        if cb and cb.get("ok"):
+            chat_backup = f"{ok}{fmt_time(cb['time'])} &nbsp;·&nbsp; {cb['messages']:,} new messages"
+        elif cb:
+            chat_backup = failed(f"Failed — {esc(cb.get('error', ''))}")
+        elif not running:
+            chat_backup = stopped
+        elif info.get("chat_log_enabled", True):
+            chat_backup = muted(f"Not yet — it runs {nightly}")
+        else:
+            chat_backup = muted("Off — turn it on in Settings &gt; Chat backup &amp; history")
         sc = info.get("last_safe_copy")
         if running and not info.get("safe_copy_dir"):
-            warn.append("There is no central folder: chats, backups and the user list are only on this PC. If it "
-                        "breaks or goes back, they go with it. Choose a folder on the file server in Settings > "
+            warn.append("There is no central folder: chats, backups and the user list are only on this PC. If this "
+                        "PC fails, they are lost. Choose a folder on the file server in Settings &gt; "
                         "Central folder.")
-            self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
-            self.warnings.setVisible(True)
         ul = info.get("last_user_list") or {}
-        user_list = (f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(ul['time'])} ({ul.get('people', 0)} people)"
-                     if ul.get("ok") else f"<span style='color:{T.DANGER}'>Failed: {ul.get('error', '')}</span>"
-                     if ul else "—")
-        if not info.get("safe_copy_dir"):
-            safe = f"<span style='color:{T.MUTED}'>Off - choose a folder in Settings</span>"
-        elif not sc:
-            safe = f"<span style='color:{T.MUTED}'>within 5 minutes</span>"
-        elif sc.get("ok"):
-            safe = f"<span style='color:{T.ACCENT}'>OK</span> &nbsp;{fmt_time(sc['time'])}"
+        if ul.get("ok"):
+            user_list = f"{ok}{fmt_time(ul['time'])} &nbsp;·&nbsp; {ul.get('people', 0):,} people"
+        elif ul:
+            user_list = failed(f"Failed — {esc(ul.get('error', ''))}")
         else:
-            safe = f"<span style='color:{T.DANGER}'>Failed {fmt_time(sc['time'])}: {sc.get('error', '')}</span>"
+            user_list = stopped if not running else muted("Not yet — it is written within a few minutes")
+        if not info.get("safe_copy_dir"):
+            safe = muted("Off — choose a central folder in Settings")
+        elif not sc:
+            safe = muted("Within 5 minutes" if running else "Not while the server is stopped")
+        elif sc.get("ok"):
+            safe = f"{ok}{fmt_time(sc['time'])}"
+        else:
+            safe = failed(f"Failed {fmt_time(sc['time'])} — {esc(sc.get('error', ''))}")
         if running and sc and not sc.get("ok"):
-            warn.append(f"The safe copy in {sc.get('folder', '')} failed ({sc.get('error', '')}). Chat works; "
-                        "check the share - a reinstall could not bring the data back.")
-            self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
-            self.warnings.setVisible(True)
+            warn.append(f"The safe copy in {esc(sc.get('folder', ''))} failed ({esc(sc.get('error', ''))}). Chat "
+                        "works; check the share — without it, a reinstall could not bring the data back.")
+        self.warnings.setText("<br>".join(f"&#9888;&nbsp; {w}" for w in warn))
+        self.warnings.setVisible(bool(warn))
         encryption = (f"<span style='color:{T.ACCENT}'>On</span>" if info.get("tls") else
-                      f"<span style='color:{T.DANGER}'>{'Off' if running else '—'}</span>")
+                      failed("Off") if running else stopped)
+        central = (esc(info["safe_copy_dir"]) if info.get("safe_copy_dir") else
+                   muted("Not set — choose one in Settings &gt; Central folder"))
         rows = [("Address", f"<b>{', '.join(info['ips'])}</b>"),
                 ("Ports", f"{info['tcp_port']} chat &amp; files &nbsp;·&nbsp; {info['discovery_port']} discovery"),
                 ("Encryption", encryption), ("Last backup", backup), ("Last chat backup", chat_backup),
-                ("Safe copy", safe), ("User list", user_list),
-                ("Central folder", info.get("safe_copy_dir") or "—"),
-                ("Data folder", info["data_dir"]), ("File storage", info["storage_dir"])]
+                ("Safe copy", safe), ("User list", user_list), ("Central folder", central),
+                ("Data folder", esc(info["data_dir"])), ("File storage", esc(info["storage_dir"]))]
         if info.get("fingerprint"):
-            rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.MUTED}'>"
+            rows.append(("Fingerprint", f"<span style='font-family:Consolas; font-size:8pt; color:{T.META}'>"
                                         f"{info['fingerprint']}</span>"))
         while self.details.count():
             w = self.details.takeAt(0).widget()
@@ -400,7 +593,7 @@ class UserDialog(QDialog):
         self.name = QLineEdit(user["display_name"] if user else "")
         # only departments/sections made on the Departments page can be chosen (no typing)
         self.department = QComboBox()
-        self.department.addItem("(none)", "")
+        self.department.addItem("No department", "")
         for d in sorted((d for d in self.depts if d["parent_id"] is None), key=lambda d: d["name"].lower()):
             self.department.addItem(d["name"], d["name"])
         self.section = QComboBox()
@@ -410,50 +603,49 @@ class UserDialog(QDialog):
         self.department.setCurrentIndex(max(0, self._find(self.department, current)))
         self.department.currentIndexChanged.connect(lambda _i: self._fill_sections())
         self._fill_sections(user["section"] if user else "")
-        hint = QLabel("Add departments on the Departments page")
-        T.polish(hint, muted=True)
         self.designation = QComboBox()
-        self.designation.addItem("(none)", None)
+        self.designation.addItem("No designation", None)
         for r in roles:
             self.designation.addItem(r["name"], r["id"])
         self.designation.setCurrentIndex(max(0, self.designation.findData(user["role_id"] if user else None)))
         self.manager = QComboBox()
-        self.manager.addItem("(nobody)", None)
+        self.manager.addItem("Nobody", None)
         for u in sorted(self.users, key=lambda u: u["display_name"].lower()):
             if not user or u["id"] != user["id"]:
                 extra = " · ".join(x for x in (u.get("designation"), u["department"]) if x)
                 self.manager.addItem(f"{u['display_name']}" + (f"  —  {extra}" if extra else ""), u["id"])
         self.manager.setCurrentIndex(max(0, self.manager.findData(user["manager_id"] if user else None)))
         self.title = QLineEdit(user["title"] if user else "")
-        self.title.setPlaceholderText("optional, e.g. Compositor, Matchmove Artist")
+        self.title.setPlaceholderText("Optional, e.g. Senior Compositor")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         add_show_password(self.password)
-        self.password.setPlaceholderText("leave empty to keep" if user else "at least 4 characters")
+        self.password.setPlaceholderText("Leave empty to keep the current one" if user else "Their first password")
         self.is_admin = QCheckBox("Administrator (full rights in the client)")
         if user:
             self.is_admin.setChecked(bool(user["is_admin"]))
         form.addRow("Username", self.username)
         form.addRow("Display name", self.name)
-        form.addRow("Department", self.department)
+        add_row_with_hint(form, "Department", self.department, "Departments and sections are added on the "
+                                                                "Departments page")
         form.addRow("Section", self.section)
-        form.addRow("", hint)
         form.addRow("Designation", self.designation)
         form.addRow("Reports to", self.manager)
-        form.addRow("Job title", self.title)
+        add_row_with_hint(form, "Job title", self.title, "Shown only for people without a designation; people "
+                                                         "can search for it")
 
         def date_text(value):                # stored '--MM-DD' / 'YYYY-MM-DD' -> shown '26-09' / '26-09-1990'
             parts = [p for p in (value or "").split("-") if p]
             return "-".join(reversed(parts))
         self.employee_id = QLineEdit(user.get("employee_id", "") if user else "")
-        self.employee_id.setPlaceholderText("optional HR / payroll code")
+        self.employee_id.setPlaceholderText("Optional HR / payroll code")
         self.birthday = QLineEdit(date_text(user.get("birthday", "")) if user else "")
-        self.birthday.setPlaceholderText("DD-MM or DD-MM-YYYY - everyone sees day and month")
+        self.birthday.setPlaceholderText("DD-MM")
         self.joined = QLineEdit(date_text(user.get("joined_on", "")) if user else "")
-        self.joined.setPlaceholderText("DD-MM-YYYY - for work anniversaries")
+        self.joined.setPlaceholderText("DD-MM-YYYY")
         form.addRow("Employee ID", self.employee_id)
-        form.addRow("Birthday", self.birthday)
-        form.addRow("Joining date", self.joined)
+        add_row_with_hint(form, "Birthday", self.birthday, "DD-MM or DD-MM-YYYY · others see only the day and month")
+        add_row_with_hint(form, "Joining date", self.joined, "For work anniversaries")
         form.addRow("Password", self.password)
         form.addRow("", self.is_admin)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -473,7 +665,7 @@ class UserDialog(QDialog):
         dept_name = (self.department.currentData() or "").lower()
         dept = next((d for d in self.depts if d["parent_id"] is None and d["name"].lower() == dept_name), None)
         self.section.clear()
-        self.section.addItem("(none)", "")
+        self.section.addItem("No section", "")
         for s in sorted((s for s in self.depts if dept and s["parent_id"] == dept["id"]),
                         key=lambda s: s["name"].lower()):
             self.section.addItem(s["name"], s["name"])
@@ -493,19 +685,21 @@ class UserDialog(QDialog):
 
 class UsersPage(Page):
     def __init__(self, win):
-        super().__init__("Users", "Create an account for every artist. Users log in to the client with "
+        super().__init__("Users", "Create an account for every artist. People sign in to the app with "
                                   "their username and password. Departments group people in the contact list.")
         self.win = win
         bar = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Filter users...")
+        self.search.setPlaceholderText("Filter users" + ELLIPSIS)
+        self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.apply_filter)
         bar.addWidget(self.search, 1)
         add = btn("Add user", "plus", primary=True)
         add.clicked.connect(self.add_user)
         tpl = btn("Excel template", "download")
         tpl.setToolTip("An Excel file with everyone already in it, dropdowns for department, section,\n"
-                       "designation and reports to - fill it in, then Import.")
+                       "designation and reports to — fill it in, then Import.")
         tpl.clicked.connect(self.export_excel)
         bar.addWidget(tpl)
         imp = btn("Import", "upload")
@@ -524,16 +718,35 @@ class UsersPage(Page):
         self.lay.addWidget(self.table, 1)
 
         row = QHBoxLayout()
-        for text, ic, fn, danger in [("Edit", "edit", self.edit_user, False),
-                                     ("Reset password", "key", self.reset_password, False),
-                                     ("Enable / Disable", "power", self.toggle_disabled, False),
-                                     ("Delete", "trash", self.delete_user, True)]:
-            b = btn(text, ic, danger=danger)
+        self.edit_btn = btn("Edit", "edit")
+        self.reset_btn = btn("Reset password" + ELLIPSIS, "key")
+        self.toggle_btn = btn("Disable" + ELLIPSIS, "power")
+        self.delete_btn = btn("Delete" + ELLIPSIS, "trash", danger=True)
+        for b, fn in ((self.edit_btn, self.edit_user), (self.reset_btn, self.reset_password),
+                      (self.toggle_btn, self.toggle_disabled), (self.delete_btn, self.delete_user)):
             b.clicked.connect(fn)
             row.addWidget(b)
         row.addStretch(1)
         self.lay.addLayout(row)
         self.users = []
+        bind_selection(self.table, (self.edit_btn, self.reset_btn, self.toggle_btn, self.delete_btn),
+                       self._sync_buttons)
+
+    def _is_me(self, u):
+        """The account this console is signed in with (on another PC): it can't disable or delete itself."""
+        me = (getattr(self.win.api, "username", "") or "").lower() if self.win.api.remote else ""
+        return bool(u and me) and u["username"].lower() == me
+
+    def _sync_buttons(self):
+        """'Enable' or 'Disable' - whichever a click does to the selected person."""
+        u = self.selected_user()
+        off = bool(u and u["disabled"])
+        self.toggle_btn.setText("Enable" if off else "Disable" + ELLIPSIS)
+        self.toggle_btn.setIcon(icon("check" if off else "power", T.TEXT, 16))
+        me = self._is_me(u)
+        for b in (self.toggle_btn, self.delete_btn):
+            b.setEnabled(bool(u) and not me)
+            b.setToolTip("This console is signed in with this account" if me else "")
 
     def refresh(self):
         if not self.win.api.running:
@@ -543,7 +756,8 @@ class UsersPage(Page):
         self.table.setRowCount(len(self.users))
         for r, u in enumerate(self.users):
             st = u["status"]
-            designation = u["designation"] + ("  (admin)" if u["is_admin"] else "")
+            designation = (f"{u['designation']}  (admin)" if u["designation"] else "Admin") if u["is_admin"] \
+                else u["designation"]
             self.table.setItem(r, 0, cell(u["username"], u["id"]))
             self.table.setItem(r, 1, cell(u["display_name"]))
             self.table.setItem(r, 2, cell(u["department"]))
@@ -555,10 +769,13 @@ class UsersPage(Page):
                 label = "Invisible"
             self.table.setItem(r, 6, cell("● " + label, color=T.DANGER if st == "disabled"
                                           else T.STATUS_COLORS.get(st, T.MUTED)))
-            self.table.setItem(r, 7, cell("now" if u["sessions"] else fmt_time(u["last_seen"])))
+            self.table.setItem(r, 7, cell("Online now" if u["sessions"] else fmt_time(u["last_seen"]),
+                                          color=None if u["sessions"] or u["last_seen"] else T.META))
             if u["id"] == selected:
                 self.table.selectRow(r)
+        hide_empty_columns(self.table, [3])                # Section, when no department has sections
         self.apply_filter()
+        self._sync_buttons()
 
     def apply_filter(self):
         q = self.search.text().lower()
@@ -576,17 +793,29 @@ class UsersPage(Page):
         return next((u for u in self.users if u["id"] == uid), None)
 
     def context_menu(self, pos):
-        if not self.selected():
+        u = self.selected_user()
+        if not u:
             return
+        me = self._is_me(u)
         m = QMenu(self)
         m.addAction("Edit", self.edit_user)
-        m.addAction("Reset password", self.reset_password)
-        m.addAction("Enable / Disable", self.toggle_disabled)
-        m.addAction("Disconnect", lambda: self.win.api.call("admin_kick", self.selected()))
-        m.addAction("Remove profile photo", self.remove_photo)
-        m.addSeparator()
-        m.addAction("Delete", self.delete_user)
+        m.addAction("Reset password" + ELLIPSIS, self.reset_password)
+        if not me:
+            m.addAction("Enable" if u["disabled"] else "Disable" + ELLIPSIS, self.toggle_disabled)
+        if u["sessions"] and not me:
+            m.addAction("Disconnect" + ELLIPSIS, self.disconnect)
+        m.addAction("Remove profile photo" + ELLIPSIS, self.remove_photo)
+        if not me:
+            m.addSeparator()
+            m.addAction(icon("trash", T.DANGER, 16), "Delete" + ELLIPSIS, self.delete_user)
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def disconnect(self):
+        u = self.selected_user()
+        if u and confirm(self, "Disconnect", f"Disconnect {u['display_name'] or u['username']}?", "Disconnect",
+                         detail="Quillo signs them out on every PC now. They can sign in again."):
+            self.win.api.call("admin_kick", u["id"])
+            QTimer.singleShot(300, self.refresh)
 
     def roles(self):
         return self.win.api.call("admin_roles")
@@ -623,50 +852,64 @@ class UsersPage(Page):
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("Reset password")
+        dlg.setMinimumWidth(440)
         form = QFormLayout(dlg)
+        form.setSpacing(10)
         pw = QLineEdit()
         pw.setEchoMode(QLineEdit.Password)
         add_show_password(pw)
-        pw.setPlaceholderText("temporary password")
-        must = QCheckBox("User must choose a new password at next sign-in")
+        pw.setPlaceholderText("A temporary password")
+        must = QCheckBox("They must choose a new password at their next sign-in")
         try:
             must.setChecked(bool(self.win.api.config().get("force_password_change", False)))
         except (ValueError, ConnectionError):
             must.setChecked(False)
-        form.addRow(f"New password for {u['username']}", pw)
+        name = u["display_name"] or u["username"]
+        form.addRow("New password", pw)
+        form.addRow("", hint_label(f"{name} is signed out now and signs in with this password."))
         form.addRow("", must)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Reset password")
         T.polish(bb.button(QDialogButtonBox.Ok), primary=True)
+        bb.button(QDialogButtonBox.Ok).setEnabled(False)
+        pw.textChanged.connect(lambda t: bb.button(QDialogButtonBox.Ok).setEnabled(bool(t)))
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         form.addRow(bb)
         while dlg.exec() and pw.text():
             try:
                 self.win.api.call("admin_update_user", u["id"], password=pw.text(), must_change=must.isChecked())
-                QMessageBox.information(self, "Password changed", "The password was changed.")
+                QMessageBox.information(self, "Password changed", f"The password of {name} was changed.")
                 return
             except ValueError as e:
                 QMessageBox.warning(self, "Cannot change password", str(e))
 
     def toggle_disabled(self):
         u = self.selected_user()
-        if u:
-            self.win.api.call("admin_update_user", u["id"], disabled=int(not u["disabled"]))
-            self.refresh()
+        if not u or self._is_me(u):
+            return
+        if not u["disabled"] and not confirm(
+                self, "Disable account", f"Disable {u['display_name'] or u['username']}?", "Disable",
+                detail="They are signed out now and cannot sign in until the account is enabled again. "
+                       "Their messages stay."):
+            return
+        self.win.api.call("admin_update_user", u["id"], disabled=int(not u["disabled"]))
+        self.refresh()
 
     def remove_photo(self):
         u = self.selected_user()
-        if u and QMessageBox.question(self, "Remove profile photo",
-                                      f"Remove the profile photo of '{u['username']}'? (recorded in the audit log)"
-                                      ) == QMessageBox.Yes:
+        if u and confirm(self, "Remove profile photo",
+                         f"Remove the profile photo of {u['display_name'] or u['username']}?", "Remove photo",
+                         detail="This is recorded in the audit log."):
             self.win.api.call("admin_remove_avatar", u["id"])
 
     def delete_user(self):
         u = self.selected_user()
-        if not u:
+        if not u or self._is_me(u):
             return
-        if QMessageBox.question(self, "Delete user", f"Delete '{u['username']}'? Their old messages stay "
-                                "in the history, but they can no longer log in.") == QMessageBox.Yes:
+        if confirm(self, "Delete user", f"Delete {u['display_name'] or u['username']} ({u['username']})?", "Delete",
+                   detail="Their old messages stay in the history, but they can no longer sign in. "
+                          "This cannot be undone."):
             self.win.api.call("admin_delete_user", u["id"])
             self.refresh()
 
@@ -708,10 +951,10 @@ class UsersPage(Page):
             lines.append("New departments / sections: " + safe_text(", ".join(preview["new_departments"]))[4:-5])
         if preview["created"]:
             lines.append("New: " + safe_text(", ".join(preview["created"][:30])
-                                             + (" ..." if len(preview["created"]) > 30 else ""))[4:-5])
+                                             + (" " + ELLIPSIS if len(preview["created"]) > 30 else ""))[4:-5])
         if preview["updated"]:
             lines.append("Changed: " + safe_text(", ".join(preview["updated"][:30])
-                                                 + (" ..." if len(preview["updated"]) > 30 else ""))[4:-5])
+                                                 + (" " + ELLIPSIS if len(preview["updated"]) > 30 else ""))[4:-5])
         if preview["errors"]:
             lines.append(f"<span style='color:{T.DANGER}'>These rows will be skipped:</span><br>"
                          + safe_text("\n".join(preview["errors"][:15]))[4:-5])
@@ -750,7 +993,7 @@ class UsersPage(Page):
                     continue
             text = "\n".join(f"{p['name']}\t{p['username']}\t{p['password']}" for p in passwords)
             QApplication.clipboard().setText(text)
-            QMessageBox.information(self, "First passwords", "Not saved as a file - the list is on the clipboard "
+            QMessageBox.information(self, "First passwords", "Not saved as a file — the list is on the clipboard "
                                                              "now. Paste it somewhere safe.")
             return
 
@@ -764,8 +1007,9 @@ class DepartmentsPage(Page):
 
     def __init__(self, win):
         super().__init__("Departments", "Departments and their sections. People are put in them on the Users "
-                                        "page. A ticked Chat room keeps its members in step by itself; "
-                                        "unticking keeps the room (and its history) as a normal room.")
+                                        "page. Tick Chat room to give a department its own room that adds and "
+                                        "removes people by itself. Unticking keeps the room and its history as a "
+                                        "normal room.")
         self.win = win
         bar = QHBoxLayout()
         bar.addStretch(1)
@@ -784,7 +1028,9 @@ class DepartmentsPage(Page):
         self.lay.addWidget(self.empty)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name", "People", "Chat room"])
-        self.tree.setRootIsDecorated(True)
+        self.tree.header().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.tree.headerItem().setTextAlignment(1, NUM)
+        self.tree.setRootIsDecorated(False)          # only when there are sections to open (see refresh)
         self.tree.setAlternatingRowColors(True)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setStretchLastSection(False)
@@ -792,9 +1038,9 @@ class DepartmentsPage(Page):
         self.tree.itemDoubleClicked.connect(lambda *_: self.rename())
         self.lay.addWidget(self.tree, 1)
         row = QHBoxLayout()
-        r = btn("Rename", "edit")
+        r = btn("Rename" + ELLIPSIS, "edit")
         r.clicked.connect(self.rename)
-        d = btn("Delete", "trash", danger=True)
+        d = btn("Delete" + ELLIPSIS, "trash", danger=True)
         d.clicked.connect(self.delete)
         row.addWidget(r)
         row.addWidget(d)
@@ -802,6 +1048,7 @@ class DepartmentsPage(Page):
         self.lay.addLayout(row)
         self.depts = []
         self._filling = False
+        bind_selection(self.tree, (r, d))
 
     def refresh(self):
         if not self.win.api.running:
@@ -819,6 +1066,7 @@ class DepartmentsPage(Page):
                 if s["parent_id"] in items:
                     items[s["id"]] = self._item(items[s["parent_id"]], s)
             self.tree.expandAll()
+            self.tree.setRootIsDecorated(any(x["parent_id"] is not None for x in self.depts))
             if selected and selected["id"] in items:
                 self.tree.setCurrentItem(items[selected["id"]])
         finally:
@@ -830,8 +1078,8 @@ class DepartmentsPage(Page):
     def _item(parent, d):
         it = QTreeWidgetItem(parent, [d["name"], str(d["people"]), ""])
         it.setData(0, Qt.UserRole, d["id"])
-        it.setTextAlignment(1, Qt.AlignCenter)
-        it.setForeground(1, QColor(T.MUTED))
+        it.setTextAlignment(1, NUM)
+        it.setForeground(1, QColor(T.META))
         it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
         it.setCheckState(2, Qt.Checked if d["has_room"] else Qt.Unchecked)
         return it
@@ -858,7 +1106,8 @@ class DepartmentsPage(Page):
                    it.checkState(2) == Qt.Checked)
 
     def add_department(self):
-        name, ok = QInputDialog.getText(self, "Add department", "Department name (e.g. Compositing, Lighting, FX):")
+        name, ok = ask_text(self, "Add department", "Department name (e.g. Compositing, Lighting, FX):",
+                            ok="Add department")
         if ok and name.strip():
             self._call("Cannot add department", "admin_save_department", None, name.strip())
 
@@ -869,7 +1118,8 @@ class DepartmentsPage(Page):
         if not d:
             QMessageBox.information(self, "Add section", "Select the department the section belongs to first.")
             return
-        name, ok = QInputDialog.getText(self, "Add section", f"New section of {d['name']} (e.g. Roto, Paint, Prep):")
+        name, ok = ask_text(self, "Add section", f"New section of {d['name']} (e.g. Roto, Paint, Prep):",
+                            ok="Add section")
         if ok and name.strip():
             self._call("Cannot add section", "admin_save_department", None, name.strip(), d["id"])
 
@@ -877,8 +1127,8 @@ class DepartmentsPage(Page):
         d = self.selected()
         if not d:
             return
-        name, ok = QInputDialog.getText(self, "Rename", "New name (everyone in it moves along, and so does "
-                                        "its chat room):", text=d["name"])
+        name, ok = ask_text(self, "Rename", "New name (everyone in it moves along, and so does its chat room):",
+                            d["name"], ok="Rename")
         if ok and name.strip() and name.strip() != d["name"]:
             self._call("Cannot rename", "admin_save_department", d["id"], name.strip())
 
@@ -889,10 +1139,9 @@ class DepartmentsPage(Page):
         what = "department" if d["parent_id"] is None else "section"
         extra = " and its sections" if what == "department" and any(
             x["parent_id"] == d["id"] for x in self.depts) else ""
-        room = " Its chat room stays as a normal room (delete it on the Rooms page if not needed)." \
+        room = "Its chat room stays as a normal room (delete it on the Rooms page if not needed)." \
             if d["has_room"] else ""
-        if QMessageBox.question(self, f"Delete {what}", f"Delete the {what} '{d['name']}'{extra}?{room}"
-                                ) == QMessageBox.Yes:
+        if confirm(self, f"Delete {what}", f"Delete the {what} ‘{d['name']}’{extra}?", "Delete", detail=room):
             self._call(f"Cannot delete {what}", "admin_delete_department", d["id"])
 
 
@@ -912,35 +1161,58 @@ class RoomDialog(QDialog):
         lay.addLayout(form)
         head = QHBoxLayout()
         head.addWidget(QLabel("Members"))
+        self.count = QLabel()
+        self.count.setStyleSheet(f"color: {T.META};")
+        head.addWidget(self.count)
         head.addStretch(1)
-        all_btn = btn("Select all")
-        all_btn.clicked.connect(lambda: self._check_all(Qt.Checked))
-        none_btn = btn("None")
-        none_btn.clicked.connect(lambda: self._check_all(Qt.Unchecked))
-        head.addWidget(all_btn)
-        head.addWidget(none_btn)
+        for text, state in (("Select all", Qt.Checked), ("Clear", Qt.Unchecked)):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            T.polish(b, chip=True)
+            b.clicked.connect(lambda _=False, s=state: self._check_all(s))
+            head.addWidget(b)
         lay.addLayout(head)
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("Filter by name or department")
+        self.filter.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.filter.setClearButtonEnabled(True)
+        self.filter.textChanged.connect(self._filter)
+        lay.addWidget(self.filter)
         self.list = QListWidget()
         members = set(room["members"]) if room else set()
-        for u in users:
-            if u["disabled"]:
-                continue
+        for u in sorted(users, key=lambda u: u["display_name"].lower()):
+            if u["disabled"] or (is_console_account(u) and u["id"] not in members):
+                continue                    # the console's own account is not a person to add
             dept = f"  ·  {u['department']}" if u["department"] else ""
             it = QListWidgetItem(f"{u['display_name']}{dept}")
             it.setData(Qt.UserRole, u["id"])
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if u["id"] in members else Qt.Unchecked)
             self.list.addItem(it)
+        self.list.itemChanged.connect(lambda _it: self._count())
         lay.addWidget(self.list, 1)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         T.polish(bb.button(QDialogButtonBox.Save), primary=True)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+        self._count()
+
+    def _count(self):
+        n = len(self.members())
+        self.count.setText(f"·  {n} selected")
+
+    def _filter(self, text):
+        q = text.strip().lower()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            it.setHidden(bool(q) and q not in it.text().lower())
 
     def _check_all(self, state):
+        """Select all / Clear: the people shown (after a filter, only those)."""
         for i in range(self.list.count()):
-            self.list.item(i).setCheckState(state)
+            if not self.list.item(i).isHidden():
+                self.list.item(i).setCheckState(state)
 
     def members(self):
         return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
@@ -949,9 +1221,9 @@ class RoomDialog(QDialog):
 
 class RoomsPage(Page):
     def __init__(self, win):
-        super().__init__("Chat rooms", "Group chats for teams and projects. Automatic rooms keep their members "
-                                       "in sync by themselves — choose them with Chat room on the Departments "
-                                       "page (and \"All Studio\" in Settings).")
+        super().__init__("Rooms", "Group chats for teams and projects. Automatic rooms keep their members "
+                                  "in step by themselves — turn them on with Chat room on the Departments page "
+                                  "(\"All Studio\" is in Settings).")
         self.win = win
         bar = QHBoxLayout()
         bar.addStretch(1)
@@ -959,16 +1231,16 @@ class RoomsPage(Page):
         add.clicked.connect(lambda: self.edit_room(None))
         bar.addWidget(add)
         self.lay.addLayout(bar)
-        self.table = make_table(["Room", "Type", "Keep shared files", "Topic", "Members"])
+        self.table = make_table(["Room", "Type", "Members", "Keep shared files", "Topic"])
         self.table.doubleClicked.connect(lambda: self.edit_room(self.selected()))
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
         e = btn("Edit", "edit")
         e.clicked.connect(lambda: self.edit_room(self.selected()))
-        k = btn("Keep files...", "clock")
+        k = btn("Keep files" + ELLIPSIS, "time")
         k.setToolTip("How long this room's shared files stay on the server")
         k.clicked.connect(lambda: self.keep_files(self.selected()))
-        d = btn("Delete", "trash", danger=True)
+        d = btn("Delete" + ELLIPSIS, "trash", danger=True)
         d.clicked.connect(self.delete_room)
         row.addWidget(e)
         row.addWidget(k)
@@ -976,6 +1248,7 @@ class RoomsPage(Page):
         row.addStretch(1)
         self.lay.addLayout(row)
         self.rooms = []
+        bind_selection(self.table, (e, k, d))
 
     def refresh(self):
         if not self.win.api.running:
@@ -987,13 +1260,15 @@ class RoomsPage(Page):
         for r, room in enumerate(self.rooms):
             self.table.setItem(r, 0, cell(room["name"], room["id"]))
             self.table.setItem(r, 1, cell("Automatic" if room["auto"] else "Manual",
-                                          color=T.ACCENT if room["auto"] else T.MUTED))
+                                          color=T.ACCENT if room["auto"] else T.META))
+            n = len(room["members"])
+            member_names = sorted((names.get(m, "?") for m in room["members"]), key=str.lower)
+            tip = "\n".join(member_names[:40]) + (f"\nand {n - 40} more" if n > 40 else "")
+            self.table.setItem(r, 2, cell(f"{n} {'person' if n == 1 else 'people'}", tip=tip or "Nobody yet"))
             days = room.get("file_retention_days")
-            self.table.setItem(r, 2, cell(keep_files_text(days, self.default_days),
-                                          color=T.MUTED if days is None else None))
-            self.table.setItem(r, 3, cell(room["topic"]))
-            member_names = ", ".join(sorted(names.get(m, "?") for m in room["members"]))
-            self.table.setItem(r, 4, cell(f"{len(room['members'])}  —  {member_names}"))
+            self.table.setItem(r, 3, cell(keep_files_text(days, self.default_days),
+                                          color=T.META if days is None else None))
+            self.table.setItem(r, 4, cell(room["topic"]))
 
     def selected(self):
         items = self.table.selectedItems()
@@ -1034,7 +1309,7 @@ class RoomsPage(Page):
         note = QLabel("Files shared in this room are deleted from the server after this time. The messages stay; "
                       "the file shows as expired. Direct chats and other rooms follow the server default.")
         note.setWordWrap(True)
-        note.setStyleSheet(f"color: {T.MUTED};")
+        note.setStyleSheet(f"color: {T.META};")
         lay.addWidget(note)
         choice = QComboBox()
         choice.addItem(keep_files_text(None, self.default_days), "default")
@@ -1051,6 +1326,7 @@ class RoomsPage(Page):
         lay.addWidget(choice)
         lay.addWidget(days)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        T.polish(bb.button(QDialogButtonBox.Save), primary=True)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
@@ -1070,8 +1346,8 @@ class RoomsPage(Page):
                                     "the Departments page first (\"All Studio\": in Settings). The room then "
                                     "becomes a normal room that you can delete here.")
             return
-        if room and QMessageBox.question(self, "Delete room",
-                                         safe_text(f"Delete room '{room['name']}'?")) == QMessageBox.Yes:
+        if room and confirm(self, "Delete room", f"Delete the room ‘{room['name']}’?", "Delete",
+                            detail="It disappears for everyone in it, with its messages."):
             self.win.api.call("admin_delete_room", room["id"])
             self.refresh()
 
@@ -1086,7 +1362,7 @@ class RoleDialog(QDialog):
     def __init__(self, parent, role=None):
         super().__init__(parent)
         self.setWindowTitle("Edit designation" if role else "New designation")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(500)
         form = QFormLayout(self)
         form.setSpacing(10)
         self.name = QLineEdit(role["name"] if role else "")
@@ -1104,12 +1380,15 @@ class RoleDialog(QDialog):
         self.see_all = QCheckBox("Can see everyone in the studio")
         self.see_all.setToolTip("If off, they only see their own department, their reporting line,\n"
                                 "people in their rooms and 'always visible' people")
-        self.always_visible = QCheckBox("Always visible to everyone (e.g. HR, IT, Management)")
+        self.always_visible = QCheckBox("Always visible to everyone (HR, IT" + ELLIPSIS + ")")
+        self.always_visible.setToolTip("For example HR, IT and Management: people who can't see everyone still "
+                                       "see them")
         for box, key, default in ((self.create_rooms, "create_rooms", True), (self.manage_users, "manage_users", False),
                                   (self.see_all, "see_all", True), (self.always_visible, "always_visible", False)):
             box.setChecked(bool(role[key]) if role else default)
         form.addRow("Designation", self.name)
-        form.addRow("Rank level", self.level)
+        add_row_with_hint(form, "Level", self.level, "Higher levels are listed first in the directory and the "
+                                                     "org chart")
         form.addRow("Announcements to", self.announce)
         form.addRow("", self.create_rooms)
         form.addRow("", self.manage_users)
@@ -1140,37 +1419,44 @@ class RolesPage(Page):
         bar.addWidget(add)
         self.lay.addLayout(bar)
         self.table = make_table(["Designation", "Level", "Announcements to", "Create rooms",
-                                 "Manage accounts", "Sees", "Always visible", "Users"])
+                                 "Manage accounts", "Sees", "Always visible", "People"])
+        align_columns(self.table, [1, 7])
+        numbers_last(self.table)
+        self.table.horizontalHeaderItem(5).setToolTip("Who they see in the app: everyone, or a limited list")
         self.table.doubleClicked.connect(lambda: self.edit(self.selected()))
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
         e = btn("Edit", "edit")
         e.clicked.connect(lambda: self.edit(self.selected()))
-        d = btn("Delete", "trash", danger=True)
+        d = btn("Delete" + ELLIPSIS, "trash", danger=True)
         d.clicked.connect(self.delete)
         row.addWidget(e)
         row.addWidget(d)
         row.addStretch(1)
         self.lay.addLayout(row)
         self.roles = []
+        bind_selection(self.table, (e, d))
 
     def refresh(self):
         if not self.win.api.running:
             return
         self.roles = self.win.api.call("admin_roles")
         labels = dict(ANNOUNCE_CHOICES)
-        yes = lambda v: cell("Yes" if v else "—", color=T.ACCENT if v else T.FAINT)  # noqa: E731
+        yes = lambda v: cell("Yes" if v else "No", color=T.ACCENT if v else T.FAINT)  # noqa: E731
+        limited = ("Their own department, their reporting line, people in their rooms\n"
+                   "and 'always visible' people")
         self.table.setRowCount(len(self.roles))
         for r, role in enumerate(self.roles):
             self.table.setItem(r, 0, cell(role["name"], role["id"]))
-            self.table.setItem(r, 1, cell(role["level"]))
+            self.table.setItem(r, 1, num(role["level"]))
             self.table.setItem(r, 2, cell(labels.get(role["announce"], role["announce"]).split(" (")[0],
-                                          color=T.ACCENT if role["announce"] != "none" else T.FAINT))
+                                          color=T.FAINT if role["announce"] == "none" else None))
             self.table.setItem(r, 3, yes(role["create_rooms"]))
             self.table.setItem(r, 4, yes(role["manage_users"]))
-            self.table.setItem(r, 5, cell("Everyone" if role["see_all"] else "Own department"))
+            self.table.setItem(r, 5, cell("Everyone", tip="Everyone in the studio") if role["see_all"] else
+                               cell("Limited", tip=limited))
             self.table.setItem(r, 6, yes(role["always_visible"]))
-            self.table.setItem(r, 7, cell(role["users"]))
+            self.table.setItem(r, 7, num(role["users"]))
 
     def selected(self):
         items = self.table.selectedItems()
@@ -1191,9 +1477,10 @@ class RolesPage(Page):
 
     def delete(self):
         role = self.selected()
-        if role and QMessageBox.question(
-                self, "Delete designation", f"Delete '{role['name']}'? {role['users']} user(s) will have no "
-                "designation until you pick a new one.") == QMessageBox.Yes:
+        n = role["users"] if role else 0
+        if role and confirm(self, "Delete designation", f"Delete the designation ‘{role['name']}’?", "Delete",
+                            detail=f"{n} {'person' if n == 1 else 'people'} will have no designation until you "
+                                   "pick a new one." if n else ""):
             self.win.api.call("admin_delete_role", role["id"])
             self.refresh()
 
@@ -1205,7 +1492,12 @@ class OrgPage(Page):
                                       "designation and 'Reports to' on the Users page.")
         from common import orgviews
         self.win = win
-        self.browser = orgviews.OrgBrowser(action_text="Edit", view="chart")
+        # inside the console, people without a manager are fixed on the Users page (not 'in the console')
+        hint = "set 'Reports to' on the Users page"
+        try:
+            self.browser = orgviews.OrgBrowser(action_text="Edit", view="chart", loner_hint=hint)
+        except TypeError:                       # an org chart without that option keeps its own words
+            self.browser = orgviews.OrgBrowser(action_text="Edit", view="chart")
         self.browser.open_person.connect(self.edit_user)
         self.browser.person_menu.connect(lambda uid, pos: self.edit_user(uid))
         self.lay.addWidget(self.browser, 1)
@@ -1230,16 +1522,18 @@ class OnlinePage(Page):
     LIVE = True
 
     def __init__(self, win):
-        super().__init__("Online now", "Connected client sessions. A user logged in on two PCs shows twice.")
+        super().__init__("Online now", "Connected client sessions. Someone signed in on two PCs shows twice.")
         self.win = win
         self.table = make_table(["User", "Username", "IP address", "Status", "Version", "Connected since"])
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
-        k = btn("Disconnect user", "power", danger=True)
+        k = btn("Disconnect" + ELLIPSIS, "power", danger=True)
+        k.setToolTip("Sign the selected person out on every PC")
         k.clicked.connect(self.kick)
         row.addWidget(k)
         row.addStretch(1)
         self.lay.addLayout(row)
+        bind_selection(self.table, (k,))
 
     def refresh(self):
         if not self.win.api.running:
@@ -1253,13 +1547,18 @@ class OnlinePage(Page):
             self.table.setItem(r, 2, cell(s["ip"]))
             self.table.setItem(r, 3, cell("● " + T.STATUS_LABELS[s["status"]],
                                           color=T.STATUS_COLORS[s["status"]]))
-            self.table.setItem(r, 4, cell(s.get("version") or "older", color=None if s.get("version") else T.MUTED))
+            self.table.setItem(r, 4, cell(version_text(s.get("version") or "older"),
+                                          color=None if s.get("version") else T.META))
             self.table.setItem(r, 5, cell(fmt_time(s["since"])))
 
     def kick(self):
         items = self.table.selectedItems()
-        if items:
-            uid = self.table.item(items[0].row(), 0).data(Qt.UserRole)
+        if not items:
+            return
+        first = self.table.item(items[0].row(), 0)
+        uid, name = first.data(Qt.UserRole), first.text()
+        if confirm(self, "Disconnect", f"Disconnect {name}?", "Disconnect",
+                   detail="Quillo signs them out on every PC now. They can sign in again."):
             self.win.api.call("admin_kick", uid)
             QTimer.singleShot(300, self.refresh)
 
@@ -1267,53 +1566,107 @@ class OnlinePage(Page):
 # ========================================================== announcements
 class AnnouncePage(Page):
     def __init__(self, win):
-        super().__init__("Announcement", "Send a message that pops up on every connected client "
-                                         "(offline users see it when they log in).")
+        super().__init__("Announcements", "Send a message that pops up on the chosen people's PCs and stays on top "
+                                          "until they acknowledge it (people who are offline see it when they sign "
+                                          "in).")
         self.win = win
         form = QFormLayout()
         form.setSpacing(10)
         self.title = QLineEdit()
         self.title.setPlaceholderText("e.g. Server maintenance tonight")
         self.dept = QComboBox()
+        self.dept.currentIndexChanged.connect(lambda _i: self._update_reach())
         form.addRow("Title", self.title)
-        form.addRow("Send to", self.dept)
+        self.reach = add_row_with_hint(form, "Send to", self.dept, "")
         self.lay.addLayout(form)
         self.body = QPlainTextEdit()
-        self.body.setPlaceholderText("Write the announcement...")
+        self.body.setPlaceholderText("Write the announcement" + ELLIPSIS)
         self.body.setMaximumHeight(140)
+        self.body.textChanged.connect(self._update_send)
         self.lay.addWidget(self.body)
         row = QHBoxLayout()
         row.addStretch(1)
-        send = btn("Send announcement", "megaphone", primary=True)
-        send.clicked.connect(self.send)
-        row.addWidget(send)
+        self.send_btn = btn("Send announcement", "megaphone", primary=True)
+        self.send_btn.clicked.connect(self.send)
+        row.addWidget(self.send_btn)
         self.lay.addLayout(row)
-        sent = QLabel("Sent announcements — double-click one to see who has read it")
+        sent_row = QHBoxLayout()
+        sent = QLabel("Sent announcements")
         T.polish(sent, muted=True)
-        self.lay.addWidget(sent)
+        sent_row.addWidget(sent, 1)
+        self.reads_btn = btn("Who has read it", "check_all")
+        self.reads_btn.clicked.connect(self.show_reads)
+        sent_row.addWidget(self.reads_btn)
+        self.lay.addLayout(sent_row)
         self.table = make_table(["When", "From", "Title", "To", "Read"])
+        align_columns(self.table, [4])
+        numbers_last(self.table)
         self.table.doubleClicked.connect(self.show_reads)
         self.lay.addWidget(self.table, 1)
         self.anns = []
+        self.people = []
+        bind_selection(self.table, (self.reads_btn,))
+        self._update_send()
+
+    def _update_send(self):
+        """Send works only with something to send (an empty body used to do nothing, silently)."""
+        has_text = bool(self.body.toPlainText().strip())
+        self.send_btn.setEnabled(has_text)
+        self.send_btn.setToolTip("" if has_text else "Write the announcement first")
+
+    def _recipients(self):
+        kind, dept, sect = self.dept.currentData() or ("all", "", "")
+        return [u for u in self.people if kind == "all" or (u["department"].lower() == dept.lower() and (
+            kind == "department" or u["section"].lower() == sect.lower()))]
+
+    def _update_reach(self):
+        n = len(self._recipients())
+        self.reach.setText(f"{n} {'person gets' if n == 1 else 'people get'} a pop-up they must acknowledge")
 
     def show_reads(self):
         items = self.table.selectedItems()
         if not items:
             return
-        ann = self.anns[items[0].row()]
+        ann_id = self.table.item(items[0].row(), 0).data(Qt.UserRole)
+        ann = next((a for a in self.anns if a["id"] == ann_id), None)
+        if not ann:
+            return
         reads = self.win.api.call("admin_announcement_reads", ann["id"])
         dlg = QDialog(self)
-        dlg.setWindowTitle("Read by")
+        dlg.setWindowTitle("Who has read it")
         dlg.setMinimumSize(420, 460)
         lay = QVBoxLayout(dlg)
-        n_read, n_all = len(reads["read"]), len(reads["read"]) + len(reads["unread"])
-        lay.addWidget(QLabel(f"<b>{ann['title']}</b><br><span style='color:{T.ACCENT}'>Read by {n_read} of {n_all}</span>"))
+        lay.setContentsMargins(20, 18, 20, 14)
+        lay.setSpacing(8)
+        head = QLabel(ann["title"])
+        head.setTextFormat(Qt.PlainText)
+        head.setWordWrap(True)
+        head.setStyleSheet(f"font-size: {T.pt(T.FONT_L)}; font-weight: 600;")
+        lay.addWidget(head)
+        n_read, n_unread = len(reads["read"]), len(reads["unread"])
+        done = n_read and not n_unread
+        summary = QLabel(f"Read by {n_read} of {n_read + n_unread}")
+        summary.setStyleSheet(f"color: {T.ACCENT if done else T.META};")
+        lay.addWidget(summary)
         lst = QListWidget()
-        for p in reads["read"]:
-            lst.addItem(QListWidgetItem(icon("check", T.ACCENT, 14), p["name"]))
-        for p in reads["unread"]:
-            lst.addItem(QListWidgetItem(icon("close", T.FAINT, 14), p["name"] + "   (not read yet)"))
+        for title, people, ic in ((f"Read ({n_read})", reads["read"], icon("check", T.ACCENT, 14)),
+                                  (f"Not read yet ({n_unread})", reads["unread"], QIcon())):
+            if not people:
+                continue
+            section = QListWidgetItem(title.upper())
+            section.setFlags(Qt.NoItemFlags)
+            section.setForeground(QColor(T.META))
+            font = section.font()
+            font.setPointSizeF(T.FONT_XS)
+            font.setBold(True)
+            section.setFont(font)
+            lst.addItem(section)
+            for p in people:
+                lst.addItem(QListWidgetItem(ic, p["name"]))
         lay.addWidget(lst, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
         dlg.exec()
 
     def refresh(self):
@@ -1325,13 +1678,17 @@ class AnnouncePage(Page):
             self.table.setItem(r, 0, cell(fmt_time(a["ts"]), a["id"]))
             self.table.setItem(r, 1, cell(a["sender_name"]))
             self.table.setItem(r, 2, cell(a["title"]))
-            self.table.setItem(r, 3, cell(a["target_label"]))
+            self.table.setItem(r, 3, cell("Everyone in the studio" if a.get("target_kind") == "all"
+                                          else a["target_label"]))
             done = a["read_count"] >= a["total"] and a["total"]
-            self.table.setItem(r, 4, cell(f"{a['read_count']} / {a['total']}", color=T.ACCENT if done else None))
+            self.table.setItem(r, 4, cell(f"{a['read_count']} / {a['total']}", color=T.ACCENT if done else None,
+                                          align=NUM))
         current = self.dept.currentData()
+        self.dept.blockSignals(True)
         self.dept.clear()
-        self.dept.addItem("Everyone", ("all", "", ""))
-        users = [u for u in self.win.api.call("admin_users") if not u["disabled"]]
+        self.dept.addItem("Everyone in the studio", ("all", "", ""))
+        users = self.people = [u for u in self.win.api.call("admin_users") if not u["disabled"]
+                               and not is_console_account(u) and u["username"] != "pipeline-bot"]
         depts = sorted({u["department"] for u in users if u["department"]}, key=str.lower)
         for d in depts:
             self.dept.addItem(f"Department: {d}", ("department", d, ""))
@@ -1339,12 +1696,20 @@ class AnnouncePage(Page):
                 self.dept.addItem(f"      Section: {d} · {s}", ("section", d, s))
         idx = self.dept.findData(current)
         self.dept.setCurrentIndex(max(idx, 0))
+        self.dept.blockSignals(False)
+        self._update_reach()
 
     def send(self):
         if not self.body.toPlainText().strip():
             return
+        kind, dept, sect = self.dept.currentData() or ("all", "", "")
+        if kind == "all":
+            n = len(self._recipients())
+            if not confirm(self, "Send announcement", f"Send this to everyone in the studio ({n} people)?", "Send",
+                           danger=False, detail="It pops up on every PC and stays on top until it is "
+                                                "acknowledged. It can't be taken back."):
+                return
         try:
-            kind, dept, sect = self.dept.currentData()
             self.win.api.call("admin_announce", self.title.text(), self.body.toPlainText(), kind, dept, sect)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Not sent", str(e))
@@ -1358,7 +1723,8 @@ class AnnouncePage(Page):
 # ================================================================ reports
 class ReportsPage(Page):
     def __init__(self, win):
-        super().__init__("Reports", "Who is using the messenger and how much — per department, person and room.")
+        super().__init__("Reports", "Who is using the messenger and how much — per department, person and room.",
+                         scroll=True)
         self.win = win
         from PySide6.QtWidgets import QTabWidget
         bar = QHBoxLayout()
@@ -1369,7 +1735,8 @@ class ReportsPage(Page):
         self.period.currentIndexChanged.connect(lambda _: self.refresh(force=True))
         bar.addWidget(self.period)
         bar.addStretch(1)
-        exp = btn("Export CSV", "upload")
+        exp = btn("Export CSV", "download")
+        exp.setToolTip("Save the table on the open tab as a CSV file (Excel opens it)")
         exp.clicked.connect(self.export)
         bar.addWidget(exp)
         self.lay.addLayout(bar)
@@ -1383,11 +1750,17 @@ class ReportsPage(Page):
         self.t_people = make_table(["Person", "Department", "Section", "Messages", "Files", "Uploaded",
                                     "Stored now", "Last seen"])
         self.t_rooms = make_table(["Room", "Messages"])
+        for t in (self.t_depts, self.t_rooms):
+            numbers_last(t)
+        align_columns(self.t_depts, [1, 2, 3, 4, 5])
+        align_columns(self.t_people, [3, 4, 5, 6])
+        align_columns(self.t_rooms, [1])
         self.tabs.addTab(self.t_depts, "Departments")
         self.tabs.addTab(self.t_people, "People")
         self.tabs.addTab(self.t_rooms, "Busiest rooms")
         self.t_idle = make_table(["Person", "Department", "Last signed in"])
         self.tabs.addTab(self.t_idle, "Not seen in 30 days")
+        self.tabs.setMinimumHeight(300)                 # the page scrolls on a short screen, not the tables
         self.lay.addWidget(self.tabs, 1)
         self.data = None
         self._loaded_for = None
@@ -1405,12 +1778,12 @@ class ReportsPage(Page):
             f"<b style='font-size:12pt'>{r['total_files']:,}</b> files ({human_size(r['total_uploaded'])}) &nbsp;·&nbsp; "
             f"<b style='font-size:12pt'>{r['active_users']}</b> of {r['users']} people active "
             f"<span style='color:{T.MUTED}'>in the last {r['days']} days</span>")
-        self.chart.set_data(r["daily"])
+        self.chart.set_data(self.every_day(r["daily"], r["days"]))
         self._fill(self.t_depts, [[d["department"], d["users"], d["active"], d["messages"], d["files"],
-                                   human_size(d["uploaded"])] for d in r["departments"]])
+                                   size_cell(d["uploaded"])] for d in r["departments"]])
         self._fill(self.t_people, [[p["name"] + ("  (disabled)" if p["disabled"] else ""), p["department"],
-                                    p["section"], p["messages"], p["files"], human_size(p["uploaded"]),
-                                    human_size(p["stored"]), fmt_time(p["last_seen"])] for p in r["people"]])
+                                    p["section"], p["messages"], p["files"], size_cell(p["uploaded"]),
+                                    size_cell(p["stored"]), fmt_time(p["last_seen"])] for p in r["people"]])
         self._fill(self.t_rooms, [[x["room"], x["messages"]] for x in r["rooms"]])
         idle = r.get("inactive", [])
         self._fill(self.t_idle, [[p["name"], p["department"], fmt_time(p["last_seen"])] for p in idle])
@@ -1418,11 +1791,30 @@ class ReportsPage(Page):
                              f"Not seen in 30 days ({len(idle)})" if idle else "Not seen in 30 days")
 
     @staticmethod
+    def every_day(daily, days, today=None):
+        """One entry per day of the period, 0 for the quiet days: the chart shows the whole period, not just
+        the days that had messages."""
+        counts = {d["day"]: d["messages"] for d in daily}
+        today = today or datetime.date.today()
+        start = today - datetime.timedelta(days=max(1, int(days)) - 1)
+        for day in counts:
+            try:
+                start = min(start, datetime.date.fromisoformat(day))
+            except ValueError:
+                pass
+        out, day = [], start
+        while day <= today:
+            out.append({"day": day.isoformat(), "messages": counts.get(day.isoformat(), 0)})
+            day += datetime.timedelta(days=1)
+        return out
+
+    @staticmethod
     def _fill(table, rows):
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             for j, v in enumerate(row):
-                table.setItem(i, j, cell(v))
+                table.setItem(i, j, v if isinstance(v, QTableWidgetItem) else
+                              num(v) if isinstance(v, (int, float)) else cell(v))
 
     def export(self):
         if not self.data:
@@ -1455,13 +1847,13 @@ class _DailyChart(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        if not self.data:
-            p.setPen(QColor(T.FAINT))
+        if not any(d["messages"] for d in self.data):
+            p.setPen(QColor(T.META))
             p.drawText(self.rect(), Qt.AlignCenter, "No messages in this period")
             return
-        top = max(d["messages"] for d in self.data) or 1
+        top = max(d["messages"] for d in self.data)
         n = len(self.data)
-        head, foot = 22, 20                              # room for "max ... / day" and the dates
+        head, foot = 22, 20                              # room for "Busiest day ..." and the dates
         bw = min(34.0, max(2.0, (w - 20) / n))           # a few days: slim bars, not one wall of colour
         left = 10 + ((w - 20) - bw * n) / 2
         base = h - foot
@@ -1472,22 +1864,28 @@ class _DailyChart(QWidget):
         for i, d in enumerate(self.data):
             bh = (base - head) * d["messages"] / top
             if bh:
-                p.drawRoundedRect(int(left + i * bw + 1), int(base - bh), max(1, int(bw - 3)), int(bh), 3, 3)
-        p.setPen(QColor(T.FAINT))
-        p.drawText(10, 12, f"busiest day: {top} message{'s' if top != 1 else ''}")
-        p.drawText(int(left), h - 3, self.data[0]["day"])
+                p.drawRoundedRect(int(left + i * bw + 1), int(base - bh), max(1, int(bw - 3)), max(1, int(bh)), 3, 3)
+        day = lambda d: datetime.date.fromisoformat(d["day"])          # noqa: E731
+        busiest = max(self.data, key=lambda d: d["messages"])
+        p.setPen(QColor(T.META))
+        p.drawText(10, 12, f"Busiest day: {fmt_date(day(busiest), weekday=False)}{SEP}"
+                           f"{top:,} message{'s' if top != 1 else ''}")
+        # the dates sit under the first and the last bar
+        p.drawText(QRectF(left, h - 16, 160, 14), Qt.AlignLeft, fmt_date(day(self.data[0]), weekday=False))
         if n > 1:
-            p.drawText(QRectF(w - 170, h - 16, 160, 14), Qt.AlignRight, self.data[-1]["day"])
+            right = left + n * bw
+            p.drawText(QRectF(right - 160, h - 16, 160, 14), Qt.AlignRight,
+                       fmt_date(day(self.data[-1]), weekday=False))
 
 
-# ================================================================ updates
+# ================================================================ holidays
 class HolidaysPage(Page):
     """The studio holiday list: tick the days the studio is closed; add, change, import, more years."""
 
     def __init__(self, win):
         super().__init__("Holidays", "Ticked days are holidays on everyone's calendar. India's public and festival "
-                                     "holidays are listed up to 2035 - tick the ones your studio keeps. Festival "
-                                     "dates follow the lunar calendar: the ones marked 'check the date' may be a "
+                                     "holidays are listed up to 2035 — tick the ones your studio keeps. Festival "
+                                     "dates follow the lunar calendar: the ones marked 'Check the date' may be a "
                                      "day off from your almanac. HR can also change this list in the app.")
         self.win = win
         bar = QHBoxLayout()
@@ -1498,20 +1896,22 @@ class HolidaysPage(Page):
         self.year.valueChanged.connect(self.refresh)
         bar.addWidget(self.year)
         bar.addStretch(1)
-        for text, ic, fn in (("Add a day", "plus", lambda: self.edit(None)), ("Import .ics", "upload", self.import_ics),
-                             ("Add India's list for a year", "dashboard", self.add_year)):
-            b = btn(text, ic, primary=text == "Add a day")
+        # the same buttons, in the same order, as the Holidays dialog in the app
+        for text, ic, fn, primary in (("Add a day", "plus", lambda: self.edit(None), True),
+                                      ("Import .ics" + ELLIPSIS, "upload", self.import_ics, False),
+                                      ("Add India's list" + ELLIPSIS, "calendar", self.add_year, False)):
+            b = btn(text, ic, primary=primary)
             b.clicked.connect(fn)
             bar.addWidget(b)
         self.lay.addLayout(bar)
-        self.table = make_table(["Studio closed", "Date", "Holiday", "Kind"])
+        self.table = make_table(["Studio closed", "Date", "Holiday", "Kind", "Note"])
         self.table.itemChanged.connect(self._ticked)
         self.table.doubleClicked.connect(lambda: self.edit(self.selected()))
         self.lay.addWidget(self.table, 1)
         row = QHBoxLayout()
-        e = btn("Change...", "edit")
+        e = btn("Edit", "edit")
         e.clicked.connect(lambda: self.edit(self.selected()))
-        d = btn("Delete", "trash", danger=True)
+        d = btn("Delete" + ELLIPSIS, "trash", danger=True)
         d.clicked.connect(self.delete)
         row.addWidget(e)
         row.addWidget(d)
@@ -1519,12 +1919,14 @@ class HolidaysPage(Page):
         self.lay.addLayout(row)
         self.rows = []
         self._loading = False
+        bind_selection(self.table, (e, d))
 
     def refresh(self, *_):
         if not self.win.api.running:
             return
         self.rows = self.win.api.call("admin_holidays", self.year.value())
         self._loading = True
+        note_color = T.readable_on(T.WARN_TEXT, T.PANEL)
         self.table.setRowCount(len(self.rows))
         for r, h in enumerate(self.rows):
             tick = QTableWidgetItem("")
@@ -1533,11 +1935,14 @@ class HolidaysPage(Page):
             tick.setData(Qt.UserRole, h["id"])
             self.table.setItem(r, 0, tick)
             day = datetime.date.fromisoformat(h["day"])
-            self.table.setItem(r, 1, cell(f"{day:%a %d %b %Y}"))
-            self.table.setItem(r, 2, cell(h["name"] + ("   · check the date" if h["confirm"] else ""),
-                                          color=T.WARN_TEXT if h["confirm"] and not T.DARK else None))
+            self.table.setItem(r, 1, cell(fmt_date(day, year=False)))       # the year is in the Year box
+            self.table.setItem(r, 2, cell(h["name"]))
             self.table.setItem(r, 3, cell({"national": "National", "festival": "Festival", "studio": "Studio",
-                                           "other": "Public"}.get(h["kind"], h["kind"]), color=T.MUTED))
+                                           "other": "Public"}.get(h["kind"], h["kind"]), color=T.META))
+            self.table.setItem(r, 4, cell("Check the date" if h["confirm"] else "", color=note_color,
+                                          tip="A festival on the lunar calendar: it may be a day off from your "
+                                              "almanac" if h["confirm"] else ""))
+        hide_empty_columns(self.table, [4])
         self._loading = False
 
     def selected(self):
@@ -1553,18 +1958,19 @@ class HolidaysPage(Page):
         from PySide6.QtCore import QDate
         from PySide6.QtWidgets import QDateEdit
         dlg = QDialog(self)
-        dlg.setWindowTitle("Change holiday" if h else "Add a holiday")
+        dlg.setWindowTitle("Edit holiday" if h else "Add a holiday")
         form = QFormLayout(dlg)
         day = QDateEdit()
         d = datetime.date.fromisoformat(h["day"]) if h else datetime.date(self.year.value(), 1, 1)
         day.setDate(QDate(d.year, d.month, d.day))
         day.setCalendarPopup(True)
-        day.setDisplayFormat("ddd dd MMM yyyy")
+        day.setDisplayFormat("ddd d MMM yyyy")
         name = QLineEdit(h["name"] if h else "")
         name.setPlaceholderText("e.g. Studio anniversary")
         form.addRow("Date", day)
         form.addRow("Name", name)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        T.polish(bb.button(QDialogButtonBox.Save), primary=True)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         form.addRow(bb)
@@ -1580,7 +1986,8 @@ class HolidaysPage(Page):
 
     def delete(self):
         h = self.selected()
-        if h and QMessageBox.question(self, "Delete", safe_text(f"Delete {h['name']} ({h['day']})?")) == QMessageBox.Yes:
+        if h and confirm(self, "Delete holiday", f"Delete {h['name']} "
+                         f"({fmt_date(datetime.date.fromisoformat(h['day']), year=True)})?", "Delete"):
             self.win.api.call("admin_holiday_delete", h["id"])
             self.refresh()
 
@@ -1613,25 +2020,31 @@ class StoragePage(Page):
     def __init__(self, win):
         super().__init__("Storage", "Shared files kept on the server. Old files are deleted automatically "
                                     "(Settings > Files); a room can keep its files longer or shorter (Rooms > "
-                                    "Keep files). The messages stay - the file shows as expired.")
+                                    "Keep files). The messages stay — the file shows as expired.", scroll=True)
         self.win = win
         grid = QGridLayout()
         grid.setSpacing(16)
         self.cards = {}
-        for i, (key, title, ic) in enumerate((("used", "Storage used", "folder"), ("files", "Files stored", "file"),
+        for i, (key, title, ic) in enumerate((("used", "Storage used", "hdd"), ("files", "Files stored", "file"),
                                               ("free", "Free on the disk", "server"),
-                                              ("oldest", "Oldest file", "clock"))):
+                                              ("oldest", "Oldest file", "time"))):
             self.cards[key] = StatCard(title, ic)
             grid.addWidget(self.cards[key], 0, i)
         self.lay.addLayout(grid)
         self.policy = QLabel()
         self.policy.setWordWrap(True)
-        self.policy.setStyleSheet(f"color: {T.MUTED};")
+        self.policy.setStyleSheet(f"color: {T.META};")
         self.lay.addWidget(self.policy)
         tabs = QTabWidget()
+        tabs.setMinimumHeight(320)                       # the page scrolls on a short screen, not the tables
         self.by_user = make_table(["Person", "Files", "Size"])
         self.by_room = make_table(["Chat", "Keep files", "Files", "Size"])
         self.largest = make_table(["File", "Size", "Sent by", "Where", "Date", "Downloads"])
+        align_columns(self.by_user, [1, 2])
+        for t in (self.by_user, self.by_room, self.largest):
+            numbers_last(t)
+        align_columns(self.by_room, [2, 3])
+        align_columns(self.largest, [1, 5])
         for table, title in ((self.by_user, "By person"), (self.by_room, "By chat"),
                              (self.largest, "Largest files")):
             tabs.addTab(table, title)
@@ -1642,8 +2055,10 @@ class StoragePage(Page):
         self.days.setRange(1, 3650)
         self.days.setValue(30)
         self.days.setSuffix(" days")
+        self.days_touched = False                        # the admin's own number is kept from then on
+        self.days.valueChanged.connect(lambda _v: setattr(self, "days_touched", True))
         row.addWidget(self.days)
-        clean = btn("Clean up now", "trash", danger=True)
+        clean = btn("Clean up now" + ELLIPSIS, "trash", danger=True)
         clean.clicked.connect(self.clean_up)
         row.addWidget(clean)
         row.addStretch(1)
@@ -1659,37 +2074,49 @@ class StoragePage(Page):
         self.cards["free"].value.setText(f"{human_size(disk['free'])}" if disk else "-")
         self.cards["free"].setToolTip(f"of {human_size(disk['total'])} on the disk with {s['storage_dir']}"
                                       if disk else s["storage_dir"])
-        self.cards["oldest"].value.setText(
-            datetime.datetime.fromtimestamp(s["oldest"]).strftime("%d %b") if s.get("oldest") else "-")
+        self.cards["oldest"].value.setText(fmt_date(s["oldest"], weekday=False) if s.get("oldest") else "–")
         default = s["default_days"]
-        text = (f"Files are deleted automatically after {default:g} days" if default else
-                "Files are kept until you delete them (no automatic clean-up)")
+        text = (f"Files are deleted automatically after {default:g} day{'s' if default != 1 else ''}" if default
+                else "Files are kept until you delete them (no automatic clean-up)")
         if s.get("unclaimed_days"):
             text += f"; files nobody downloaded after {s['unclaimed_days']:g} days"
         self.policy.setText(text + ".")
-        self._fill(self.by_user, [(u["name"] or u["username"], f"{u['files']:,}", human_size(u["bytes"]))
+        if default and not self.days_touched:           # the clean-up starts from the rule that applies
+            self.days.blockSignals(True)
+            self.days.setValue(max(1, int(round(default))))
+            self.days.blockSignals(False)
+        self._fill(self.by_user, [(u["name"] or u["username"], num(u["files"]), size_cell(u["bytes"]))
                                   for u in s["by_user"]])
         rows = [(r["name"], keep_files_text(r["retention"], default), r["files"], r["bytes"]) for r in s["by_room"]]
         if s["direct"]["files"]:
             rows.append(("Direct chats", keep_files_text(None, default), s["direct"]["files"], s["direct"]["bytes"]))
         rows.sort(key=lambda r: -r[3])
-        self._fill(self.by_room, [(n, k, f"{f:,}", human_size(b)) for n, k, f, b in rows])
-        self._fill(self.largest, [(f["name"], human_size(f["size"]), f["sender"] or "?", f["room"] or "Direct chat",
-                                   fmt_time(f["created_at"]), f["downloads"]) for f in s["largest"]])
+        self._fill(self.by_room, [(n, k, num(f), size_cell(b)) for n, k, f, b in rows])
+        self._fill(self.largest, [(f["name"], size_cell(f["size"]), f["sender"] or "?", f["room"] or "Direct chat",
+                                   fmt_time(f["created_at"]), num(f["downloads"])) for f in s["largest"]])
 
     @staticmethod
     def _fill(table, rows):
         table.setRowCount(len(rows))
         for r, values in enumerate(rows):
             for c, v in enumerate(values):
-                table.setItem(r, c, cell(v))
+                table.setItem(r, c, v if isinstance(v, QTableWidgetItem) else cell(v))
 
     def clean_up(self):
         days = self.days.value()
-        if QMessageBox.question(self, "Clean up files",
-                                f"Delete every shared file older than {days} days from the server now?\n\n"
-                                "The messages stay; the files show as expired and can't be downloaded any "
-                                "more. This cannot be undone.") != QMessageBox.Yes:
+        try:                                    # how many would go, for the question (older servers can't say)
+            preview = self.win.api.call("admin_cleanup_files", days, dry_run=True)
+        except Exception:  # noqa: BLE001
+            preview = None
+        if preview is not None and not preview.get("removed"):
+            QMessageBox.information(self, "Clean up files", f"No shared file is older than {days} days. "
+                                                            "Nothing to delete.")
+            return
+        what = (f"{preview['removed']:,} shared file{'s' if preview['removed'] != 1 else ''} "
+                f"({human_size(preview['bytes'])})" if preview else "every shared file")
+        if not confirm(self, "Clean up files", f"Delete {what} older than {days} days from the server now?",
+                       "Delete files", detail="The messages stay; the files show as expired and can't be "
+                                              "downloaded any more. This cannot be undone."):
             return
         try:
             r = self.win.api.call("admin_cleanup_files", days)
@@ -1701,13 +2128,14 @@ class StoragePage(Page):
         self.refresh()
 
 
+# ================================================================ updates
 class UpdatesPage(Page):
     def __init__(self, win):
         super().__init__("Updates", "Publish a new Quillo version to every PC: choose the "
                                     "Quillo-Client-Setup-x.y.z.exe. Signed-in PCs are told straight away and "
                                     "install it with one click (PCs installed \"just for me\" need no "
                                     "administrator; others ask for one). For silent roll-outs use your "
-                                    "deployment tool.")
+                                    "deployment tool.", scroll=True)
         self.win = win
         self.info = QLabel()
         self.info.setWordWrap(True)
@@ -1715,20 +2143,22 @@ class UpdatesPage(Page):
         self.info.setStyleSheet(f"background: {T.PANEL}; border-radius: 12px; padding: 16px;")
         self.lay.addWidget(self.info)
         row = QHBoxLayout()
-        self.publish_btn = btn("Publish client update...", "upload", primary=True)
+        self.publish_btn = btn("Publish client update" + ELLIPSIS, "upload", primary=True)
         self.publish_btn.clicked.connect(self.publish)
         row.addWidget(self.publish_btn)
         self.open_btn = btn("Open updates folder", "folder")
         self.open_btn.clicked.connect(self.open_folder)
         row.addWidget(self.open_btn)
         row.addStretch(1)
-        self.server_btn = btn("Update this server...", "server")
+        self.server_btn = btn("Update this server" + ELLIPSIS, "server")
         self.server_btn.setToolTip("Run a new Quillo-Server-Setup on this PC (chats, files and settings are kept)")
         self.server_btn.clicked.connect(self.update_server)
         row.addWidget(self.server_btn)
         self.lay.addLayout(row)
         self.versions = make_table(["Version", "PCs signed in now"])
-        self.versions.setMaximumHeight(170)
+        align_columns(self.versions, [1])
+        numbers_last(self.versions)
+        self.versions.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # sized to its rows (see refresh)
         self.lay.addWidget(self.versions)
         people_row = QHBoxLayout()
         self.people_label = QLabel()
@@ -1738,12 +2168,11 @@ class UpdatesPage(Page):
         self.only_old.toggled.connect(lambda _on: self.refresh())
         people_row.addWidget(self.only_old)
         self.remind_btn = btn("Remind them", "bell", primary=True)
-        self.remind_btn.setToolTip("Shows the update bar again on every signed-in PC that is still on an older "
-                                   "Quillo")
         self.remind_btn.clicked.connect(self.remind)
         people_row.addWidget(self.remind_btn)
         self.lay.addLayout(people_row)
-        self.people = make_table(["Person", "Department", "Quillo", "PC", "Last signed in", ""])
+        self.people = make_table(["Person", "Department", "Quillo", "PC", "Last signed in", "Status"])
+        self.people.setMinimumHeight(300)                # the page scrolls on a short screen, not this table
         self.lay.addWidget(self.people, 1)
         self.folder = ""
 
@@ -1756,47 +2185,68 @@ class UpdatesPage(Page):
         latest = u["latest"]
         offer = (f"<span style='color:{T.ACCENT}'>Offering version <b>{latest['version']}</b></span> "
                  f"({latest['name']}, {human_size(latest['size'])})" if latest else
-                 f"<span style='color:{T.MUTED}'>No client update in the folder.</span>")
+                 f"<span style='color:{T.META}'>No client update in the folder.</span>")
         self.info.setText(f"Updates folder (on the server PC):<br><b>{self.folder}</b><br><br>{offer}<br>"
-                          f"<span style='color:{T.MUTED}'>This server and console are version {APP_VERSION}.</span>")
-        local = not self.win.api.remote or getattr(self.win.api, "host", "").lower() in (
-            "127.0.0.1", "localhost", "::1", socket.gethostname().lower())      # files live on the server PC
+                          f"<span style='color:{T.META}'>This server and console are version {APP_VERSION}.</span>")
+        local = on_server_pc(self.win.api)             # the files live on the server PC
         for b in (self.open_btn, self.publish_btn, self.server_btn):
             b.setEnabled(local)
-            b.setToolTip("" if local else "Only on the server PC itself")
-        rows = sorted(u.get("versions", {}).items(), key=lambda kv: kv[0], reverse=True)
-        self.versions.setRowCount(len(rows))
+        self.open_btn.setToolTip("" if local else "Only on the server PC itself")
+        self.publish_btn.setToolTip("" if local else "Only on the server PC itself")
+        self.server_btn.setToolTip("Run a new Quillo-Server-Setup on this PC (chats, files and settings are kept)"
+                                   if local else "Only on the server PC itself")
+        # 'behind' is measured against the newest Quillo there is: the offered update, or else this server
         newest = latest["version"] if latest else APP_VERSION
-        for r, (ver, count) in enumerate(rows):
-            behind = ver != newest
-            self.versions.setItem(r, 0, cell(ver + ("  (update available)" if behind and latest else ""),
-                                             color=T.DANGER if behind and latest else None))
-            self.versions.setItem(r, 1, cell(count))
-        # everyone, with the Quillo they last signed in with
         key = lambda v: tuple(int(x) for x in v.split(".")) if v and v.replace(".", "").isdigit() else ()  # noqa: E731
+        behind = lambda v: bool(v) and key(v) < key(newest)                                             # noqa: E731
+        rows = sorted(u.get("versions", {}).items(), key=lambda kv: key(kv[0]), reverse=True)
+        self.versions.setRowCount(len(rows))
+        for r, (ver, count) in enumerate(rows):
+            old = behind(ver)
+            self.versions.setItem(r, 0, cell(version_text(ver) + ("  (update available)" if old and latest else ""),
+                                             color=T.DANGER if old and latest else T.META if old else None))
+            self.versions.setItem(r, 1, num(count))
+        self.versions.setVisible(bool(rows))
+        header = self.versions.horizontalHeader().sizeHint().height()
+        self.versions.setFixedHeight(header + len(rows) * self.versions.verticalHeader().defaultSectionSize() + 16)
+        # everyone, with the Quillo they last signed in with
         people = u.get("people", [])
-        known = [p for p in people if p["version"]]        # the others have not signed in since this console
-        old = [p for p in known if latest and key(p["version"]) < key(newest)]
-        current = [p for p in known if key(p["version"]) >= key(newest)]
-        self.people_label.setText(
-            f"<b style='font-size:11pt'>{len(current)}</b> of {len(people)} people are on {newest}"
-            + (f" &nbsp;·&nbsp; <span style='color:{T.DANGER}'><b>{len(old)}</b> still need the update</span>"
-               if old else ""))
-        self.remind_btn.setEnabled(bool(latest) and any(p["online"] for p in old))
+        old = [p for p in people if behind(p["version"])]
+        current = [p for p in people if p["version"] and not behind(p["version"])]
+        unknown = len(people) - len(old) - len(current)
+        text = (f"<b style='font-size:11pt'>{len(current)}</b> of {len(people)} "
+                f"{'person' if len(people) == 1 else 'people'} {'is' if len(current) == 1 else 'are'} on {newest}")
+        if old and latest:
+            text += f" &nbsp;·&nbsp; <span style='color:{T.DANGER}'><b>{len(old)}</b> still need the update</span>"
+        elif old:
+            text += f" &nbsp;·&nbsp; <span style='color:{T.META}'>{len(old)} on an older version</span>"
+        if unknown:
+            text += f" &nbsp;·&nbsp; <span style='color:{T.META}'>{unknown} not seen yet</span>"
+        self.people_label.setText(text)
+        can_remind = bool(latest) and any(p["online"] for p in old)
+        self.remind_btn.setEnabled(can_remind)
+        self.remind_btn.setToolTip(
+            "Shows the update bar again on every signed-in PC that is still on an older Quillo" if can_remind else
+            "Publish a client update first" if not latest else
+            "Nobody who needs the update is signed in right now")
         shown = old if self.only_old.isChecked() else people
-        shown = sorted(shown, key=lambda p: (key(p["version"]) >= key(newest), p["name"].lower()))
+        shown = sorted(shown, key=lambda p: (0 if behind(p["version"]) else 2 if p["version"] else 1,
+                                             p["name"].lower()))
         self.people.setRowCount(len(shown))
         for r, p in enumerate(shown):
             unknown = not p["version"]
-            behind = bool(latest) and not unknown and key(p["version"]) < key(newest)
-            label = {"": "not signed in yet", "older": "older than 1.6.2"}.get(p["version"], p["version"])
+            late = behind(p["version"])
             self.people.setItem(r, 0, cell(p["name"]))
             self.people.setItem(r, 1, cell(p["department"]))
-            self.people.setItem(r, 2, cell(label, color=T.FAINT if unknown else T.DANGER if behind else T.ACCENT))
+            self.people.setItem(r, 2, cell(version_text(p["version"]), color=T.FAINT if unknown else
+                                           T.DANGER if late and latest else T.META if late else None))
             self.people.setItem(r, 3, cell(p["pc"]))
-            self.people.setItem(r, 4, cell("online now" if p["online"] else fmt_time(p["seen"])))
-            self.people.setItem(r, 5, cell("—" if unknown else "needs the update" if behind else "✓ up to date",
-                                           color=T.FAINT if unknown else T.DANGER if behind else T.MUTED))
+            self.people.setItem(r, 4, cell("Online now" if p["online"] else fmt_time(p["seen"])))
+            status = ("—" if unknown else "Needs the update" if late and latest else
+                      "Older than this server" if late else "✓ Up to date")
+            self.people.setItem(r, 5, cell(status, color=T.FAINT if unknown else T.DANGER if late and latest
+                                           else T.META))
+        hide_empty_columns(self.people, [3])             # PC: only Quillo 1.9 and later say which PC
 
     def remind(self):
         try:
@@ -1828,7 +2278,7 @@ class UpdatesPage(Page):
             shutil.copy2(path, os.path.join(self.folder, name))
         except OSError as e:
             QMessageBox.warning(self, "Publish update", f"Could not copy the installer: {e}\n\nWith the "
-                                "background service the updates folder is for administrators only - start the "
+                                "background service the updates folder is for administrators only — start the "
                                 "console with 'Run as administrator', or copy the file there yourself.")
             return
         info = self.win.api.call("admin_check_updates")
@@ -1844,10 +2294,10 @@ class UpdatesPage(Page):
                                               "Quillo server setup (*Server-Setup-*.exe)")
         if not path:
             return
-        if QMessageBox.question(self, "Update this server",
-                                f"Run {os.path.basename(path)} now?\n\nThe server stops for a minute while it "
-                                "is updated; people are reconnected by themselves. Chats, files and settings "
-                                "are kept. This console closes.") != QMessageBox.Yes:
+        if not confirm(self, "Update this server", f"Run {os.path.basename(path)} now?", "Run the installer",
+                       danger=False, detail="The server stops for a minute while it is updated; people are "
+                                            "reconnected by themselves. Chats, files and settings are kept. "
+                                            "This console closes."):
             return
         try:
             subprocess.Popen([path], close_fds=True)
@@ -1884,6 +2334,7 @@ class SettingsPage(Page):
             lbl = QLabel(text.upper())
             lbl.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 700; letter-spacing: 1px;"
                               f" padding-top: 18px;")
+            lbl.setIndent(0)                    # a styled label gets an automatic indent: 3 px off the labels
             form.addRow(lbl)
 
         def spin(lo, hi, suffix="", special=None):
@@ -1911,9 +2362,16 @@ class SettingsPage(Page):
         storage_row.addWidget(self.storage, 1)
         storage_row.addWidget(self.browse_btn)
         self.max_mb = spin(1, 1024 * 1024, " MB")
+        self.max_mb_hint = QLabel()
+        self.max_mb_hint.setStyleSheet(f"color: {T.META};")
+        self.max_mb.valueChanged.connect(self._show_max_size)
+        max_row = QHBoxLayout()
+        max_row.addWidget(self.max_mb)
+        max_row.addWidget(self.max_mb_hint)
+        max_row.addStretch(1)
         self.retention = spin(0, 3650, " days", "Keep forever")
         form.addRow("File storage folder", storage_row)
-        form.addRow("Max file size", self.max_mb)
+        form.addRow("Max file size", max_row)
         form.addRow("Delete shared files after", self.retention)
         self.unclaimed = spin(0, 3650, " days", "Never")
         form.addRow("Delete files nobody downloaded after", self.unclaimed)
@@ -2042,7 +2500,7 @@ class SettingsPage(Page):
         key_row = QHBoxLayout()
         self.api_key = QLineEdit()
         self.api_key.setReadOnly(True)
-        self.api_key.setPlaceholderText("no key yet")
+        self.api_key.setPlaceholderText("No key yet")
         gen = btn("New key", "key")
         gen.clicked.connect(self._new_key)
         key_row.addWidget(self.api_key, 1)
@@ -2101,25 +2559,78 @@ class SettingsPage(Page):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        save = btn("Save settings", "check", primary=True)
-        save.clicked.connect(self.save)
-        row.addWidget(save)
+        self.unsaved = QLabel("Unsaved changes")
+        self.unsaved.setStyleSheet(f"color: {T.readable_on(T.WARN_TEXT, T.BG)}; font-weight: 600;")
+        row.addWidget(self.unsaved)
+        self.discard_btn = btn("Discard changes", "undo")
+        self.discard_btn.setToolTip("Show the saved settings again")
+        self.discard_btn.clicked.connect(lambda: self.refresh(force=True))
+        row.addWidget(self.discard_btn)
+        self.save_btn = btn("Save settings", "check", primary=True)
+        self.save_btn.clicked.connect(self.save)
+        row.addWidget(self.save_btn)
         self.lay.addLayout(row)
         self.cfg = {}
+        # typing in the form marks it changed; the once-a-minute refresh then leaves it alone
+        self._dirty = False
+        for w in body.findChildren(QLineEdit):
+            if w is not self.shot_test:
+                w.textChanged.connect(self._changed)
+        for w in body.findChildren(QSpinBox):
+            w.valueChanged.connect(self._changed)
+        for w in body.findChildren(QCheckBox):
+            w.toggled.connect(self._changed)
+        self._set_dirty(False)
 
-    def refresh(self):
+    def _changed(self, *_):
+        if not self._filling:
+            self._set_dirty(True)
+
+    _filling = False
+
+    def _set_dirty(self, on):
+        self._dirty = bool(on)
+        self.unsaved.setVisible(self._dirty)
+        self.discard_btn.setVisible(self._dirty)
+        self.save_btn.setText("Save changes" if self._dirty else "Save settings")
+
+    def _show_max_size(self, mb):
+        gb = f"{mb / 1024:.1f}".rstrip("0").rstrip(".")
+        self.max_mb_hint.setText(f"= {gb} GB" if mb >= 1024 else "")
+
+    @staticmethod
+    def _default_path(edit, path, off_text=""):
+        """An empty folder field says which folder is used (it looked disabled with just a dim path)."""
+        edit.setPlaceholderText(f"Default: {path}" if path else off_text)
+        edit.setToolTip(f"Empty = {path}" if path else "")
+
+    def refresh(self, force=False):
+        """Show the saved settings. While the admin has unsaved changes it does nothing (the console refreshes
+        every minute, which wiped a half-typed form) unless force=True (Discard changes, after Save)."""
+        self._sync_buttons()
+        if self._dirty and not force:
+            return
         try:
             cfg = self.cfg = self.win.api.config()
         except (ValueError, ConnectionError):
             return
+        self._filling = True
+        try:
+            self._fill(cfg)
+        finally:
+            self._filling = False
+        self._set_dirty(False)
+
+    def _fill(self, cfg):
         self.name.setText(cfg["server_name"])
         self.tcp.setValue(int(cfg["tcp_port"]))
         self.udp.setValue(int(cfg["discovery_port"]))
         self.storage.setText(cfg["storage_dir"])
-        self.storage.setPlaceholderText(cfg["_storage_dir"])
+        self._default_path(self.storage, cfg["_storage_dir"])
         self.log_dir.setText(cfg.get("log_dir", ""))
-        self.log_dir.setPlaceholderText(cfg.get("_log_dir", ""))
+        self._default_path(self.log_dir, cfg.get("_log_dir", ""))
         self.max_mb.setValue(int(cfg["max_file_mb"]))
+        self._show_max_size(self.max_mb.value())
         self.retention.setValue(int(cfg["file_retention_days"]))
         self.unclaimed.setValue(int(cfg.get("unclaimed_file_days", 0)))
         self.api_enabled.setChecked(bool(cfg.get("api_enabled")))
@@ -2135,25 +2646,26 @@ class SettingsPage(Page):
         self.pw_age.setValue(int(cfg["password_max_age_days"]))
         self.sc_enabled.setChecked(bool(cfg.get("safe_copy_enabled", True)))
         self.sc_dir.setText(cfg.get("safe_copy_dir", ""))
-        self.sc_dir.setPlaceholderText(cfg.get("_safe_copy_dir") or "Off - the shared files are in the data "
-                                                                    "folder; choose a folder on another disk or share")
+        self._default_path(self.sc_dir, cfg.get("_safe_copy_dir") or "",
+                           "Off — the shared files are in the data folder; choose a folder on another disk or share")
         self.sc_minutes.setValue(int(cfg.get("safe_copy_minutes", 5)))
         self.bk_enabled.setChecked(bool(cfg["backup_enabled"]))
         self.bk_dir.setText(cfg["backup_dir"])
-        self.bk_dir.setPlaceholderText(cfg["_backup_dir"])
+        self._default_path(self.bk_dir, cfg["_backup_dir"])
         self.bk_hour.setValue(int(cfg["backup_hour"]))
         self.bk_keep.setValue(int(cfg["backup_keep"]))
         self.buzz.setChecked(bool(cfg.get("buzz_enabled", True)))
         self.rename.setChecked(bool(cfg.get("allow_name_change", True)))
         self.cl_enabled.setChecked(bool(cfg.get("chat_log_enabled", True)))
         self.cl_dir.setText(cfg.get("chat_log_dir", ""))
-        self.cl_dir.setPlaceholderText(cfg.get("_chat_log_dir", ""))
+        self._default_path(self.cl_dir, cfg.get("_chat_log_dir", ""))
         self.msg_days.setValue(int(cfg.get("message_retention_days", 0)))
         self.trusted.setText(cfg.get("trusted_link_hosts", ""))
         self.shots.setText(cfg.get("shot_code_pattern", ""))
+
+    def _sync_buttons(self):
         # Browse shows THIS PC's folders: fine unless the console manages a server on another PC
-        remote = self.win.api.remote and getattr(self.win.api, "host", "").lower() not in (
-            "127.0.0.1", "localhost", "::1", socket.gethostname().lower())
+        remote = not on_server_pc(self.win.api)
         self.cl_browse.setEnabled(not remote)
         self.cl_now.setEnabled(self.win.api.running)
         self.browse_btn.setEnabled(not remote)       # folders are on the server PC
@@ -2163,8 +2675,8 @@ class SettingsPage(Page):
 
     def _new_key(self):
         import secrets
-        if self.api_key.text() and QMessageBox.question(
-                self, "New API key", "Replace the current key? Scripts using the old key will stop working.")                 != QMessageBox.Yes:
+        if self.api_key.text() and not confirm(self, "New API key", "Replace the current key?", "Replace key",
+                                               detail="Scripts using the old key stop working."):
             return
         self.api_key.setText(secrets.token_urlsafe(24))
         self._update_example()
@@ -2233,6 +2745,7 @@ class SettingsPage(Page):
             found = [f if isinstance(f, str) else f[0] for f in found]
             self.shot_result.setText(("Links: " + ", ".join(found)) if found else
                                      ("No shot name found" if self.shot_test.text() else ""))
+
     def save(self):
         cfg = self.cfg
         values = dict(
@@ -2275,13 +2788,15 @@ class SettingsPage(Page):
         except (ValueError, ConnectionError) as e:
             QMessageBox.warning(self, "Settings", str(e))
             return
+        self._set_dirty(False)
+        self.refresh(force=True)
         if restart and self.win.api.running and not self.win.api.remote and QMessageBox.question(
                 self, "Restart server", "Restart the server now to apply the changes? "
                 "Connected clients will reconnect automatically.") == QMessageBox.Yes:
             self.win.restart_server()
         elif restart and self.win.api.remote:
             QMessageBox.information(self, "Saved", "Settings saved. Restart the server service to apply the "
-                                    "port/storage changes.")
+                                    "port and storage changes.")
         else:
             QMessageBox.information(self, "Saved", "Settings saved.")
 
@@ -2293,9 +2808,14 @@ class AuditPage(Page):
         self.win = win
         bar = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Filter by person, action or detail, then press Enter...")
+        self.search.setPlaceholderText("Filter by person, action or detail")
+        self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.search.setClearButtonEnabled(True)
+        # the list follows the typing (after a short pause), no Enter needed
+        self._filter_timer = QTimer(self, singleShot=True, interval=300, timeout=self.refresh)
+        self.search.textChanged.connect(lambda _t: self._filter_timer.start())
         self.search.returnPressed.connect(self.refresh)
-        export = btn("Export CSV", "upload")
+        export = btn("Export CSV", "download")
         export.clicked.connect(self.export)
         bar.addWidget(self.search, 1)
         bar.addWidget(export)
@@ -2304,41 +2824,140 @@ class AuditPage(Page):
         self.lay.addWidget(self.table, 1)
         self.rows = []
 
+    @staticmethod
+    def sentence(text):
+        """'server console' -> 'Server console', 'user created' -> 'User created' (usernames stay as they are)."""
+        text = str(text or "")
+        return text[:1].upper() + text[1:] if " " in text else text
+
+    _RAW = re.compile(r"^[a-z_]+=")
+    _CHANGE = re.compile(r"^([a-z_]+): (.*) -> (.*)$")
+    _LABELS = {"display_name": "Name", "department": "Department", "section": "Section", "role_id": "Designation",
+               "manager_id": "Reports to", "title": "Job title", "is_admin": "Administrator",
+               "employee_id": "Employee ID", "birthday": "Birthday", "joined_on": "Joining date",
+               "can_broadcast": "Can send announcements", "username": "Username"}
+
+    def readable(self, e, lookup):
+        """Details written by older servers ('username=ananya, role_id=63, manager_id=11') in words, with names
+        instead of database ids. Newer servers write them this way already."""
+        details = str(e["details"] or "")
+        if e["action"] == "announcement sent" and details == "all":
+            return "Everyone in the studio"
+        if e["action"] == "user created" and self._RAW.match(details):
+            fields = dict(p.partition("=")[::2] for p in re.split(r", (?=[a-z_]+=)", details))
+            parts = [fields.get(k, "") for k in ("display_name", "department", "section")]
+            parts.append(lookup("role_id", fields.get("role_id")) if fields.get("role_id") else "")
+            if fields.get("manager_id"):
+                parts.append("reports to " + lookup("manager_id", fields["manager_id"]))
+            if fields.get("is_admin") not in (None, "", "0", "False"):
+                parts.append("administrator")
+            return SEP.join(p for p in parts if p)
+        if e["action"] == "user changed" and " -> " in details:
+            out = []
+            for piece in details.split("; "):
+                m = self._CHANGE.match(piece)
+                if not m:
+                    out.append(piece)
+                    continue
+                k, old, new = m.groups()
+                out.append(f"{self._LABELS.get(k, k)}: {lookup(k, old)} → {lookup(k, new)}")
+            return SEP.join(out)
+        return details
+
+    def _lookup(self):
+        """lookup(field, value): a stored value as a word ('63' as a role -> 'Compositor'); read once per refresh."""
+        cache = {}
+
+        def names(kind):
+            if kind not in cache:
+                try:
+                    if kind == "role_id":
+                        cache[kind] = {str(r["id"]): r["name"] for r in self.win.api.call("admin_roles")}
+                    else:
+                        cache[kind] = {str(u["id"]): u["display_name"] for u in self.win.api.call("admin_users")}
+                except (ValueError, ConnectionError, RuntimeError):
+                    cache[kind] = {}
+            return cache[kind]
+
+        def lookup(key, value):
+            value = str(value if value is not None else "").strip().strip("'\"")
+            if value in ("", "None"):
+                return "nobody" if key == "manager_id" else "none"
+            if key in ("role_id", "manager_id"):
+                return names(key).get(value, f"#{value}")
+            return value
+        return lookup
+
     def refresh(self):
         if not self.win.api.running:
             return
         self.rows = self.win.api.call("admin_audit", self.search.text().strip(), 2000)
+        lookup = self._lookup()
         self.table.setRowCount(len(self.rows))
         for r, e in enumerate(self.rows):
             danger = any(w in e["action"] for w in ("deleted", "disabled", "locked", "failed", "review"))
-            self.table.setItem(r, 0, cell(fmt_time(e["ts"])))
-            self.table.setItem(r, 1, cell(e["actor"]))
-            self.table.setItem(r, 2, cell(e["action"], color=T.DANGER if danger else None))
+            e["shown"] = self.readable(e, lookup)
+            self.table.setItem(r, 0, cell(fmt_time(e["ts"]), tip=iso_time(e["ts"])))
+            self.table.setItem(r, 1, cell(self.sentence(e["actor"])))
+            self.table.setItem(r, 2, cell(self.sentence(e["action"]), color=T.DANGER if danger else None))
             self.table.setItem(r, 3, cell(e["target"]))
-            self.table.setItem(r, 4, cell(e["details"]))
+            self.table.setItem(r, 4, cell(e["shown"], tip=e["shown"] if len(e["shown"]) > 30 else None))
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export audit log", "audit_log.csv", "CSV files (*.csv)")
         if path:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
-                w.writerow(["time", "who", "action", "target", "details"])
+                w.writerow(["When", "Who", "Action", "Target", "Details"])
                 for e in self.rows:
-                    w.writerow([fmt_time(e["ts"]), e["actor"], e["action"], e["target"], e["details"]])
+                    w.writerow([iso_time(e["ts"]), self.sentence(e["actor"]), self.sentence(e["action"]), e["target"],
+                                e.get("shown", e["details"])])
 
 
 class LogPage(Page):
     def __init__(self, win):
-        super().__init__("Server log")
+        remote = win.api.remote
+        super().__init__("Server log", "The last lines of the server's log file, read again when this page opens."
+                         if remote else "Live messages from the server since this console started. Older logs "
+                                        "are in the log folder.")
         self.win = win
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
         self.view.setMaximumBlockCount(5000)
         self.view.setFont(QFont("Consolas", 9))
+        self.view.setPlaceholderText("Nothing logged yet")
+        self.view.setObjectName("logview")
+        self.view.setStyleSheet(f"#logview {{ background: {T.PANEL}; border: none; border-radius: 18px;"
+                                f" padding: 10px 12px; }}")
         self.lay.addWidget(self.view, 1)
+        row = QHBoxLayout()
+        self.open_btn = btn("Open log folder", "folder")
+        self.open_btn.clicked.connect(self.open_folder)
+        copy = btn("Copy all", "copy")
+        copy.setToolTip("Copy every line shown here, e.g. to send it to IT")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.view.toPlainText()))
+        row.addWidget(self.open_btn)
+        row.addWidget(copy)
+        row.addStretch(1)
+        self.lay.addLayout(row)
+        local = on_server_pc(win.api)
+        self.open_btn.setEnabled(local)
+        self.open_btn.setToolTip("" if local else "Only on the server PC itself")
 
     def append(self, line):
         self.view.appendPlainText(line)
+
+    def log_folder(self):
+        cfg = self.win.api.config()
+        return cfg.get("log_dir") or cfg.get("_log_dir") or ""
+
+    def open_folder(self):
+        try:
+            folder = self.log_folder()
+            os.makedirs(folder, exist_ok=True)
+            os.startfile(folder)
+        except (OSError, ValueError, ConnectionError) as e:
+            QMessageBox.warning(self, "Log folder", f"Could not open the log folder: {e}")
 
     def refresh(self):
         if self.win.api.remote and self.win.api.running:     # remote server: fetch its log file
@@ -2397,7 +3016,7 @@ class ConsoleLoginDialog(QDialog):
     def try_connect(self):
         from server.console_api import RemoteApi
         api = RemoteApi(self.host.text().strip() or "127.0.0.1", self.port.value())
-        self.error.setText("Connecting...")
+        self.error.setText("Connecting" + ELLIPSIS)
         QApplication.processEvents()
         err = api.connect(self.user.text().strip(), self.pw.text())
         if err and api.pin_mismatch:
@@ -2408,9 +3027,9 @@ class ConsoleLoginDialog(QDialog):
             box.setText(f"The server at {api.label} is not the one this PC connected to before.")
             box.setInformativeText(
                 "This is expected ONLY if the messenger server was reinstalled or replaced.\n"
-                "Otherwise another computer may be pretending to be the server - don't connect.\n\n"
-                f"Remembered: {old_fp[:47]}...\nNow:        {new_fp[:47]}...")
-            trust = box.addButton("The server was replaced - trust it", QMessageBox.AcceptRole)
+                "Otherwise another computer may be pretending to be the server — don't connect.\n\n"
+                f"Remembered: {old_fp[:47]}{ELLIPSIS}\nNow:        {new_fp[:47]}{ELLIPSIS}")
+            trust = box.addButton("The server was replaced — trust it", QMessageBox.AcceptRole)
             box.addButton("Don't connect", QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() is not trust:
@@ -2509,13 +3128,13 @@ class ServerWindow(QMainWindow):
             ("Designations", "badge", RolesPage(self)),
             ("Org chart", "org", OrgPage(self)),
             ("Rooms", "hash", RoomsPage(self)),
-            ("Holidays", "clock", HolidaysPage(self)),
+            ("Holidays", "sun", HolidaysPage(self)),
             ("Online now", "signal", OnlinePage(self)),
-            ("Announcement", "megaphone", AnnouncePage(self)),
+            ("Announcements", "megaphone", AnnouncePage(self)),
             ("Reports", "chart", ReportsPage(self)),
             ("Audit log", "list", AuditPage(self)),
             ("Updates", "download", UpdatesPage(self)),
-            ("Storage", "folder", StoragePage(self)),
+            ("Storage", "hdd", StoragePage(self)),
             ("Settings", "settings", SettingsPage(self)),
             ("Server log", "file", self.log_page),
         ]
@@ -2534,7 +3153,7 @@ class ServerWindow(QMainWindow):
         nav_scroll.setWidget(nav_list)
         groups = [("Overview", ("Dashboard", "Online now", "Reports")),
                   ("People", ("Users", "Departments", "Designations", "Org chart")),
-                  ("Messaging", ("Rooms", "Announcement", "Holidays")),
+                  ("Messaging", ("Rooms", "Announcements", "Holidays")),
                   ("System", ("Settings", "Storage", "Updates", "Audit log", "Server log"))]
         index = {title: i for i, (title, _ic, _page) in enumerate(self.pages)}
         order = [t for _g, titles in groups for t in titles if t in index]
@@ -2712,8 +3331,8 @@ class ServerWindow(QMainWindow):
 
     def toggle_server(self):
         if self.core.running:
-            if QMessageBox.question(self, "Stop server", "Stop the server? All users will be "
-                                    "disconnected.") != QMessageBox.Yes:
+            if not confirm(self, "Stop server", "Stop the server?", "Stop server",
+                           detail="Everyone is disconnected until it is started again."):
                 return
             self.core.stop()
         else:
@@ -2756,8 +3375,8 @@ class ServerWindow(QMainWindow):
         if self.api.remote:
             self.close()
             return
-        if QMessageBox.question(self, "Quit server", "Stop the server and quit? All users will be "
-                                "disconnected.") != QMessageBox.Yes:
+        if not confirm(self, "Quit server", "Stop the server and quit?", "Quit server",
+                       detail="Everyone is disconnected until the server is started again."):
             return
         self.quitting = True
         self.core.stop()

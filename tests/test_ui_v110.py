@@ -284,10 +284,11 @@ class UiV110Test(unittest.TestCase):
         self.assertIn("CALENDAR", titles)
 
     def test_shortcuts_sheet_lists_the_new_keys(self):
-        from client.ui.help import SHORTCUTS, ShortcutsDialog
-        keys = [k for _h, items in SHORTCUTS for k, _w in items]
-        for k in ("Ctrl+K", "Ctrl+F", "Ctrl +", "Ctrl+/  or  F1"):
+        from client.ui.help import SHORTCUTS, ShortcutsDialog, key_list, key_parts
+        keys = [k for _h, items in SHORTCUTS for entry, _w in items for k in key_list(entry)]
+        for k in ("Ctrl+K", "Ctrl+F", "Ctrl++", "Ctrl+/", "F1"):     # 1.12: one way of writing keys
             self.assertIn(k, keys)
+        self.assertEqual(key_parts("Ctrl++"), ["Ctrl", "+"], "shown as two chips: [Ctrl] + [+]")
         dlg = ShortcutsDialog(self.main)
         dlg.close()
 

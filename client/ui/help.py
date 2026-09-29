@@ -1,50 +1,106 @@
 """Help: the keyboard shortcuts sheet (Ctrl+/) and the welcome tour for new people."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout,
+    QWidget,
 )
 
 from common import theme as T
 from common.icons import pixmap
-from client.ui.widgets import plain
+from client.ui.widgets import menu_text, plain
 
+# (keys, what they do). keys: one key, or a tuple of keys that each do it ('or'). A key pair for two opposite
+# actions ('Previous / next') is a tuple too, shown with '/'. Keys are written one way - 'Ctrl+K', 'Ctrl++',
+# 'Alt+Shift+↓' - and shown as one chip per key that is pressed: [Ctrl] + [+].
 SHORTCUTS = [
     ("Find your way", [
         ("Ctrl+K", "Jump to a person or a room"),
         ("Ctrl+F", "Search every message"),
-        ("Ctrl+/  or  F1", "This list"),
-        ("Ctrl+Shift+M", "Compact view (a narrow window on the right)"),
-        ("Alt+Shift+↓", "Next chat with unread messages"),
-        ("Alt+Shift+↑", "Previous chat with unread messages"),
+        (("Ctrl+/", "F1"), "This list"),
+        ("Ctrl+Shift+M", "Compact view (a narrow window)"),
+        ("Alt+Shift+↓", "Next unread chat"),
+        ("Alt+Shift+↑", "Previous unread chat"),
     ]),
     ("Writing", [
         ("Enter", "Send"),
         ("Shift+Enter", "New line"),
-        ("↑  in an empty box", "Edit your last message"),
+        ("↑", "Edit your last message (in an empty box)"),
         ("Esc", "Stop replying or editing"),
         ("@name", "Mention someone (in a room)"),
-        ("Ctrl+V", "Paste a screenshot or files to send them"),
-        ("Ctrl+Shift+S", "Screenshot: pick an area and send it"),
+        ("Ctrl+V", "Paste a screenshot or files to send"),
+        ("Ctrl+Shift+S", "Screenshot an area and send it"),
     ]),
     ("Reading", [
-        ("Ctrl +", "Bigger message text"),
-        ("Ctrl −", "Smaller message text"),
-        ("Ctrl 0", "Normal message text"),
+        ("Ctrl++", "Bigger message text"),
+        ("Ctrl+−", "Smaller message text"),
+        ("Ctrl+0", "Normal message text"),
     ]),
     ("Picture viewer", [
-        ("←  →", "Previous / next picture in the chat"),
-        ("Home  End", "First / last picture"),
+        (("←", "→"), "Previous / next picture"),
+        (("Home", "End"), "First / last picture"),
+        ("C", "Compare with the next picture"),
         ("Esc", "Close"),
     ]),
 ]
 
 
+def key_list(keys):
+    """The keys of one SHORTCUTS entry, as a list."""
+    return list(keys) if isinstance(keys, (tuple, list)) else [keys]
+
+
+def key_parts(key):
+    """The keys pressed together: 'Alt+Shift+↓' -> ['Alt', 'Shift', '↓'], 'Ctrl++' -> ['Ctrl', '+']."""
+    parts, cur = [], ""
+    for ch in key:
+        if ch == "+" and cur:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        parts.append(cur)
+    return parts
+
+
 def _key_chip(text):
     lbl = plain(QLabel(text))
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setMinimumWidth(24)
+    lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)      # a key is never squeezed
     lbl.setStyleSheet(f"background: {T.SURFACE}; color: {T.TEXT}; border: 1px solid {T.HAIR}; border-radius: 7px;"
-                      " padding: 3px 9px; font-family: 'Segoe UI'; font-size: 9pt; font-weight: 700;")
+                      " padding: 3px 7px; font-family: 'Segoe UI'; font-size: 9pt; font-weight: 700;")
     return lbl
+
+
+def _joiner(text):
+    j = plain(QLabel(text))
+    j.setStyleSheet(f"color: {T.MUTED}; font-size: 9pt;")
+    return j
+
+
+def _keys_row(keys, what):
+    """One chip per key pressed, '+' between keys pressed together; other keys that do the same after a muted
+    'or', a pair for opposite actions ('Previous / next') after '/'."""
+    w = QWidget()
+    row = QHBoxLayout(w)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+    keys = key_list(keys)
+    joiner = "/" if len(keys) == 2 and " / " in what else "or"
+    for k, key in enumerate(keys):
+        if k:
+            row.addSpacing(2)
+            row.addWidget(_joiner(joiner))
+            row.addSpacing(2)
+        for n, part in enumerate(key_parts(key)):
+            if n:
+                row.addWidget(_joiner("+"))
+            row.addWidget(_key_chip(part))
+    w.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    return w
 
 
 class ShortcutsDialog(QDialog):
@@ -68,12 +124,12 @@ class ShortcutsDialog(QDialog):
             row = 0
             for heading, items in half:
                 h = plain(QLabel(heading.upper()))
-                h.setStyleSheet(f"color: {T.ACCENT}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;"
+                h.setStyleSheet(f"color: {T.MUTED}; font-size: 8pt; font-weight: 800; letter-spacing: 1px;"
                                 " padding-top: 8px;")
                 grid.addWidget(h, row, 0, 1, 2)
                 row += 1
                 for keys, what in items:
-                    grid.addWidget(_key_chip(keys), row, 0, Qt.AlignLeft)
+                    grid.addWidget(_keys_row(keys, what), row, 0, Qt.AlignLeft)
                     w = plain(QLabel(what))
                     w.setStyleSheet(f"color: {T.MUTED}; font-size: 9.5pt;")
                     grid.addWidget(w, row, 1)
@@ -89,12 +145,16 @@ class ShortcutsDialog(QDialog):
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
         lay.addLayout(row)
+        # as wide as the sheet needs (Qt would open a window at no more than 2/3 of the screen and squeeze it)
+        screen = (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry().width() if screen is not None else 1280
+        self.setMinimumWidth(max(640, min(self.sizeHint().width(), int(avail * 0.95))))
 
 
 # (icon, title, text, button text, action key)
 TOUR = [
     ("smile", "Welcome to Quillo",
-     "Chat, share files and folders, and keep up with your studio - all on your own network.\n\n"
+     "Chat, share files and folders, and keep up with your studio — all on your own network.\n\n"
      "Four quick steps to get set up. It takes under a minute.", None, None),
     ("user", "Your photo and status",
      "Add a photo so people recognise you, and set a status like 🍽️ Lunch or 🎬 Rendering, so they know "
@@ -128,6 +188,23 @@ class WelcomeTour(QDialog):
             self.pages.addWidget(self._page(ic, title, text, button, action))
         lay.addWidget(self.pages, 1)
 
+        # the step dots sit centred under the page, on their own row, so they never move when the buttons
+        # below change
+        dots = QWidget()
+        T.bg_pane(dots)
+        dl = QHBoxLayout(dots)
+        dl.setContentsMargins(0, 0, 0, 16)
+        dl.setSpacing(8)
+        dl.addStretch(1)
+        self.dots = []
+        for _ in TOUR:
+            d = QLabel()
+            d.setFixedSize(8, 8)
+            self.dots.append(d)
+            dl.addWidget(d)
+        dl.addStretch(1)
+        lay.addWidget(dots)
+
         foot = QFrame()
         foot.setObjectName("tourfoot")
         foot.setStyleSheet(f"#tourfoot {{ background: {T.PANEL}; border-top: 1px solid {T.HAIR}; }}")
@@ -138,13 +215,6 @@ class WelcomeTour(QDialog):
         self.skip.clicked.connect(self.accept)
         fl.addWidget(self.skip)
         fl.addStretch(1)
-        self.dots = []
-        for _ in TOUR:
-            d = QLabel()
-            d.setFixedSize(8, 8)
-            self.dots.append(d)
-            fl.addWidget(d)
-        fl.addStretch(1)
         self.back = QPushButton("Back")
         self.back.clicked.connect(lambda: self.go(self.pages.currentIndex() - 1))
         self.next = QPushButton("Next")
@@ -152,6 +222,10 @@ class WelcomeTour(QDialog):
         self.next.clicked.connect(lambda: self.go(self.pages.currentIndex() + 1))
         fl.addWidget(self.back)
         fl.addWidget(self.next)
+        for b in (self.skip, self.back):          # hidden, they keep their room: the footer never reflows
+            sp = b.sizePolicy()
+            sp.setRetainSizeWhenHidden(True)
+            b.setSizePolicy(sp)
         lay.addWidget(foot)
         self.go(0)
 
@@ -178,7 +252,7 @@ class WelcomeTour(QDialog):
         d.setStyleSheet(f"color: {T.MUTED}; font-size: 10pt;")
         v.addWidget(d)
         if button:
-            b = QPushButton(button)
+            b = QPushButton(menu_text(button))
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda: self._do(action))
             v.addSpacing(4)
@@ -203,7 +277,8 @@ class WelcomeTour(QDialog):
         i = max(0, i)
         self.pages.setCurrentIndex(i)
         for k, d in enumerate(self.dots):
-            d.setStyleSheet(f"background: {T.ACCENT if k == i else T.BORDER}; border-radius: 4px;")
+            d.setStyleSheet(f"background: {T.ACCENT if k == i else T.CONTROL_EDGE}; border-radius: 4px;")
+            d.setToolTip(f"Step {k + 1} of {len(TOUR)}")
         self.back.setVisible(i > 0)
         last = i == len(TOUR) - 1
         self.next.setText("Start using Quillo" if last else ("Show me" if i == 0 else "Next"))

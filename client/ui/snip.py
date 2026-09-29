@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
 )
 
 from common import theme as T
+from common.icons import icon
+
+DIM = QColor(0, 0, 0, 150)       # outside the selection: dark enough to see the bright area on a dark desktop
 
 
 class _Overlay(QWidget):
@@ -40,7 +43,7 @@ class _Overlay(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.drawPixmap(self.rect(), self.shot)
-        p.fillRect(self.rect(), QColor(0, 0, 0, 110))
+        p.fillRect(self.rect(), DIM)
         sel = self.selection()
         if sel.width() > 1 and sel.height() > 1:
             ratio = self.shot.devicePixelRatio()
@@ -48,6 +51,9 @@ class _Overlay(QWidget):
             p.drawPixmap(sel, self.shot, src)
             p.setPen(QPen(QColor(T.ACCENT), 2))
             p.drawRect(sel.adjusted(0, 0, -1, -1))
+            if sel.width() > 6 and sel.height() > 6:        # a thin white line inside: the edge reads anywhere
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1))
+                p.drawRect(sel.adjusted(2, 2, -3, -3))
             label = f"{src.width()} × {src.height()}"
             f = QFont("Segoe UI", 9)
             f.setBold(True)
@@ -60,7 +66,7 @@ class _Overlay(QWidget):
             p.setPen(QColor("#ffffff"))
             p.drawText(box, Qt.AlignCenter, label)
         else:
-            hint = "Drag to choose an area   ·   click for the whole screen   ·   Esc to cancel"
+            hint = "Drag to choose an area  ·  click for the whole screen  ·  Esc to cancel"
             f = QFont("Segoe UI", 11)
             p.setFont(f)
             box = p.fontMetrics().boundingRect(hint).adjusted(-18, -10, 18, 10)
@@ -154,6 +160,7 @@ class ScreenshotDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Screenshot")
         self.image = image
+        self.parent_ = parent
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
@@ -163,7 +170,7 @@ class ScreenshotDialog(QDialog):
         lay.addWidget(head)
         self.preview = preview = QLabel()
         preview.setAlignment(Qt.AlignCenter)
-        preview.setStyleSheet(f"background: {T.BG}; border-radius: 12px; padding: 6px;")
+        preview.setStyleSheet(f"background: {T.PANEL}; border-radius: 12px; padding: 10px;")
         self._show_image()
         lay.addWidget(preview, 1)
         size = QLabel(f"{image.width()} × {image.height()} pixels")
@@ -174,11 +181,13 @@ class ScreenshotDialog(QDialog):
         self.caption.setMinimumHeight(36)
         lay.addWidget(self.caption)
         row = QHBoxLayout()
-        copy = QPushButton("Copy")
-        copy.setToolTip("Copy to the clipboard (paste it anywhere)")
+        copy = QPushButton(" Copy")
+        copy.setIcon(icon("copy", T.TEXT, 16))
+        copy.setToolTip("Copy to the clipboard and close (paste it anywhere)")
         copy.clicked.connect(self._copy)
         row.addWidget(copy)
-        draw = QPushButton("✏  Draw on it")
+        draw = QPushButton(" Draw on it")
+        draw.setIcon(icon("pen", T.TEXT, 16))
         draw.setToolTip("Circle, point at and write on the screenshot before sending it")
         draw.clicked.connect(self._draw)
         row.addWidget(draw)
@@ -200,8 +209,14 @@ class ScreenshotDialog(QDialog):
 
     def _show_image(self):
         pm = QPixmap.fromImage(self.image)
-        self.preview.setPixmap(pm.scaled(620, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                               if pm.width() > 620 or pm.height() > 400 else pm)
+        if pm.width() > 620 or pm.height() > 400:
+            pm = pm.scaled(620, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        framed = QPixmap(pm.width() + 2, pm.height() + 2)     # a 1 px edge: a dark shot on a dark window shows
+        framed.fill(QColor(T.BORDER))
+        p = QPainter(framed)
+        p.drawPixmap(1, 1, pm)
+        p.end()
+        self.preview.setPixmap(framed)
 
     def _draw(self):
         from client.ui.annotate import AnnotateDialog
@@ -213,6 +228,9 @@ class ScreenshotDialog(QDialog):
 
     def _copy(self):
         QGuiApplication.clipboard().setImage(self.image)
+        toast = getattr(self.parent_, "toast", None)
+        if callable(toast):
+            toast("Screenshot copied — paste it anywhere")
         self.reject()
 
     def save(self):

@@ -13,6 +13,20 @@ from client.network import Discovery
 from client.ui.widgets import IconButton, plain
 
 
+def brand_gradient(accent, ink, ratio=4.5):
+    """(start, end) of the sign-in brand panel: the accent, made just deep enough (under white writing) or light
+    enough (under dark writing) that the writing reads at both ends. The end goes further the same way - never
+    toward the rail colour, which faded the words in the light theme."""
+    light_ink = T.contrast(ink, "#ffffff") < T.contrast(ink, "#000000")
+    toward = "#0b1433" if light_ink else "#ffffff"
+    start = accent
+    for step in range(21):                  # 5% at a time toward navy / white until it reads
+        start = T.mix(toward, accent, step / 20)
+        if T.contrast(ink, start) >= ratio:
+            break
+    return start, T.mix(toward, start, 0.35 if light_ink else 0.12)
+
+
 class LoginWindow(QWidget):
     login_requested = Signal(str, int, str, str, bool)
 
@@ -32,7 +46,8 @@ class LoginWindow(QWidget):
         hero = QFrame()
         hero.setObjectName("hero")
         hero.setFixedWidth(360)
-        deep = T.mix(T.ACCENT, T.RAIL, 0.30)
+        ink = T.ACCENT_TEXT
+        top, deep = brand_gradient(T.ACCENT, ink)
         if T.FESTIVAL and T.FESTIVAL["art"] == "republic":    # navy parade sky
             stops = "stop:0 #1b3fa0, stop:1 #0a1540"
         elif T.FESTIVAL and T.FESTIVAL["art"] == "chakra":    # tricolour
@@ -40,9 +55,8 @@ class LoginWindow(QWidget):
         elif T.FESTIVAL:
             stops = "stop:0 #b3262b, stop:1 #14512f"
         else:
-            stops = f"stop:0 {T.ACCENT}, stop:1 {deep}"
+            stops = f"stop:0 {top}, stop:1 {deep}"
         hero.setStyleSheet(f"#hero {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, {stops}); }}")
-        ink = T.ACCENT_TEXT
         hl = QVBoxLayout(hero)
         hl.setContentsMargins(40, 44, 36, 36)
         hl.setSpacing(10)
@@ -101,7 +115,7 @@ class LoginWindow(QWidget):
         ic = QLabel()
         ic.setPixmap(pixmap("server", T.MUTED, 16))
         sl.addWidget(ic)
-        self.server_name = plain(QLabel("Looking for the server..."))
+        self.server_name = plain(QLabel("Looking for the server…"))
         self.server_name.setStyleSheet(f"color: {T.MUTED};")
         sl.addWidget(self.server_name, 1)
         change = QPushButton("Change")
@@ -120,7 +134,7 @@ class LoginWindow(QWidget):
         srow.setSpacing(8)
         self.server = QComboBox()
         self.server.setEditable(True)
-        self.server.lineEdit().setPlaceholderText("searching the network...")
+        self.server.lineEdit().setPlaceholderText("Searching the network…")
         self.server.setMinimumHeight(42)
         srow.addWidget(self.server, 1)
         self.b_find = IconButton("refresh", "Search the network for servers", 42, 18, round_=False)
@@ -134,15 +148,16 @@ class LoginWindow(QWidget):
         lay.addWidget(self._caption("Username"))
         self.username = QLineEdit(config["username"])
         self.username.setMinimumHeight(42)
-        self.username.addAction(icon("user", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.username.addAction(icon("user", T.META, 16), QLineEdit.LeadingPosition)
         lay.addWidget(self.username)
         lay.addSpacing(6)
         lay.addWidget(self._caption("Password"))
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         self.password.setMinimumHeight(42)
-        self.password.addAction(icon("key", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.password.addAction(icon("key", T.META, 16), QLineEdit.LeadingPosition)
         add_show_password(self.password)
+        self.password.setStyleSheet(f"QLineEdit[error=\"true\"] {{ border: 1px solid {T.DANGER}; }}")
         lay.addWidget(self.password)
         lay.addSpacing(4)
         self.remember = QCheckBox("Keep me signed in")
@@ -164,7 +179,7 @@ class LoginWindow(QWidget):
         lay.addStretch(1)
         help_ = QLabel("Forgot your password? Ask IT or HR to reset it.")
         help_.setAlignment(Qt.AlignCenter)
-        help_.setStyleSheet(f"color: {T.FAINT}; font-size: 8.5pt;")
+        help_.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_S)};")
         lay.addWidget(help_)
         lay.addWidget(license_label(align=Qt.AlignCenter))
         outer.addWidget(form, 1)
@@ -172,6 +187,8 @@ class LoginWindow(QWidget):
         for w in (self.username, self.password):
             w.returnPressed.connect(self.submit)
         self.server.lineEdit().returnPressed.connect(self.submit)
+        for w in (self.username, self.password, self.server.lineEdit()):    # typing again clears the message
+            w.textEdited.connect(self._typing)
 
         self.known_name = config.get("server_name", "") or ""
         if config["server_host"]:
@@ -205,7 +222,7 @@ class LoginWindow(QWidget):
     def discover(self):
         self.b_find.setEnabled(False)
         if not self.server.currentText():
-            self.server.lineEdit().setPlaceholderText("searching the network...")
+            self.server.lineEdit().setPlaceholderText("Searching the network…")
         self.discovery.start()
 
     def show_server_box(self, show):
@@ -227,10 +244,10 @@ class LoginWindow(QWidget):
 
     def _discovery_done(self):
         self.b_find.setEnabled(True)
-        self.server.lineEdit().setPlaceholderText("server name or IP address")
+        self.server.lineEdit().setPlaceholderText("Server name or IP address")
         if not self.server.currentText().strip():
             self.show_server_box(True)
-            self.set_error("No server found automatically. Type the server's IP address.")
+            self.set_info("No server was found on the network. Type the server's name or IP address.")
 
     # --------------------------------------------------------------- login
     def parse_server(self):
@@ -257,7 +274,7 @@ class LoginWindow(QWidget):
         self.login_requested.emit(host, port, self.username.text().strip(), self.password.text(),
                                   self.remember.isChecked())
 
-    def set_busy(self, busy, text="Connecting..."):
+    def set_busy(self, busy, text="Connecting…"):
         self.b_login.setEnabled(not busy)
         self.b_login.setText(text if busy else "Sign in")
         if busy:
@@ -269,7 +286,23 @@ class LoginWindow(QWidget):
             self.show_server_box(True)
         self.status.setStyleSheet(f"color: {T.DANGER};")
         self.status.setText(text)
+        low = text.lower()
+        if "invalid" in low and "password" in low:   # wrong password: straight back into the box, marked
+            self._mark_password(True)
+            self.password.setFocus()
+            self.password.selectAll()
+        elif low.startswith("enter your"):           # something left empty: go to it
+            (self.password if self.username.text().strip() else self.username).setFocus()
 
     def set_info(self, text):
+        self._mark_password(False)
         self.status.setStyleSheet(f"color: {T.MUTED};")
         self.status.setText(text)
+
+    def _mark_password(self, on):
+        if bool(self.password.property("error")) != on:
+            T.polish(self.password, error=on)
+
+    def _typing(self, _text=""):
+        if self.status.text() and self.b_login.isEnabled():
+            self.set_info("")

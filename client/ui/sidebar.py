@@ -1,8 +1,8 @@
 """Left column: heading, search, filters and the Chats / Contacts / Rooms lists."""
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -11,7 +11,8 @@ from common import theme as T
 from common.icons import icon
 from client import stickers
 from client.ui.widgets import (
-    ConvItem, EmptyState, IconButton, SectionLabel, first_name, fmt_last_seen, fmt_list_time,
+    ELLIPSIS, SEP, ConvItem, EmptyState, IconButton, SectionLabel, first_name, fmt_last_seen, fmt_list_time,
+    popup_pos,
 )
 
 
@@ -63,7 +64,7 @@ class SidebarEdge(QWidget):
         self.sidebar = sidebar
         self.setFixedWidth(5)
         self.setCursor(Qt.SizeHorCursor)
-        self.setToolTip("Drag to resize the list  ·  double-click for the normal width")
+        self.setToolTip(f"Drag to resize the list{SEP}double-click for the normal width")
         self._start = None
         self._hover = False
 
@@ -108,15 +109,21 @@ class Sidebar(QFrame):
     conv_menu = Signal(str, object)
     show_saved = Signal()
     go_page = Signal(str)                   # an empty list's button: "Find people" opens People
+    toast = Signal(str)                     # a short confirmation for the main window ("Marked 3 chats as read")
+    search_messages = Signal(str)           # "Nothing found" in the list: look for the words in messages instead
 
     PAGES = ("chats", "contacts", "rooms")
     WIDTH, MIN_WIDTH, MAX_WIDTH = 330, 250, 560     # the edge next to the chat can be dragged
+    PLACEHOLDERS = {"chats": "Search chats, people and rooms", "contacts": "Search people", "rooms": "Search rooms"}
+    MAX_EXTRA = 30                          # people / rooms without a chat shown under a search, at most
 
     def __init__(self, store):
         super().__init__()
         self.store = store
         self.active_conv = None
         self.typing = {}
+        self.offline = False                # the server is away: nobody's presence is known
+        self._kb = None                     # the row picked with the arrow keys in the search box
         self.setFixedWidth(self.WIDTH)
         self.setStyleSheet(f"Sidebar {{ background: {T.PANEL}; }}")
         lay = QVBoxLayout(self)
@@ -124,7 +131,7 @@ class Sidebar(QFrame):
         lay.setSpacing(10)
 
         head = QHBoxLayout()
-        head.setContentsMargins(20, 0, 12, 0)
+        head.setContentsMargins(16, 0, 12, 0)             # one left edge: heading, search, chips and avatars
         self.heading = QLabel("Chats")
         self.heading.setStyleSheet("font-size: 16pt; font-weight: 800;")
         self.heading.setMinimumHeight(36)          # the same height with or without the buttons beside it
@@ -136,19 +143,21 @@ class Sidebar(QFrame):
         self.b_saved = IconButton("bookmark", "Saved for later", 36, 18, T.TEXT, T.ACCENT, round_=False)
         self.b_saved.clicked.connect(self.show_saved.emit)
         head.addWidget(self.b_saved)
-        self.b_new_room = IconButton("plus", "New chat room", 36, 18, T.TEXT, T.ACCENT, round_=False)
-        self.b_new_room.clicked.connect(self.new_room.emit)
+        self.b_new_room = IconButton("plus", "New chat or room", 36, 18, T.TEXT, T.ACCENT, round_=False)
+        self.b_new_room.clicked.connect(self._plus_clicked)
         head.addWidget(self.b_new_room)
         lay.addLayout(head)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search people and rooms")
-        self.search.addAction(icon("search", T.FAINT, 16), QLineEdit.LeadingPosition)
+        self.search.setPlaceholderText(self.PLACEHOLDERS["chats"])
+        self.search.addAction(icon("search", T.META, 16), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.setStyleSheet(f"QLineEdit {{ border-radius: 14px; padding: 7px 10px; background: {T.SURFACE};"
                                   f" border: 1px solid {T.SURFACE}; }}"
                                   f"QLineEdit:focus {{ border: 1px solid {T.ACCENT_FOCUS}; background: {T.SURFACE}; }}")
         self.search.textChanged.connect(lambda: self.rebuild())
+        self.search.returnPressed.connect(self.open_first)
+        self.search.installEventFilter(self)            # arrow keys walk the list, Esc clears
         sw = QHBoxLayout()
         sw.setContentsMargins(16, 0, 16, 0)
         sw.addWidget(self.search)
@@ -197,7 +206,35 @@ class Sidebar(QFrame):
             self._rebuild_timer.start()
 
     def update_permissions(self):
-        self.b_new_room.setVisible(bool(self.store.perm("create_rooms")) and self.page != "contacts")
+        rooms = bool(self.store.perm("create_rooms"))
+        # Chats: new chat (and new room); Rooms: new room; People: none (every row there starts a chat)
+        self.b_new_room.setVisible(self.page == "chats" or (self.page == "rooms" and rooms))
+        self.b_new_room.setToolTip("New room" if self.page == "rooms" else
+                                   "New chat or room" if rooms else "New chat")
+
+    def _plus_clicked(self):
+        if self.page != "chats":
+            self.new_room.emit()
+            return
+        if not self.store.perm("create_rooms"):
+            self.new_chat()
+            return
+        m = QMenu(self)
+        m.addAction(icon("chat", T.TEXT, 16), "New chat" + ELLIPSIS, self.new_chat)
+        m.addAction(icon("hash", T.TEXT, 16), "New room" + ELLIPSIS, self.new_room.emit)
+        m.exec(popup_pos(self.b_new_room, m.sizeHint()))
+
+    def new_chat(self):
+        """A chat with anyone: the People list, with the cursor in its search box."""
+        self.go_page.emit("contacts")
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def set_offline(self, offline):
+        """Connection lost: the presence dots would be stale, so they go until the server is back."""
+        if self.offline != bool(offline):
+            self.offline = bool(offline)
+            self.rebuild()
 
     def set_filter(self, key):
         self.filter = key
@@ -209,8 +246,10 @@ class Sidebar(QFrame):
         self.b_read_all.setVisible(self.page == "chats" and self.store.total_unread() > 0)
 
     def _read_all(self):
-        self.store.mark_all_read()
+        n = self.store.mark_all_read()
         self._update_read_all()
+        if n:
+            self.toast.emit(f"Marked {n} chat{'s' if n != 1 else ''} as read")
 
     def show_page(self, name):
         self.page = name
@@ -218,6 +257,7 @@ class Sidebar(QFrame):
         self.b_saved.setVisible(name == "chats")
         self.chips.setVisible(name == "chats")
         self.heading.setText({"chats": "Chats", "contacts": "People", "rooms": "Rooms"}[name])
+        self.search.setPlaceholderText(self.PLACEHOLDERS[name])
         self.update_permissions()                  # "+ new room" belongs to Chats and Rooms, not People
         self.stack.setCurrentWidget(self.lists[name])
         self.rebuild()
@@ -256,12 +296,22 @@ class Sidebar(QFrame):
         c = s.convs.get(conv)
         unread = c.unread if c else 0
         when = fmt_list_time(c.last_ts) if c and c.last else ""
-        if kind == "u" and target == s.my_id and self.page == "chats":      # My space
+        if kind == "u" and target == s.my_id and self.page == "chats":      # My space: notes, not a person
             item.set_data("My space", self._preview(conv) if c and c.last else "Notes, to-dos and files for yourself",
-                          when, 0, s.me.get("status", "online"))
+                          when, 0, None)
         elif kind == "u":
             u = s.users.get(target, {})
             status = u.get("status", "offline")
+            if self.offline:                   # not known while the server is away: no dot rather than a stale one
+                chats = self.page == "chats"
+                item.set_data(u.get("name", "?"), self._preview(conv) if chats else
+                              (u.get("designation") or u.get("title") or ""), when if chats else "",
+                              unread, None, muted=s.is_muted(conv), pinned=chats and s.is_pinned(conv))
+                if chats:
+                    self._draft(item, c)
+                item.typing = bool(self.typing.get(conv))
+                item.set_active(conv == self.active_conv)
+                return
             if self.page == "contacts":
                 designation = u.get("designation") or u.get("title") or ""
                 custom = self.store.status_text(u)
@@ -271,13 +321,16 @@ class Sidebar(QFrame):
                     sub = custom or " · ".join(x for x in (designation, T.STATUS_LABELS.get(status)) if x)
                 item.set_data(u.get("name", "?"), sub, "", unread, status, dim=status == "offline")
             else:
-                item.set_data(u.get("name", "?"), self._preview(conv), when, unread, status,
+                # someone found by a search, not talked to yet: who they are instead of an empty line
+                sub = self._preview(conv) or SEP.join(x for x in (u.get("designation") or u.get("title"),
+                                                                  u.get("department")) if x) or "No messages yet"
+                item.set_data(u.get("name", "?"), sub, when, unread, status,
                               muted=s.is_muted(conv), pinned=self.page == "chats" and s.is_pinned(conv))
                 self._draft(item, c)
         else:
             room = s.rooms.get(target, {})
-            sub = self._preview(conv) if self.page == "chats" else (
-                room.get("topic") or f"{len(room.get('members', []))} members")
+            about = room.get("topic") or f"{len(room.get('members', []))} members"
+            sub = (self._preview(conv) or about) if self.page == "chats" else about
             item.set_data(room.get("name", "Room"), sub, when, unread, room=True, muted=s.is_muted(conv),
                           pinned=self.page == "chats" and s.is_pinned(conv))
             if self.page == "chats":
@@ -300,12 +353,58 @@ class Sidebar(QFrame):
         self._fill_item(item)
         return item
 
+    # ------------------------------------------------------------ keyboard
+    def eventFilter(self, obj, e):
+        if obj is self.search and e.type() == QEvent.KeyPress:
+            key = e.key()
+            if key in (Qt.Key_Down, Qt.Key_Up):
+                self._move_kb(1 if key == Qt.Key_Down else -1)
+                return True
+            if key == Qt.Key_Escape and self.search.text():
+                self.search.clear()
+                return True
+        return super().eventFilter(obj, e)
+
+    def _rows(self):
+        return list(self.lists[self.page].items.values())      # dict order is the order on screen
+
+    def _move_kb(self, step):
+        rows = self._rows()
+        if not rows:
+            return
+        convs = [r.conv for r in rows]
+        i = convs.index(self._kb) + step if self._kb in convs else (0 if step > 0 else len(rows) - 1)
+        self._set_kb(convs[max(0, min(len(rows) - 1, i))])
+
+    def _set_kb(self, conv):
+        """Light up one row (the same look as the mouse hover) as the one Enter opens."""
+        for r in self._rows():
+            lit = r.conv == conv
+            if r._hover != lit:
+                r._hover = lit
+                r.update()
+        self._kb = conv
+        row = self.lists[self.page].items.get(conv)
+        if row:
+            self.lists[self.page].ensureWidgetVisible(row, 0, 8)
+
+    def open_first(self):
+        """Enter in the search box: open the row picked with the arrow keys, or else the first one."""
+        rows = self._rows()
+        if not rows or (self._kb is None and not self.search.text().strip()):
+            return
+        conv = self._kb if self._kb in self.lists[self.page].items else rows[0].conv
+        self.open_conv.emit(conv)
+        if self.search.text():
+            self.search.clear()
+
     def rebuild(self):
         lst = self.lists[self.page]
         bar = lst.verticalScrollBar()
         pos = bar.value()
         lst.setUpdatesEnabled(False)
         lst.clear()
+        self._kb = None
         s = self.store
         if self.page == "chats":
             def wanted(conv):
@@ -326,22 +425,34 @@ class Sidebar(QFrame):
             if mine and self.filter in ("all", "people") and self._query_match("My space", "notes", "me"):
                 lst.add(self._make_item(mine))              # always at the top, even while empty
                 n += 1
+            people, rooms = self._search_extras(set(pinned) | {c.conv for c in convs} | {mine})
             if pinned:
                 lst.add(SectionLabel("Pinned"))
                 for conv in pinned:
                     lst.add(self._make_item(conv))
                     n += 1
-                if convs:
-                    lst.add(SectionLabel("Chats"))
+            if convs and (pinned or people or rooms):
+                lst.add(SectionLabel("Chats" if self.filter == "all" else "Recent"))
             for c in convs:
                 lst.add(self._make_item(c.conv))
                 n += 1
+            # typing a name finds everyone, not only the people you have already talked to (Ctrl+K, New chat)
+            for label, group in (("People", people), ("Rooms", rooms)):
+                if group:
+                    lst.add(SectionLabel(label))
+                for conv in group:
+                    lst.add(self._make_item(conv))
+                    n += 1
             if not n:
-                if self.search.text():
-                    lst.show_empty("Nothing found", f"No chat called “{self.search.text().strip()}”.", "search",
-                                   "Search people", lambda: self.go_page.emit("contacts"))
+                q = self.search.text().strip()
+                if q:
+                    lst.show_empty("Nothing found", f"No chat, person or room called “{q}”.", "search",
+                                   "Search messages", lambda: self.search_messages.emit(q))
                 elif self.filter == "unread":
                     lst.show_empty("You're all caught up", "No unread messages.", "check")
+                elif self.filter == "rooms":
+                    lst.show_empty("No room chats yet", "Rooms you are in show here once someone writes.", "hash",
+                                   "Browse rooms", lambda: self.go_page.emit("rooms"))
                 else:
                     lst.show_empty("No chats yet", "Pick someone in People to start chatting.", "chat",
                                    "Find people", lambda: self.go_page.emit("contacts"))
@@ -352,13 +463,15 @@ class Sidebar(QFrame):
                 return (order.get(u["status"], 3), -(u.get("level") or 0), u["name"].lower())
 
             def online(members):
+                if self.offline:
+                    return f"{len(members)}"
                 return f"{sum(1 for u in members if u['status'] != 'offline')}/{len(members)} online"
 
             matches = [u for u in s.users.values() if not s.is_builtin(u) and self._query_match(
                 u["name"], u["username"], u["department"], u.get("section"), u.get("designation"), u["title"])]
             team = [u for u in matches if u.get("manager_id") == s.my_id]
             if team:
-                lst.add(SectionLabel(f"My team  ·  {online(team)}"))
+                lst.add(SectionLabel(f"My team{SEP}{online(team)}"))
                 for u in sorted(team, key=sort_key):
                     lst.add(self._make_item(P.direct_conv(u["id"])))
             groups = {}
@@ -367,11 +480,11 @@ class Sidebar(QFrame):
             for dept in sorted(groups, key=lambda d: (d == "Other", d.lower())):
                 sections = groups[dept]
                 everyone = [u for members in sections.values() for u in members]
-                lst.add(SectionLabel(f"{dept}  ·  {online(everyone)}"))
+                lst.add(SectionLabel(f"{dept}{SEP}{online(everyone)}"))
                 for u in sorted(sections.pop("", []), key=sort_key):
                     lst.add(self._make_item(P.direct_conv(u["id"])))
                 for sect in sorted(sections, key=str.lower):
-                    lst.add(SectionLabel(f"{sect}  ·  {online(sections[sect])}", sub=True))
+                    lst.add(SectionLabel(f"{sect}{SEP}{online(sections[sect])}", sub=True))
                     for u in sorted(sections[sect], key=sort_key):
                         lst.add(self._make_item(P.direct_conv(u["id"])))
             if not matches:
@@ -400,6 +513,27 @@ class Sidebar(QFrame):
                     lst.show_empty("No rooms yet", "You're added to rooms by the people who create them.", "hash")
         lst.setUpdatesEnabled(True)
         bar.setValue(pos)
+
+    def _search_extras(self, listed):
+        """While searching the Chats list: the people and rooms that match but have no chat yet."""
+        s = self.store
+        if not self.search.text().strip() or self.filter == "unread":
+            return [], []
+        people, rooms = [], []
+        if self.filter in ("all", "people"):
+            order = {"online": 0, "busy": 1, "away": 2, "offline": 3}
+            found = [u for u in s.users.values() if not s.is_builtin(u) and u.get("id") != s.my_id
+                     and P.direct_conv(u["id"]) not in listed
+                     and self._query_match(u.get("name"), u.get("username"), u.get("department"),
+                                           u.get("section"), u.get("designation"), u.get("title"))]
+            found.sort(key=lambda u: (order.get(u.get("status"), 3), (u.get("name") or "").lower()))
+            people = [P.direct_conv(u["id"]) for u in found[:self.MAX_EXTRA]]
+        if self.filter in ("all", "rooms"):
+            found = [r for r in s.rooms.values() if P.room_conv(r["id"]) not in listed
+                     and self._query_match(r.get("name"), r.get("topic"))]
+            found.sort(key=lambda r: (r.get("name") or "").lower())
+            rooms = [P.room_conv(r["id"]) for r in found[:self.MAX_EXTRA]]
+        return people, rooms
 
     # ------------------------------------------------------------- updates
     def _user_updated(self, uid):

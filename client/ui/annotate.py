@@ -7,18 +7,29 @@ import tempfile
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen, \
+    QPolygonF, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton, QSizePolicy, QToolButton,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QSizePolicy,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from common import theme as T
 from common.icons import icon
 
 COLORS = ("#ff3b4f", "#ffcc33", "#3ddc84", "#4c9aff", "#ffffff")
-TOOLS = (("pen", "pen", "Draw"), ("arrow", "arrow", "Arrow"), ("box", "rect", "Box"),
-         ("circle", "circle", "Circle"), ("text", "type", "Text"))
+COLOR_NAMES = dict(zip(COLORS, ("Red", "Yellow", "Green", "Blue", "White")))
+# (key, icon, name, shortcut key)
+TOOLS = (("pen", "pen", "Draw", "P"), ("arrow", "arrow", "Arrow", "A"), ("box", "rect", "Box", "B"),
+         ("circle", "circle", "Circle", "C"), ("text", "type", "Text", "T"))
+WIDTHS = (("Thin", 2), ("Medium", 4), ("Thick", 8))
+REFERENCE_SIZE = 1400        # lines and notes keep their look on bigger pictures: sizes grow past this many pixels
+
+
+def mark_scale(image):
+    """How much thicker marks are on this picture: 1 up to REFERENCE_SIZE pixels, then in step with its size,
+    so 'Thick' on a 4K plate is as bold as on a screenshot once it is shared."""
+    return max(1.0, max(image.width(), image.height()) / REFERENCE_SIZE)
 
 
 class _Mark:
@@ -88,8 +99,10 @@ class _DrawCanvas(QWidget):
         return s, (self.width() - self.image.width() * s) / 2, (self.height() - self.image.height() * s) / 2
 
     def _to_image(self, pos):
+        """A point in picture pixels, kept on the picture (marks in the margin would be cut off when sent)."""
         s, x0, y0 = self._geometry()
-        return ((pos.x() - x0) / s, (pos.y() - y0) / s)
+        x, y = (pos.x() - x0) / s, (pos.y() - y0) / s
+        return (min(max(x, 0.0), float(self.image.width())), min(max(y, 0.0), float(self.image.height())))
 
     def sizeHint(self):
         return QSize(min(1100, self.image.width()), min(700, self.image.height()))
@@ -99,7 +112,9 @@ class _DrawCanvas(QWidget):
         p.fillRect(self.rect(), QColor(T.BG))
         s, x0, y0 = self._geometry()
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        p.drawImage(QRectF(x0, y0, self.image.width() * s, self.image.height() * s), self.image)
+        picture = QRectF(x0, y0, self.image.width() * s, self.image.height() * s)
+        p.drawImage(picture, self.image)
+        p.setClipRect(picture)                  # what shows is what gets sent
         p.translate(x0, y0)
         paint_marks(p, self.marks + ([self.current] if self.current else []), s)
 
@@ -107,14 +122,15 @@ class _DrawCanvas(QWidget):
         if e.button() != Qt.LeftButton:
             return
         pt = self._to_image(e.position())
+        width = self.pen_width * mark_scale(self.image)
         if self.tool == "text":
             text, ok = QInputDialog.getText(self, "Note on the picture", "Text:")
             if ok and text.strip():
-                self.marks.append(_Mark("text", self.color, self.pen_width, [pt], text.strip()[:120]))
+                self.marks.append(_Mark("text", self.color, width, [pt], text.strip()[:120]))
                 self.changed.emit()
                 self.update()
             return
-        self.current = _Mark(self.tool, self.color, self.pen_width, [pt])
+        self.current = _Mark(self.tool, self.color, width, [pt])
 
     def mouseMoveEvent(self, e):
         if self.current:
@@ -152,7 +168,10 @@ class AnnotateDialog(QDialog):
     def __init__(self, parent, image: QImage, where="", send_text="Send"):
         super().__init__(parent)
         self.setWindowTitle("Draw on the picture")
-        self.resize(1100, 780)
+        screen = parent.screen() if parent is not None else QGuiApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else None
+        self.resize(min(1100, int(area.width() * 0.9)) if area else 1100,
+                    min(780, int(area.height() * 0.9)) if area else 780)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
@@ -161,10 +180,10 @@ class AnnotateDialog(QDialog):
         self.canvas = _DrawCanvas(image)
         group = QButtonGroup(self)
         self.tool_buttons = {}
-        for key, ic, tip in TOOLS:
+        for key, ic, tip, shortcut in TOOLS:
             b = QToolButton()
             b.setIcon(icon(ic, T.TEXT, 18))
-            b.setToolTip(tip)
+            b.setToolTip(f"{tip} ({shortcut})")
             b.setCheckable(True)
             b.setFixedSize(38, 38)
             b.setStyleSheet(f"QToolButton {{ background: {T.SURFACE}; border: 1px solid {T.HAIR}; border-radius: 10px; }}"
@@ -173,40 +192,48 @@ class AnnotateDialog(QDialog):
             group.addButton(b)
             bar.addWidget(b)
             self.tool_buttons[key] = b
+            QShortcut(QKeySequence(shortcut), self, activated=lambda k=key: self._tool(k))
         bar.addSpacing(14)
         self.color_buttons = {}
         for c in COLORS:
             b = QPushButton()
             b.setFixedSize(26, 26)
             b.setCheckable(True)
-            b.setToolTip("Colour")
-            b.setStyleSheet(f"QPushButton {{ background: {c}; border-radius: 13px; border: 2px solid {T.PANEL};"
+            b.setToolTip(COLOR_NAMES[c])
+            # a swatch close to the window colour (white on the light theme) gets a visible outline
+            edge = T.CONTROL_EDGE if T.contrast(c, T.BG) < 1.6 else T.PANEL
+            b.setStyleSheet(f"QPushButton {{ background: {c}; border-radius: 13px; border: 2px solid {edge};"
                             f" padding: 0; }} QPushButton:checked {{ border: 3px solid {T.TEXT}; }}")
             b.clicked.connect(lambda _=False, c=c: self._color(c))
             bar.addWidget(b)
             self.color_buttons[c] = b
         bar.addSpacing(14)
-        for label, w in (("Thin", 2), ("Medium", 4), ("Thick", 8)):
+        for label, w in WIDTHS:
             b = QPushButton(label)
             b.setCheckable(True)
-            T.polish(b, chip=True)
+            b.setToolTip(f"{label} lines and notes")
+            T.polish(b, chip=True, tall=True)
             b.clicked.connect(lambda _=False, w=w: self._width(w))
             bar.addWidget(b)
             self.color_buttons[f"w{w}"] = b
         bar.addStretch(1)
-        undo = QPushButton(" Undo")
+        self.undo = undo = QPushButton(" Undo")
         undo.setIcon(icon("undo", T.TEXT, 16))
         undo.setShortcut("Ctrl+Z")
+        undo.setToolTip("Undo the last mark (Ctrl+Z)")
         undo.clicked.connect(self.canvas.undo)
+        undo.setEnabled(False)
+        self.canvas.changed.connect(lambda: undo.setEnabled(bool(self.canvas.marks)))
         bar.addWidget(undo)
         lay.addLayout(bar)
         lay.addWidget(self.canvas, 1)
         self.caption = QLineEdit()
-        self.caption.setPlaceholderText("Add a message (optional)" + (f" to {where}" if where else ""))
+        self.caption.setPlaceholderText(f"Add a message to {where} (optional)" if where else
+                                        "Add a message (optional)")
         self.caption.setMinimumHeight(36)
         lay.addWidget(self.caption)
         row = QHBoxLayout()
-        hint = QLabel("Drag on the picture to draw. Ctrl+Z undoes the last mark.")
+        hint = QLabel("Drag on the picture to draw. P A B C T pick a tool, Ctrl+Z undoes the last mark.")
         hint.setStyleSheet(f"color: {T.MUTED}; font-size: 8.5pt;")
         row.addWidget(hint, 1)
         cancel = QPushButton("Cancel")
@@ -224,6 +251,14 @@ class AnnotateDialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         T.dark_title_bar(self)
+
+    def reject(self):
+        """Cancel or Esc: ask before throwing drawn marks away."""
+        if self.canvas.marks and QMessageBox.question(
+                self, "Discard drawing", "Discard your drawing?", QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Cancel) not in (QMessageBox.Discard, QMessageBox.Yes):
+            return
+        super().reject()
 
     def _tool(self, key):
         self.canvas.tool = key

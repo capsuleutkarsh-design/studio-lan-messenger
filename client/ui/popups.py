@@ -1,16 +1,76 @@
-"""New-message pop-ups in the corner of the screen that you can answer without opening Quillo."""
+"""New-message pop-ups in the corner of the screen that you can answer without opening Quillo.
+
+Reminder cards (planner_ui.ReminderPopup) share the same corner: PopupStack stacks both in one column, the
+reminders at the bottom (they stay until Done or Snooze) and the message pop-ups above them.
+"""
 
 import time
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication
+from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from common import theme as T
-from client.ui.widgets import Avatar, IconButton, first_name, plain
+from client.ui.widgets import ELLIPSIS, Avatar, ElidedLabel, IconButton, clip, first_name, plain, rich_safe
 
 SHOW_MS = 9000          # how long a pop-up stays when nobody touches it
 MAX_POPUPS = 3
+
+CARD_W = 364            # the visible card; the window around it is a little wider, for the shadow
+MARGINS = (10, 6, 10, 12)   # transparent edge around the card: room for the soft shadow (it falls downwards)
+SCREEN_GAP = 8          # between the column of cards and the screen edge
+
+
+def float_card(card, name, border=None):
+    """Style a floating card (the visible part of a pop-up window): panel background, a firm edge, round corners
+    and a soft shadow, so it stands out over any other application in both themes."""
+    card.setObjectName(name)
+    card.setStyleSheet(f"#{name} {{ background: {T.PANEL}; border: 1px solid {border or T.FLOAT_BORDER};"
+                       f" border-radius: {T.RADIUS_L}px; }}")
+    shadow = QGraphicsDropShadowEffect(card)
+    shadow.setBlurRadius(24)
+    shadow.setOffset(0, 4)
+    shadow.setColor(QColor(0, 0, 0, 70 if T.DARK else 40))
+    card.setGraphicsEffect(shadow)
+    return card
+
+
+def float_window(w):
+    """The see-through window around a floating card (its corners and shadow show the desktop behind)."""
+    w.setAttribute(Qt.WA_TranslucentBackground)
+    w.setAttribute(Qt.WA_DeleteOnClose)
+    w.setFixedWidth(CARD_W + MARGINS[0] + MARGINS[2])
+    outer = QVBoxLayout(w)
+    outer.setContentsMargins(*MARGINS)
+    outer.setSpacing(0)
+    return outer
+
+
+def screen_area(screen=None):
+    """The available area of `screen` (the main window's screen), or of the primary screen."""
+    screen = screen or QGuiApplication.primaryScreen()
+    return screen.availableGeometry() if screen else None
+
+
+def two_lines(text, fm, width, lines=2):
+    """text wrapped at word boundaries into at most `lines` lines of `width` px; a longer text ends in '…'."""
+    words = " ".join(str(text or "").split()).split(" ")
+    out, i = [], 0
+    while i < len(words) and len(out) < lines:
+        line = words[i]
+        i += 1
+        if fm.horizontalAdvance(line) > width:          # one very long word (a path, a link): cut it
+            line = fm.elidedText(line, Qt.ElideRight, width)
+        while i < len(words) and fm.horizontalAdvance(line + " " + words[i]) <= width:
+            line += " " + words[i]
+            i += 1
+        out.append(line)
+    if i < len(words) and out:
+        last = out[-1]
+        while last and fm.horizontalAdvance(last + ELLIPSIS) > width:
+            last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
+        out[-1] = last.rstrip(" ,;:.-") + ELLIPSIS
+    return "\n".join(out)
 
 
 class MessagePopup(QWidget):
@@ -18,37 +78,41 @@ class MessagePopup(QWidget):
     opened = Signal(str)                   # conv
     gone = Signal(object)
 
+    AVATAR = 36
+    PAD = (14, 12, 10, 12)                  # inside the card
+
     def __init__(self, store, conv, thread_root=None):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.store, self.conv, self.thread_root = store, conv, thread_root
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setFixedWidth(380)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        card = QFrame()
-        card.setObjectName("popcard")
-        card.setStyleSheet(f"#popcard {{ background: {T.PANEL}; border: 1px solid {T.BORDER}; border-radius: 16px; }}")
+        outer = float_window(self)
+        card = float_card(QFrame(), "popcard")
         outer.addWidget(card)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 12, 10, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(*self.PAD)
+        lay.setSpacing(T.SPACE_S)
 
         top = QHBoxLayout()
         top.setSpacing(10)
-        self.avatar = Avatar(36)
+        self.avatar = Avatar(self.AVATAR)
         top.addWidget(self.avatar, 0, Qt.AlignTop)
         col = QVBoxLayout()
-        col.setSpacing(1)
-        self.title = plain(QLabel())
-        self.title.setStyleSheet("font-weight: 700; font-size: 10pt; background: transparent;")
+        col.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.title = ElidedLabel(mode=Qt.ElideMiddle)      # 'Farhan mentioned you in AK74 P…' lost the room
+        self.title.setStyleSheet(f"font-weight: 700; font-size: {T.pt(T.FONT_M)}; background: transparent;")
+        head.addWidget(self.title, 1)
+        self.more = plain(QLabel())                        # '+2 more': messages that came in since
+        self.more.setStyleSheet(f"color: {T.META}; font-size: {T.pt(T.FONT_S)}; background: transparent;")
+        self.more.hide()
+        head.addWidget(self.more)
         self.text = plain(QLabel())
-        self.text.setWordWrap(True)
-        self.text.setStyleSheet(f"color: {T.MUTED}; font-size: 9.5pt; background: transparent;")
-        self.text.setMaximumHeight(60)
-        col.addWidget(self.title)
+        self.text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.text.setStyleSheet(f"color: {T.MUTED}; font-size: {T.pt(T.FONT_M)}; background: transparent;")
+        col.addLayout(head)
         col.addWidget(self.text)
+        col.addStretch(1)
         top.addLayout(col, 1)
         close = IconButton("close", "Close", 26, 12)
         close.clicked.connect(self.close)
@@ -62,7 +126,7 @@ class MessagePopup(QWidget):
         row.setSpacing(6)
         self.input = QLineEdit()
         self.input.setStyleSheet(f"QLineEdit {{ background: {T.SURFACE}; border: 1px solid {T.HAIR};"
-                                 " border-radius: 12px; padding: 6px 10px; }"
+                                 f" border-radius: {T.RADIUS_CONTROL}px; padding: 6px 10px; }}"
                                  f"QLineEdit:focus {{ border: 1px solid {T.ACCENT_FOCUS}; }}")
         self.input.returnPressed.connect(self._send)
         self.input.textChanged.connect(lambda: self.timer.stop())
@@ -74,17 +138,30 @@ class MessagePopup(QWidget):
         self.timer = QTimer(self, singleShot=True, interval=SHOW_MS, timeout=self._maybe_close)
         self.count = 0
 
+    def _text_width(self):
+        """How wide the message text can be: the card less its padding, the avatar and the close button."""
+        return CARD_W - self.PAD[0] - self.PAD[2] - self.AVATAR - 10 - 26 - 10 - 2
+
     def show_message(self, title, text, sender_id):
         self.count += 1
         name = self.store.user_name(sender_id)
         room = self.conv.startswith("r:")
         self.avatar.set(self.store.title(self.conv) if room else name, self.conv if room else name,
                         room=room, uid=None if room else sender_id)
-        more = f"   (+{self.count - 1} more)" if self.count > 1 else ""
-        self.title.setText(title + more)
-        self.text.setText(text[:220])
-        who = "the room" if room and not self.thread_root else first_name(name)
-        self.input.setPlaceholderText(f"Reply to {who}..." if not self.thread_root else "Reply in the thread...")
+        self.title.setText(title)
+        self.more.setText(f"+{self.count - 1} more")
+        self.more.setVisible(self.count > 1)
+        self.text.ensurePolished()
+        self.text.setText(two_lines(text, QFontMetrics(self.text.font()), self._text_width()))
+        cut = self.text.text().replace("\n", " ") != " ".join(str(text or "").split())
+        self.text.setToolTip(rich_safe(clip(text, 600, one_line=False)) if cut else "")
+        if self.thread_root:
+            hint = "Reply in the thread"
+        elif room:
+            hint = f"Reply in {clip(self.store.title(self.conv), 32)}"
+        else:
+            hint = f"Reply to {first_name(name)}"
+        self.input.setPlaceholderText(hint + ELLIPSIS)
         self.stamp = time.time()
         self.timer.start()
 
@@ -121,10 +198,15 @@ class MessagePopup(QWidget):
 
 
 class PopupStack:
-    """Keeps the pop-ups in the bottom-right corner, newest at the bottom, one per chat."""
+    """Keeps the pop-ups in the bottom-right corner, newest at the bottom, one per chat.
 
-    def __init__(self, store, on_reply, on_open):
+    screen: returns the screen to use (the main window's), below: returns the windows that sit under the
+    pop-ups in the same column (the reminder cards), bottom first."""
+
+    def __init__(self, store, on_reply, on_open, screen=None, below=None):
         self.store, self.on_reply, self.on_open = store, on_reply, on_open
+        self.screen = screen or (lambda: None)
+        self.below = below or (lambda: [])
         self.popups = []
 
     def show(self, conv, title, text, sender_id, thread_root=None):
@@ -140,24 +222,28 @@ class PopupStack:
         pop.show_message(title, text, sender_id)
         pop.adjustSize()
         pop.show()
-        self._place()
+        self.place()
 
     def _gone(self, pop):
         if pop in self.popups:
             self.popups.remove(pop)
-            QTimer.singleShot(0, self._place)
+            QTimer.singleShot(0, self.place)
 
-    def _place(self):
-        screen = QGuiApplication.primaryScreen()
-        if not screen:
+    def place(self):
+        """One column in the bottom-right corner: the reminder cards at the bottom, the message pop-ups above
+        them (newest lowest), so a reminder and a message never cover each other."""
+        area = screen_area(self.screen())
+        if area is None:
             return
-        area = screen.availableGeometry()
-        y = area.bottom() - 8
-        for pop in reversed(self.popups):
-            pop.adjustSize()
-            y -= pop.height()
-            pop.move(QPoint(area.right() - pop.width() - 8, y))
-        # (newest at the bottom, the older ones stacked above it)
+        # the see-through margins around each card already keep it off the screen edge
+        y = area.bottom() + 1 - max(0, SCREEN_GAP - MARGINS[3])
+        right = area.right() + 1 - max(0, SCREEN_GAP - MARGINS[2])
+        for w in [w for w in self.below() if w.isVisible()] + list(reversed(self.popups)):
+            w.adjustSize()
+            y -= w.height()
+            w.move(QPoint(right - w.width(), y))
+
+    _place = place
 
     def close_all(self):
         for p in list(self.popups):
