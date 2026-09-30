@@ -923,7 +923,7 @@ class DirectoryPage(QWidget):
         conv = P.direct_conv(uid)
         m.addAction(icon("chat", T.TEXT, 16), "Send message", lambda: self.ctx.open_conv(conv))
         m.addAction(icon("attachment", T.TEXT, 16), f"Send files{ELLIPSIS}", lambda: self.ctx._send_files_to(conv))
-        m.addAction(icon("screen", T.TEXT, 16), f"Ask to see their screen{ELLIPSIS}",
+        m.addAction(icon("screen", T.TEXT, 16), self.store.screen_view_label(uid),
                     lambda: self.ctx.screens.invite(uid, "request"))
         if getattr(self.store, "buzz_enabled", False):
             m.addAction(icon("zap", T.TEXT, 16), "Buzz", lambda: self.ctx.buzz_conv(conv))

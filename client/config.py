@@ -42,6 +42,8 @@ DEFAULTS = {
     "allow_buzz": True,
     "compact_mode": False,       # narrow window docked to the right edge of the screen
     "compact_on_top": False,     # ...and kept above other windows
+    "compact_width": 440,        # ...this wide (Settings: 380 narrow, 440 normal, 520 wide)
+    "compact_side": "right",     # ...on this edge of the screen: right | left
     "trusted_link_hosts": [],    # computers whose chat links open without asking ("don't ask again")
     "text_scale": 1.0,           # Settings > Text size: the whole window (1.0 normal ... 1.5 extra large)
     "chat_zoom": 100,            # Ctrl + / Ctrl -: message text in chats, in percent

@@ -176,6 +176,22 @@ class Store(QObject):
         uid = self.my_id if uid is None else uid
         return [u for u in self.users.values() if u.get("manager_id") == uid]
 
+    def can_view_screen(self, uid):
+        """Admins and the people above uid in the reporting line see uid's screen without asking (the server
+        decides; this only picks the wording of the menu)."""
+        if self.me.get("is_admin"):
+            return True
+        seen, m = {uid}, (self.users.get(uid) or {}).get("manager_id")
+        while m and m not in seen:
+            if m == self.my_id:
+                return True
+            seen.add(m)
+            m = (self.users.get(m) or {}).get("manager_id")
+        return False
+
+    def screen_view_label(self, uid):
+        return "See their screen" if self.can_view_screen(uid) else "Ask to see their screen\u2026"
+
     def manager_name(self, uid):
         u = self.me if uid == self.my_id else self.users.get(uid, {})
         m = u.get("manager_id")

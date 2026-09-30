@@ -498,9 +498,11 @@ class RailButton(QToolButton):
 
     W, H = 72, 58
     H_COMPACT = 46
+    changed = Signal()              # its badge or checked state changed (the compact tab bar mirrors both)
 
     def __init__(self, icon_name, tooltip, label="", parent=None):
         super().__init__(parent)
+        self.toggled.connect(lambda _on: self.changed.emit())
         self.icon_name = icon_name
         self.label = label
         self.badge = 0
@@ -515,8 +517,10 @@ class RailButton(QToolButton):
     def set_badge(self, n, kind="alert"):
         """A count on the button: kind 'alert' (red: unread for you, failed) or 'neutral' (accent: work in
         progress, like active transfers) - see T.badge_colors."""
-        self.badge, self.badge_kind = n, kind
-        self.update()
+        if (self.badge, self.badge_kind) != (n, kind):
+            self.badge, self.badge_kind = n, kind
+            self.update()
+            self.changed.emit()
 
     def set_compact(self, on):
         """Short windows: hide the label (the tooltip still names the page) so the rail needs less height."""
@@ -575,6 +579,100 @@ class RailButton(QToolButton):
             p.drawRoundedRect(b, 9, 9)
             p.setPen(QColor(fg))
             p.drawText(b, Qt.AlignCenter, text)
+
+
+class CompactTabs(QWidget):
+    """Compact view's bottom tab bar (like a phone app): a few pages as icons with a short name under each.
+    The page you are on gets the accent colour on a soft pill; counts show as small badges.
+
+    items: [(key, icon name, label)]. current() returns the key that looks selected; badge(key) returns
+    (count, kind) - both are asked at paint time, so update() is all it needs after a change."""
+    clicked = Signal(str)
+    H = 58
+
+    def __init__(self, items, current, badge, parent=None):
+        super().__init__(parent)
+        self.items, self._current, self._badge = items, current, badge
+        self._hover = -1
+        self.setFixedHeight(self.H)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+
+    def _cell(self, i):
+        w = self.width() / max(1, len(self.items))
+        return QRectF(i * w, 0, w, self.height())
+
+    def tab_rect(self, key):
+        """Where a tab is (a pop-up menu opens above it)."""
+        for i, item in enumerate(self.items):
+            if item[0] == key:
+                return self._cell(i).toRect()
+        return self.rect()
+
+    def _at(self, pos):
+        n = len(self.items)
+        return min(n - 1, max(0, int(pos.x() * n / max(1, self.width())))) if n else -1
+
+    def mouseMoveEvent(self, e):
+        i = self._at(e.position())
+        if i != self._hover:
+            self._hover = i
+            self.setToolTip(self.items[i][2] if i >= 0 else "")
+            self.update()
+
+    def leaveEvent(self, e):
+        self._hover = -1
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            i = self._at(e.position())
+            if i >= 0:
+                self.clicked.emit(self.items[i][0])
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(T.RAIL))
+        p.setPen(QPen(QColor(T.HAIR), 1))
+        p.drawLine(0, 0, self.width(), 0)
+        p.setPen(Qt.NoPen)
+        current = self._current()
+        f = QFont("Segoe UI")
+        f.setPixelSize(10)
+        for i, (key, ic, label) in enumerate(self.items):
+            cell = self._cell(i)
+            on = key == current
+            pill = QRectF(cell.center().x() - 26, 7, 52, 28)
+            if on or i == self._hover:
+                p.setBrush(QColor(T.ACCENT_SOFT if on else T.SURFACE_HOVER))
+                p.drawRoundedRect(pill, 14, 14)
+            color = T.ACCENT if on else (T.TEXT if i == self._hover else T.MUTED)
+            pm = icon(ic, color, 20).pixmap(20, 20)
+            p.drawPixmap(int(pill.center().x()) - 10, int(pill.center().y()) - 10, pm)
+            f.setBold(on)
+            p.setFont(f)
+            p.setPen(QColor(T.TEXT if on or i == self._hover else T.MUTED))
+            p.drawText(QRectF(cell.left(), pill.bottom() + 2, cell.width(), 16), Qt.AlignHCenter | Qt.AlignTop,
+                       label)
+            p.setPen(Qt.NoPen)
+            n, kind = self._badge(key)
+            if n:
+                text = "99+" if n > 99 else str(n)
+                bf = QFont("Segoe UI")
+                bf.setPixelSize(10)
+                bf.setBold(True)
+                p.setFont(bf)
+                bw = max(18, QFontMetrics(bf).horizontalAdvance(text) + 8)
+                b = QRectF(pill.center().x() + 4, pill.top() - 4, bw, 18)
+                bg, fg = T.badge_colors(kind)
+                p.setBrush(QColor(bg))
+                p.setPen(QPen(QColor(T.RAIL), 2))
+                p.drawRoundedRect(b, 9, 9)
+                p.setPen(QColor(fg))
+                p.drawText(b, Qt.AlignCenter, text)
+                p.setPen(Qt.NoPen)
 
 
 class MeButton(QToolButton):

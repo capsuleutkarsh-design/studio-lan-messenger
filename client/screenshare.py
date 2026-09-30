@@ -86,7 +86,7 @@ class SharerBar(QWidget):
     stop = Signal()
     screen_changed = Signal(int)
 
-    def __init__(self, viewer_name):
+    def __init__(self, viewer_name, direct=False):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         frame = QWidget(self)
@@ -96,7 +96,9 @@ class SharerBar(QWidget):
         lay.setContentsMargins(14, 6, 8, 6)
         dot = QLabel("●")
         dot.setStyleSheet(f"color: {T.DANGER}; font-size: 14pt; background: transparent;")
-        text = QLabel(f"You are sharing your screen with {viewer_name}")
+        # direct: someone above me (or an admin) opened it without asking - say who, and Stop still ends it
+        text = QLabel(f"{viewer_name} is viewing your screen" if direct
+                      else f"You are sharing your screen with {viewer_name}")
         text.setTextFormat(Qt.PlainText)
         text.setStyleSheet("color: white; font-weight: 600; background: transparent;")
         self.screens = QComboBox()
@@ -249,7 +251,9 @@ class ScreenShareManager(QObject):
         name = self.store.user_name(user_id)
 
         def done(r):
-            if r.get("ok"):
+            if r.get("ok") and r.get("started"):
+                self.win.toast(f"Opening {name}'s screen - they get a notification.")
+            elif r.get("ok"):
                 self.win.toast(f"Waiting for {name} to accept..." if kind == "request"
                                else f"Asked {name} to view your screen...")
             else:
@@ -303,7 +307,12 @@ class ScreenShareManager(QObject):
             self.relay.sock.readyRead.connect(lambda: self.relay.read_answer())
             self.relay.ready.connect(self._begin_capture)
             self.relay.failed.connect(lambda err: (self.win.toast(f"Screen share failed: {err}"), self.stop()))
-            self.bar = SharerBar(ev["viewer_name"])
+            direct = bool(ev.get("direct"))
+            self.bar = SharerBar(ev["viewer_name"], direct)
+            if direct:
+                self.win.notify(f"👀 {ev['viewer_name']} is viewing your screen",
+                                "They can see your monitor. Click “Stop sharing” on the red bar to end it.",
+                                P.direct_conv(ev["viewer"]))
             self.bar.stop.connect(self.stop)
             self.bar.screen_changed.connect(self._set_screen)
             self.bar.show()

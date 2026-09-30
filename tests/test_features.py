@@ -454,6 +454,41 @@ class FeatureTest(unittest.TestCase):
         for x in (a, b, c):
             x.close()
 
+    def test_screen_view_without_asking_for_leads_and_admins(self):
+        core = self.core
+        # cat reports to ben; ann is in another line
+        core.call(core.db.update_user, self.c, manager_id=self.b)
+        core.call(core.invalidate_org)
+        a, b, c, boss = Client("ann"), Client("ben"), Client("cat"), Client("boss")
+        try:
+            # ben is cat's lead: it starts straight away, cat is told (direct) but not asked
+            r = b.request("screen_invite", kind="request", to=self.c)
+            self.assertTrue(r["ok"] and r.get("started"), r)
+            start = c.wait_for("screen_start")
+            self.assertEqual((start["sharer"], start["viewer"], start["direct"]), (self.c, self.b, True))
+            self.assertEqual(b.wait_for("screen_start")["share_id"], r["share_id"])
+            # cat can still stop it
+            self.assertTrue(c.request("screen_stop", share_id=r["share_id"])["ok"])
+            b.wait_for("screen_stopped")
+            # the admin console's audit log says who looked at whose screen
+            self.assertTrue(any(r["action"] == "viewed a screen without asking" for r in core.call(core.admin_audit)))
+            # an admin too
+            r = boss.request("screen_invite", kind="request", to=self.a)
+            self.assertTrue(r.get("started"), r)
+            a.wait_for("screen_start")
+            boss.request("screen_stop", share_id=r["share_id"])
+            # not the other way round, and not across teams: those still ask
+            for asker, target, other in ((c, self.b, b), (a, self.c, c)):
+                r = asker.request("screen_invite", kind="request", to=target)
+                self.assertTrue(r["ok"] and not r.get("started"), r)
+                self.assertEqual(other.wait_for("screen_invite")["kind"], "request")
+                other.request("screen_answer", share_id=r["share_id"], accept=False)
+        finally:
+            core.call(core.db.update_user, self.c, manager_id=None)
+            core.call(core.invalidate_org)
+            for x in (a, b, c, boss):
+                x.close()
+
     def test_announcement_read_tracking(self):
         core = self.core
         b = Client("ben")

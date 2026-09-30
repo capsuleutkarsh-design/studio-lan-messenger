@@ -25,7 +25,7 @@ from client.ui.pages import AnnouncementsPage, DirectoryPage, HomePage, Transfer
 from client.ui.sidebar import Sidebar
 from client import stickers
 from client.ui.widgets import (
-    ELLIPSIS, SEP, Avatar, ElidedLabel, MeButton, RailButton, clip, first_name, fmt_time, menu_text,
+    ELLIPSIS, SEP, Avatar, CompactTabs, ElidedLabel, MeButton, RailButton, clip, first_name, fmt_time, menu_text,
     plain, rich_safe,
 )
 
@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
         outer.addLayout(body, 1)
         outer.addWidget(license_label())            # the licence line, very small, at the very bottom
+        self._outer = outer
 
         # ---- navigation rail
         rail = self.rail_frame = QFrame()
@@ -198,7 +199,8 @@ class MainWindow(QMainWindow):
         self.b_pin.clicked.connect(lambda: self.set_on_top(self.b_pin.isChecked()))
         self.b_pin.hide()
         rl.addWidget(self.b_pin, 0, Qt.AlignHCenter)
-        self.b_compact = RailButton("compact", "Compact view — dock a narrow window to the right (Ctrl+Shift+M)")
+        self.b_compact = RailButton("compact", "Compact view — dock a narrow window to the side of the screen "
+                                    "(Ctrl+Shift+M)")
         self.b_compact.clicked.connect(lambda: self.set_compact(self.b_compact.isChecked()))
         rl.addWidget(self.b_compact, 0, Qt.AlignHCenter)
         self.b_search = RailButton("search", "Search messages (Ctrl+F)")
@@ -222,6 +224,16 @@ class MainWindow(QMainWindow):
             body.addWidget(self.stripe)
         body.addWidget(rail)
 
+        # ---- compact view: the rail becomes a tab bar along the bottom (like a phone app)
+        self.tabs = CompactTabs([("chats", "chat", "Chats"), ("contacts", "users", "People"),
+                                 ("calendar", "calendar", "Calendar"), ("transfers", "download", "Files"),
+                                 ("more", "menu", "More")], self._compact_tab, self._compact_badge)
+        self.tabs.clicked.connect(self._compact_tab_clicked)
+        self.tabs.hide()
+        outer.insertWidget(outer.count() - 1, self.tabs)          # above the licence line
+        for b in self.rail.values():
+            b.changed.connect(self.tabs.update)
+
         # ---- sidebar
         self.sidebar = Sidebar(store)
         self.sidebar.open_conv.connect(self.open_conv)
@@ -229,6 +241,7 @@ class MainWindow(QMainWindow):
         self.sidebar.conv_menu.connect(self.conv_menu)
         self.sidebar.go_page.connect(lambda key: (self.rail[key].setChecked(True), self.rail_clicked(key)))
         self.sidebar.show_saved.connect(self.show_saved)
+        self.sidebar.full_view.connect(lambda: self.set_compact(False))
         self.sidebar.toast.connect(self.toast)
         self.sidebar.search_messages.connect(lambda q: SearchDialog(self, q).exec())
         self._sidebar_want = 330                        # the width asked for; the window may leave less room
@@ -270,6 +283,7 @@ class MainWindow(QMainWindow):
         body.addWidget(self.thread_panel)
         self.stack.currentChanged.connect(
             lambda _i: self.stack.currentWidget() is not self.chat and self.thread_panel.close_thread())
+        self.stack.currentChanged.connect(lambda _i: self.tabs.update())
 
         self.toast_label = plain(QLabel(self))
         self.toast_label.setAlignment(Qt.AlignCenter)
@@ -395,7 +409,93 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(800, self._maybe_tour)
 
     # ============================================================ compact view
-    COMPACT_WIDTH = 440
+    COMPACT_WIDTHS = (380, 440, 520)            # Settings: narrow, normal, wide
+    TAB_PAGES = ("chats", "contacts", "calendar", "transfers")
+
+    @property
+    def COMPACT_WIDTH(self):
+        w = int(self.config.get("compact_width") or 440)
+        return w if w in self.COMPACT_WIDTHS else 440
+
+    def _compact_tab(self):
+        """The bottom tab that looks selected: the page's own tab, or More for the pages kept in its menu."""
+        checked = next((k for k, b in self.rail.items() if b.isChecked()), None)
+        if checked in self.TAB_PAGES:
+            return checked
+        return "more" if checked else None
+
+    def _compact_badge(self, key):
+        if key == "more":                       # News lives in the More menu: its count shows on More
+            b = self.rail["announcements"]
+        else:
+            b = self.rail.get(key)
+        return (b.badge, b.badge_kind) if b is not None else (0, "alert")
+
+    def _compact_tab_clicked(self, key):
+        if key == "more":
+            self.compact_more_menu()
+        else:
+            self.rail_clicked(key)
+
+    def compact_more_menu(self):
+        """Compact view's More tab: me and my status, the other pages, and the window's own switches."""
+        me = self.store.me
+        m = QMenu(self)
+        self._menu_note(m, "", self._me_card())
+        m.addSeparator()
+        cur = me.get("status", "online")
+        sm = m.addMenu(status_dot(T.STATUS_COLORS.get(cur, T.STATUS_COLORS["online"])),
+                       f"Status: {T.STATUS_LABELS.get(cur, cur)}")
+        for st in P.STATUSES:
+            a = sm.addAction(status_dot(T.STATUS_COLORS[st]), T.STATUS_LABELS[st] + ("\t✓" if st == cur else ""),
+                             lambda st=st: self.set_status(st))
+            if st == cur:
+                f = a.font()
+                f.setBold(True)
+                a.setFont(f)
+        m.addAction(icon("smile", T.TEXT, 16), menu_text("Profile photo & status" + ELLIPSIS),
+                    self.edit_status_message)
+        m.addSeparator()
+        news = self.rail["announcements"].badge
+        m.addAction(icon("home", T.TEXT, 16), "Home", self.go_home)
+        for key, ic, label in (("rooms", "hash", "Rooms"), ("directory", "org", "Org chart"),
+                               ("announcements", "megaphone", f"News  ·  {news} new" if news else "News"),
+                               ("myspace", "note", "My space")):
+            on = self.rail[key].isChecked()
+            a = m.addAction(icon(ic, T.ACCENT if on else T.TEXT, 16), label, lambda k=key: self.rail_clicked(k))
+            if on:
+                f = a.font()
+                f.setBold(True)
+                a.setFont(f)
+        m.addSeparator()
+        m.addAction(icon("search", T.TEXT, 16), "Search messages\tCtrl+F", self.show_search)
+        m.addAction(icon("bookmark", T.TEXT, 16), "Saved for later", self.show_saved)
+        m.addMenu(self.focus_menu(m))
+        m.addAction(icon("clock", T.TEXT, 16), "New reminder" + ELLIPSIS, self.new_reminder)
+        m.addSeparator()
+        top = m.addAction(icon("on_top", T.TEXT, 16), "Keep on top of other windows")
+        top.setCheckable(True)
+        top.setChecked(self.b_pin.isChecked())
+        top.toggled.connect(self.set_on_top)
+        m.addAction(icon("compact", T.TEXT, 16), "Leave compact view\tCtrl+Shift+M", lambda: self.set_compact(False))
+        dark = T.DARK
+        m.addAction(icon("palette", T.TEXT, 16), "Switch to light mode" if dark else "Switch to dark mode",
+                    lambda: self.switch_mode("light" if dark else "midnight"))
+        m.addAction(icon("settings", T.TEXT, 16), "Settings", self.show_settings)
+        m.addAction(icon("logout", T.DANGER, 16), "Sign out", self.confirm_logout)
+        m.exec(self._above_tab("more", m.sizeHint()))
+
+    def _above_tab(self, key, size):
+        """A pop-up above a bottom tab, its right edge level with the tab's, kept on the screen."""
+        r = self.tabs.tab_rect(key)
+        g = self.tabs.mapToGlobal(QPoint(r.right(), 0))
+        x, y = g.x() - size.width(), g.y() - size.height() - 4
+        screen = self.tabs.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = max(area.left(), min(x, area.right() + 1 - size.width()))
+            y = max(area.top(), y)
+        return QPoint(x, y)
 
     def set_compact(self, on, remember=True):
         """Narrow, full-height window docked to the right edge of the screen (like a phone)."""
@@ -408,6 +508,11 @@ class MainWindow(QMainWindow):
         if remember:
             self.config["compact_mode"] = on
             self.config.save()
+        self.rail_frame.setVisible(not on)          # compact: the tab bar along the bottom instead
+        if self.stripe:
+            self.stripe.setVisible(not on)
+        self.tabs.setVisible(on)
+        self.sidebar.b_full.setVisible(on)          # ⤢ above the list (and in the chat header): back to full size
         self.chat.set_compact(on)
         self.b_pin.setVisible(on)
         QTimer.singleShot(0, self._fit_rail)
@@ -419,7 +524,7 @@ class MainWindow(QMainWindow):
             self.sidebar.setMinimumWidth(0)
             self.sidebar.setMaximumWidth(16777215)
             self.sidebar_edge.hide()
-            self._dock_right()
+            self._dock()
             self._compact_show("content" if self.stack.currentWidget() is self.chat and self.chat.conv
                                else "list")
             self.set_on_top(self.config["compact_on_top"], save=False)
@@ -532,14 +637,17 @@ class MainWindow(QMainWindow):
                               if t == QEvent.Enter else "background: transparent;")
         return super().eventFilter(obj, e)
 
-    def _dock_right(self):
+    def _dock(self):
+        """Compact view: full height against the right (or left, in Settings) edge of the screen."""
         screen = self.screen() or QApplication.primaryScreen()
         area = screen.availableGeometry()
         frame = self.frameGeometry()
         extra_w = frame.width() - self.width()          # window borders
         extra_h = frame.height() - self.height()        # title bar + borders
-        self.resize(self.COMPACT_WIDTH, area.height() - extra_h)
-        self.move(area.right() - self.COMPACT_WIDTH - extra_w + 1, area.top())
+        w = self.COMPACT_WIDTH
+        self.resize(w, area.height() - extra_h)
+        left = self.config.get("compact_side") == "left"
+        self.move(area.left() if left else area.right() - w - extra_w + 1, area.top())
 
     def _compact_show(self, which):
         """In compact view show either the list (sidebar) or the content (chat / page), never both."""
@@ -933,7 +1041,7 @@ class MainWindow(QMainWindow):
         if hidden:
             # it was out of sight: pop up as the phone-style view on the right, above everything for a while
             self.set_compact(True, remember=False)
-            self._dock_right()
+            self._dock()
             if not self.b_pin.isChecked():
                 self.set_on_top(True, save=False)
                 QTimer.singleShot(15000, lambda: self.set_on_top(self.config["compact_on_top"], save=False)
@@ -1564,7 +1672,7 @@ class MainWindow(QMainWindow):
             m.addSeparator()
             m.addAction(icon("screen", T.TEXT, 16), "Share my screen" + ELLIPSIS,
                         lambda: self.screens.invite(target, "offer"))
-            m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen" + ELLIPSIS,
+            m.addAction(icon("eye", T.TEXT, 16), self.store.screen_view_label(target),
                         lambda: self.screens.invite(target, "request"))
             self.add_manage_actions(m, target)
         else:

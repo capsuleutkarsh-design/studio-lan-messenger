@@ -1987,12 +1987,34 @@ class ServerCore(PlannerMixin, CalendarMixin):
             raise ClientError("You already invited them - wait for an answer")
         share_id = secrets.token_hex(8)
         sharer, viewer = (s.user_id, target) if kind == "offer" else (target, s.user_id)
-        self.shares[share_id] = {"id": share_id, "sharer": sharer, "viewer": viewer, "accepted": False,
+        # an admin, or someone above them in the reporting line, sees the screen straight away: the person
+        # is told (a notification and the red bar with Stop) but not asked
+        direct = kind == "request" and self.can_view_screen(s.user_id, target)
+        self.shares[share_id] = {"id": share_id, "sharer": sharer, "viewer": viewer, "accepted": direct,
                                  "inviter": s.user_id, "invited": target,
                                  "created": time.time(), "subs": set(), "frame": None}
+        if direct:
+            self._start_share(self.shares[share_id], direct=True)
+            self.audit(self._user_name(s.user_id), "viewed a screen without asking", self._user_name(target))
+            return {"share_id": share_id, "started": True}
         self.push_user(target, {"op": "screen_invite", "share_id": share_id, "kind": kind,
                                 "from": s.user_id, "from_name": self._user_name(s.user_id)})
         return {"share_id": share_id}
+
+    def can_view_screen(self, viewer, target) -> bool:
+        """Admins, and the people above target in the reporting line (their lead, the lead's lead...), may see
+        target's screen without asking."""
+        row = self.db.get_user(viewer)
+        return bool(row and row["is_admin"]) or viewer in self.org.chain(target)
+
+    def _start_share(self, share, direct=False):
+        payload = {"op": "screen_start", "share_id": share["id"], "sharer": share["sharer"],
+                   "viewer": share["viewer"], "sharer_name": self._user_name(share["sharer"]),
+                   "viewer_name": self._user_name(share["viewer"]), "direct": direct}
+        self.push_user(share["sharer"], payload)
+        self.push_user(share["viewer"], payload)
+        log.info("Screen share: %s -> %s%s", self._user_name(share["sharer"]), self._user_name(share["viewer"]),
+                 " (without asking)" if direct else "")
 
     def h_screen_answer(self, s, req):
         share = self._share(req.get("share_id"), s.user_id)
@@ -2005,12 +2027,7 @@ class ServerCore(PlannerMixin, CalendarMixin):
                                    "by_name": self._user_name(s.user_id)})
             return
         share["accepted"] = True
-        payload = {"op": "screen_start", "share_id": share["id"], "sharer": share["sharer"],
-                   "viewer": share["viewer"], "sharer_name": self._user_name(share["sharer"]),
-                   "viewer_name": self._user_name(share["viewer"])}
-        self.push_user(share["sharer"], payload)
-        self.push_user(share["viewer"], payload)
-        log.info("Screen share: %s -> %s", self._user_name(share["sharer"]), self._user_name(share["viewer"]))
+        self._start_share(share)
 
     def h_screen_stop(self, s, req):
         share = self.shares.get(str(req.get("share_id")))

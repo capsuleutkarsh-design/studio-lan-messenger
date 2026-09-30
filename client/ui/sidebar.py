@@ -108,6 +108,7 @@ class Sidebar(QFrame):
     new_room = Signal()
     conv_menu = Signal(str, object)
     show_saved = Signal()
+    full_view = Signal()                    # compact view's ⤢: back to the full window
     go_page = Signal(str)                   # an empty list's button: "Find people" opens People
     toast = Signal(str)                     # a short confirmation for the main window ("Marked 3 chats as read")
     search_messages = Signal(str)           # "Nothing found" in the list: look for the words in messages instead
@@ -146,6 +147,11 @@ class Sidebar(QFrame):
         self.b_new_room = IconButton("plus", "New chat or room", 36, 18, T.TEXT, T.ACCENT, round_=False)
         self.b_new_room.clicked.connect(self._plus_clicked)
         head.addWidget(self.b_new_room)
+        self.b_full = IconButton("expand", "Full window - leave compact view (Ctrl+Shift+M)", 36, 18, T.TEXT,
+                                 T.ACCENT, round_=False)
+        self.b_full.clicked.connect(self.full_view.emit)
+        self.b_full.hide()                          # compact view only
+        head.addWidget(self.b_full)
         lay.addLayout(head)
 
         self.search = QLineEdit()

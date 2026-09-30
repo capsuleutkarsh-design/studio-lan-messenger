@@ -182,6 +182,74 @@ class UiV112ChatTest(unittest.TestCase):
             chat.set_compact(False)
         self.assertFalse(chat.b_shot.isHidden())
 
+    def test_compact_view_tab_bar_header_and_small_avatars(self):
+        from client.ui.chat_view import MessageRow
+        from client.ui.widgets import Avatar
+        m = self.main
+        self.ben_c.request("send", conv=self.room_conv, text="compact check")
+        chat = self.open(self.room_conv)
+        settle(self.app, 0.3)
+        cfg = m.config
+        old = (cfg.get("compact_width"), cfg.get("compact_side"))
+        try:
+            cfg["compact_width"], cfg["compact_side"] = 380, "left"
+            m.set_compact(True, remember=False)
+            settle(self.app, 0.4)
+            # the rail steps aside for the tab bar along the bottom
+            self.assertTrue(m.rail_frame.isHidden())
+            self.assertFalse(m.tabs.isHidden())
+            self.assertEqual(m.width(), 380)
+            area = (m.screen() or QApplication.primaryScreen()).availableGeometry()
+            self.assertEqual(m.frameGeometry().left(), area.left(), "docked on the left edge")
+            # the header: only Back, the name and ⋯ - Buzz and Members are in ⋯
+            self.assertTrue(chat.b_members.isHidden())
+            self.assertTrue(chat.b_buzz.isHidden())
+            self.assertFalse(chat.b_more.isHidden())
+            # messages in a room get the small avatars
+            sizes = {a.width() for r in chat.rows if isinstance(r, MessageRow) for a in r.findChildren(Avatar)}
+            self.assertEqual(sizes, {28})
+            # tabs: the page you're on is selected; News' count shows on More
+            m._compact_tab_clicked("calendar")
+            self.assertIs(m.stack.currentWidget(), m.calendar)
+            self.assertEqual(m._compact_tab(), "calendar")
+            m.rail_clicked("directory")
+            self.assertEqual(m._compact_tab(), "more")
+            m.rail["announcements"].set_badge(3)
+            self.assertEqual(m._compact_badge("more"), (3, "alert"))
+            m._update_unread()
+            m._compact_tab_clicked("chats")
+            self.assertEqual(m._compact_tab(), "chats")
+            # the way out: ⤢ above the list and in the chat header
+            self.assertFalse(m.sidebar.b_full.isHidden())
+            self.assertFalse(chat.b_full.isHidden())
+            chat.b_full.click()
+            self.assertFalse(m.compact)
+        finally:
+            cfg["compact_width"], cfg["compact_side"] = old
+            m.set_compact(False, remember=False)
+            m.resize(1300, 820)
+            settle(self.app, 0.3)
+        self.assertFalse(m.rail_frame.isHidden())
+        self.assertTrue(m.tabs.isHidden())
+        self.assertTrue(m.sidebar.b_full.isHidden())
+        self.assertTrue(chat.b_full.isHidden())
+        self.assertFalse(chat.b_members.isHidden())
+        sizes = {a.width() for r in chat.rows if isinstance(r, MessageRow) for a in r.findChildren(Avatar)}
+        self.assertEqual(sizes, {34})
+
+    def test_screen_menu_says_see_for_my_team_and_ask_for_others(self):
+        store = self.main.store
+        me, ben = store.my_id, store.users[self.ben]
+        old = (ben.get("manager_id"), store.me.get("is_admin"))
+        try:
+            store.me["is_admin"] = False
+            ben["manager_id"] = None
+            self.assertEqual(store.screen_view_label(self.ben), "Ask to see their screen…")
+            ben["manager_id"] = me                  # Ben reports to me: I see it straight away
+            self.assertEqual(store.screen_view_label(self.ben), "See their screen")
+        finally:
+            ben["manager_id"], store.me["is_admin"] = old
+
     # ------------------------------------------------------------ header, pins, empty chat
     def test_header_title_is_cut_with_an_ellipsis(self):
         from client.ui.widgets import ElidedLabel

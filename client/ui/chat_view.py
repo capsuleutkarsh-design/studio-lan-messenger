@@ -832,9 +832,12 @@ class MessageRow(QWidget):
         self.in_thread = in_thread          # shown in the thread panel, not in the chat
         self.first = show_name
         self.seen = ""
+        # compact view (a narrow window): smaller avatars and gaps, so the bubbles get the width
+        small = bool(getattr(ctx, "compact", False)) and not in_thread
+        av_size = 28 if small else 34
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 8 if show_name else 1, 0, 1)
-        outer.setSpacing(10)
+        outer.setSpacing(8 if small else 10)
 
         deleted = msg.get("deleted")
         self.sticker = msg.get("kind") == "sticker" and not deleted
@@ -942,11 +945,11 @@ class MessageRow(QWidget):
             outer.addWidget(self.bubble)
         else:
             if is_room:
-                av = Avatar(34)
+                av = Avatar(av_size)
                 if show_avatar:
                     av.set(sender, sender, ring=T.BG, uid=msg["sender_id"])
                 else:
-                    av.setFixedSize(34, 0)
+                    av.setFixedSize(av_size, 0)
                 outer.addWidget(av, 0, Qt.AlignTop)
             outer.addWidget(self.bubble)
             outer.addStretch(1)
@@ -1656,7 +1659,7 @@ class ChatView(QWidget):
         head = self.head = QFrame()
         head.setObjectName("chathead")
         head.setFixedHeight(68)
-        head.setStyleSheet(f"#chathead {{ background: {T.BG}; border-bottom: 1px solid {T.HAIR}; }}")
+        head.setStyleSheet(self._head_style(False))
         hl = QHBoxLayout(head)
         hl.setContentsMargins(22, 10, 16, 10)
         hl.setSpacing(12)
@@ -1666,12 +1669,14 @@ class ChatView(QWidget):
         hl.addWidget(self.b_back)
         self.avatar = Avatar(42)
         self.avatar.ring = T.BG
+        self.avatar.clicked.connect(self._header_clicked)
         hl.addWidget(self.avatar)
         col = QVBoxLayout()
         col.setSpacing(1)
         # one line each, cut with '…' when the column is narrow (the header buttons keep their size)
         self.title = ElidedLabel()
         self.title.setStyleSheet(f"font-size: {T.pt(T.FONT_XL)}; font-weight: 700;")
+        self.title.mousePressEvent = lambda e: e.button() == Qt.LeftButton and self._header_clicked()
         self.subtitle = ElidedLabel()
         self._sub_style = f"font-size: {T.pt(T.FONT_S)};"
         self.subtitle.setStyleSheet(f"color: {T.MUTED}; {self._sub_style}")
@@ -1692,7 +1697,11 @@ class ChatView(QWidget):
         self.b_calendar.clicked.connect(lambda: self.ctx.open_calendar(room_id=P.parse_conv(self.conv)[1]))
         self.b_more = IconButton("more_options", "More", 38, 19)
         self.b_more.clicked.connect(self.more_menu)
-        for b in (self.b_buzz, self.b_screen, self.b_search, self.b_calendar, self.b_members, self.b_more):
+        self.b_full = IconButton("expand", "Full window - leave compact view (Ctrl+Shift+M)", 38, 18)
+        self.b_full.clicked.connect(lambda: self.ctx.set_compact(False))
+        self.b_full.hide()                          # compact view only
+        for b in (self.b_buzz, self.b_screen, self.b_search, self.b_calendar, self.b_members, self.b_more,
+                  self.b_full):
             hl.addWidget(b)
         # on a wide window the header buttons say what they do, not just show an icon
         self.head_labels = {self.b_buzz: "Buzz", self.b_screen: "Screen", self.b_search: "Search",
@@ -1705,7 +1714,7 @@ class ChatView(QWidget):
         self.pin_bar = QFrame()
         self.pin_bar.setObjectName("pinbar")
         self.pin_bar.setCursor(Qt.PointingHandCursor)
-        self.pin_bar.setStyleSheet(f"#pinbar {{ background: {T.PANEL}; border-bottom: 1px solid {T.HAIR}; }}")
+        self.pin_bar.setStyleSheet(self._pin_style(False))
         pb = QHBoxLayout(self.pin_bar)
         pb.setContentsMargins(22, 7, 16, 7)
         pb.setSpacing(12)
@@ -1976,12 +1985,11 @@ class ChatView(QWidget):
         title = self.store.title(self.conv)
         self.title.setText(title)
         is_room = kind == "r"
-        self.b_members.setVisible(is_room)
+        self.b_members.setVisible(is_room and not self.compact)
         self.b_calendar.setVisible(is_room and not self.compact)
         self.b_screen.setVisible(not is_room and target != self.store.my_id and not self.compact)
         self.b_search.setVisible(not self.compact)
-        self.b_buzz.setVisible(target != self.store.my_id and getattr(self.store, "buzz_enabled", False)
-                               if not is_room else getattr(self.store, "buzz_enabled", False))
+        self.b_buzz.setVisible(not self.compact and self._can_buzz())
         self.b_buzz.setToolTip("Buzz the whole room — everyone's window shakes and rings (once a minute)"
                                if is_room else "Buzz — shake their window and ring, even if they are busy")
         if is_room:
@@ -2170,7 +2178,8 @@ class ChatView(QWidget):
         vw = self.scroll.viewport().width()
         share = 0.88 if vw < 440 else 0.72 if vw >= 680 else 0.88 - 0.16 * (vw - 440) / 240
         m = self.mlay.contentsMargins()
-        room = vw - m.left() - m.right() - (44 if (self.conv or "").startswith("r:") else 0) - 8
+        avatar = (36 if self.compact else 44) if (self.conv or "").startswith("r:") else 0
+        room = vw - m.left() - m.right() - avatar - 8
         return int(max(200, min((vw - 40) * share, room)))
 
     def _line_width(self):
@@ -2564,7 +2573,7 @@ class ChatView(QWidget):
         kind, target = P.parse_conv(self.conv)
         m = QMenu(self)
         m.addAction(icon("screen", T.TEXT, 16), "Share my screen…", lambda: self.ctx.screens.invite(target, "offer"))
-        m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen…",
+        m.addAction(icon("eye", T.TEXT, 16), self.store.screen_view_label(target),
                     lambda: self.ctx.screens.invite(target, "request"))
         m.exec(popup_pos(self.b_screen, m.sizeHint()))
 
@@ -2576,12 +2585,21 @@ class ChatView(QWidget):
         self._labelled = None
         self._label_header()
         self.b_back.setVisible(on)
+        self.b_full.setVisible(on)
         self.b_shot.setVisible(not on)           # a crowded composer; the attach menu still has it
         self.input.setPlaceholderText("Message…" if on else "Write a message…")
-        self.head.layout().setContentsMargins(8 if on else 22, 10, 10 if on else 16, 10)
-        self.mlay.setContentsMargins(14 if on else 24, 10, 14 if on else 24, 14)
+        self.head.layout().setContentsMargins(6 if on else 22, 8 if on else 10, 8 if on else 16, 8 if on else 10)
+        self.head.layout().setSpacing(8 if on else 12)
+        self.head.setFixedHeight(60 if on else 68)
+        self.head.setStyleSheet(self._head_style(on))
+        self.pin_bar.setStyleSheet(self._pin_style(on))
+        self.pin_bar.layout().setContentsMargins(*((22, 7, 18, 7) if on else (22, 7, 16, 7)))
+        self.avatar.setFixedSize(*((38, 38) if on else (42, 42)))
+        self.mlay.setContentsMargins(12 if on else 24, 10, 12 if on else 24, 14)
         self.setMinimumWidth(0 if on else self.MIN_WIDTH)
         self.update_header()
+        if self.conv:
+            self.open(self.conv)                # the messages again, with the avatar size for this view
         self._apply_widths()
 
     def _go_back(self):
@@ -2731,10 +2749,35 @@ class ChatView(QWidget):
         self._stick_bottom = True
         self.input.setFocus()
 
+    @staticmethod
+    def _head_style(compact):
+        # compact view: no line under the header - the pinned card and the messages start just below it
+        line = "none" if compact else f"1px solid {T.HAIR}"
+        return f"#chathead {{ background: {T.BG}; border-bottom: {line}; }}"
+
+    @staticmethod
+    def _pin_style(compact):
+        if compact:                 # a soft rounded card with a little room around it, not a full-width strip
+            return (f"#pinbar {{ background: {T.PANEL}; border: 1px solid {T.HAIR}; border-radius: 12px;"
+                    " margin: 0 10px 4px 10px; }")
+        return f"#pinbar {{ background: {T.PANEL}; border-bottom: 1px solid {T.HAIR}; }}"
+
+    def _can_buzz(self):
+        kind, target = P.parse_conv(self.conv)
+        return getattr(self.store, "buzz_enabled", False) and (kind == "r" or target != self.store.my_id)
+
+    def _header_clicked(self):
+        """The room's picture or name: its members (the Members button in a wide window)."""
+        if (self.conv or "").startswith("r:"):
+            self.ctx.show_room_info(self.conv)
+
     def more_menu(self):
         m = QMenu(self)
         kind, target = P.parse_conv(self.conv)
         muted = self.store.is_muted(self.conv)
+        if self.compact and self._can_buzz():           # the header's Buzz button steps aside in compact view
+            m.addAction(icon("zap", T.TEXT, 16), "Buzz the whole room" if kind == "r" else "Buzz", self.buzz)
+            m.addSeparator()
         m.addAction(icon("bell" if muted else "bell_off", T.TEXT, 16),
                     "Unmute notifications" if muted else "Mute notifications",
                     lambda: self.ctx.set_muted(self.conv, not muted))
@@ -2750,7 +2793,7 @@ class ChatView(QWidget):
             m.addSeparator()
             m.addAction(icon("screen", T.TEXT, 16), "Share my screen…",
                         lambda: self.ctx.screens.invite(target, "offer"))
-            m.addAction(icon("eye", T.TEXT, 16), "Ask to see their screen…",
+            m.addAction(icon("eye", T.TEXT, 16), self.store.screen_view_label(target),
                         lambda: self.ctx.screens.invite(target, "request"))
             self.ctx.add_manage_actions(m, target)
         m.exec(popup_pos(self.b_more, m.sizeHint()))

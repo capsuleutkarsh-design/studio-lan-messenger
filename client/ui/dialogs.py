@@ -1067,11 +1067,23 @@ class SettingsDialog(Dialog):
         for minutes in sorted(set(AWAY_CHOICES) | {saved}):
             self.away.addItem(away_label(minutes), minutes)
         self.away.setCurrentIndex(max(0, self.away.findData(saved)))
+        # compact view: how wide, and which edge of the screen it docks to
+        self.compact_width = QComboBox()
+        for value, label in ((380, "Narrow"), (440, "Normal"), (520, "Wide")):
+            self.compact_width.addItem(label, value)
+        self.compact_width.setCurrentIndex(max(0, self.compact_width.findData(int(cfg.get("compact_width") or 440))))
+        self.compact_side = QComboBox()
+        self.compact_side.addItem("Right edge of the screen", "right")
+        self.compact_side.addItem("Left edge of the screen", "left")
+        self.compact_side.setCurrentIndex(max(0, self.compact_side.findData(cfg.get("compact_side") or "right")))
         section(form, "Appearance", first=True)
         form.addRow("Theme", self.theme)
         form.addRow("", self.festivals)
         form.addRow("Accent colour", swatches)
         form.addRow("Text size", self.text_scale)
+        section(form, "Compact view")
+        form.addRow("Width", self.compact_width)
+        form.addRow("Dock it on the", self.compact_side)
         section(form, "Notifications")
         form.addRow("", self.notifications)
         form.addRow("", indented(self.quick_reply))
@@ -1168,6 +1180,11 @@ class SettingsDialog(Dialog):
         cfg["allow_buzz"] = self.allow_buzz.isChecked()
         cfg["meeting_status"] = self.meeting_status.isChecked()
         cfg["meeting_reminder_min"] = self.meet_remind.currentData()
+        docked = (cfg.get("compact_width"), cfg.get("compact_side"))
+        cfg["compact_width"] = self.compact_width.currentData()
+        cfg["compact_side"] = self.compact_side.currentData()
+        if docked != (cfg["compact_width"], cfg["compact_side"]) and getattr(self.ctx, "compact", False):
+            self.ctx._dock()                    # in compact view now: move / resize it straight away
         if cfg["start_with_windows"] != self.autostart.isChecked():
             cfg["start_with_windows"] = self.autostart.isChecked()
             from client.config import set_autostart

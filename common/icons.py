@@ -79,6 +79,9 @@ _OUTLINE = {
                ' 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4-4-7.4-9-7.4z"/>'
                '<path d="M7.5 11.5h.01M10 7.5h.01M14.5 7.5h.01M17 11h.01"/>',
     "clock": '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M5 3.5L2.5 6M19 3.5L21.5 6"/>',
+    "home": '<path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>',
+    "expand": '<path d="M14 4h6v6M10 20H4v-6"/><path d="M20 4l-6.5 6.5M4 20l6.5-6.5"/>',
+    "menu": '<path d="M4 6.5h16M4 12h16M4 17.5h16"/>',
     "compact": '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     "back": '<path d="M15 5l-7 7 7 7"/>',
     "next": '<path d="M9 5l7 7-7 7"/>',
