@@ -121,6 +121,42 @@ class FeatureTest(unittest.TestCase):
         a.close()
         b.close()
 
+    def test_room_picture(self):
+        import base64
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 100).decode()
+        a, b, boss = Client("ann"), Client("ben"), Client("boss")
+        room = a.request("create_room", name="Pic room", members=[self.b, self.boss])["room_id"]
+        # a member who is not the owner (or an admin) can't change it
+        self.assertFalse(b.request("set_room_avatar", room_id=room, data=png)["ok"])
+        r = a.request("set_room_avatar", room_id=room, data=png)
+        self.assertTrue(r["ok"], r)
+        ver = r["avatar"]
+        self.assertTrue(ver)
+        upd = b.wait_for("room")["room"]
+        while upd["id"] != room or not upd["avatar"]:
+            upd = b.wait_for("room")["room"]
+        self.assertEqual(upd["avatar"], ver)
+        line = b.wait_for("message")["message"]
+        while line["kind"] != "system" or "picture" not in line["body"]:
+            line = b.wait_for("message")["message"]
+        self.assertEqual(line["body"], "Ann changed the room picture")
+        got = b.request("get_room_avatar", room_id=room)
+        self.assertEqual(base64.b64decode(got["data"])[:4], b"\x89PNG")
+        # not a picture; not a member can't read it
+        self.assertFalse(a.request("set_room_avatar", room_id=room, data=base64.b64encode(b"MZ evil").decode())["ok"])
+        c = Client("cat")
+        self.assertFalse(c.request("get_room_avatar", room_id=room)["ok"])
+        # an admin can remove it
+        self.assertEqual(boss.request("set_room_avatar", room_id=room, data=None)["avatar"], 0)
+        self.assertEqual(self.core.db.get_room(room)["avatar_ver"], 0)
+        self.assertFalse(b.request("get_room_avatar", room_id=room)["ok"])
+        # an automatic room: only an admin
+        auto = self.core.db.create_room("Comp dept", None, [self.a, self.boss], "", auto_key="test:comp")
+        self.assertFalse(a.request("set_room_avatar", room_id=auto, data=png)["ok"])
+        self.assertTrue(boss.request("set_room_avatar", room_id=auto, data=png)["ok"])
+        for cl in (a, b, c, boss):
+            cl.close()
+
     def test_status_emoji_and_expiry(self):
         import time as _t
         a, b = Client("ann"), Client("ben")

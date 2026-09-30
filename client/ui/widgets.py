@@ -397,10 +397,18 @@ def paint_avatar(p: QPainter, rect: QRect, name: str, key: str, room=False, stat
     p.setRenderHint(QPainter.SmoothPixmapTransform)
     p.setPen(Qt.NoPen)
     from client import avatars
-    photo = avatars.cache.pixmap(uid) if (uid is not None and avatars.cache and not room) else None
+    photo = None
+    if avatars.cache and room and str(key).startswith("r:"):          # key = the room's conv "r:<id>"
+        photo = avatars.cache.room_pixmap(int(str(key)[2:]))
+    elif avatars.cache and uid is not None and not room:
+        photo = avatars.cache.pixmap(uid)
     if photo is not None:
         path = QPainterPath()
-        path.addEllipse(QRectF(rect))
+        if room:
+            path.addRoundedRect(QRectF(rect), rect.width() * 0.3, rect.width() * 0.3)
+            p.fillPath(path, QColor(T.SURFACE_HOVER))       # a tile behind see-through pictures (stickers, logos)
+        else:
+            path.addEllipse(QRectF(rect))
         p.save()
         p.setClipPath(path)
         p.drawPixmap(rect, photo)

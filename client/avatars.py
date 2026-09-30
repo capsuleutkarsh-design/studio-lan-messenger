@@ -40,7 +40,7 @@ def prepare(path):
 
 
 class AvatarCache(QObject):
-    changed = Signal(int)               # user id whose photo became available
+    changed = Signal(object)            # user id (or room key "r<id>") whose picture became available
 
     def __init__(self, conn, store, parent=None):
         super().__init__(parent)
@@ -53,10 +53,21 @@ class AvatarCache(QObject):
         self.pending = set()
         self.missing = set()            # (uid, ver) the server doesn't have
 
+    @staticmethod
+    def room_key(room_id):
+        """Rooms share the cache with people under the key "r<id>" (files r12_<ver>.img)."""
+        return f"r{int(room_id)}"
+
     def version(self, uid):
+        if isinstance(uid, str):
+            return int((self.store.rooms.get(int(uid[1:])) or {}).get("avatar") or 0)
         if uid == self.store.my_id:
             return int(self.store.me.get("avatar") or 0)
         return int((self.store.users.get(uid) or {}).get("avatar") or 0)
+
+    def room_pixmap(self, room_id):
+        """The room's picture, or None (and fetch it in the background)."""
+        return self.pixmap(self.room_key(room_id))
 
     def pixmap(self, uid):
         """The user's photo, or None (and fetch it in the background)."""
@@ -76,7 +87,10 @@ class AvatarCache(QObject):
                 return self._keep(key, pm)
         if key not in self.pending and key not in self.missing and self.conn.online:
             self.pending.add(key)
-            self.conn.request("get_avatar", lambda r, k=key: self._got(k, r), user_id=uid)
+            if isinstance(uid, str):
+                self.conn.request("get_room_avatar", lambda r, k=key: self._got(k, r), room_id=int(uid[1:]))
+            else:
+                self.conn.request("get_avatar", lambda r, k=key: self._got(k, r), user_id=uid)
         return None
 
     def _keep(self, key, pm):
@@ -116,7 +130,10 @@ class AvatarCache(QObject):
 
     def put_mine(self, ver, data):
         """My own new photo: cache it directly (no round trip)."""
-        uid = self.store.my_id
+        self.put(self.store.my_id, ver, data)
+
+    def put(self, uid, ver, data):
+        """A picture I just set (my photo, or a room's under room_key): cache it directly (no round trip)."""
         pm = QPixmap()
         if ver and pm.loadFromData(data):
             self._keep((uid, ver), pm)

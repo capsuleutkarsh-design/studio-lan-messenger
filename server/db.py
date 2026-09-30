@@ -231,6 +231,8 @@ MIGRATIONS = [
     ("users", "client_version", "TEXT NOT NULL DEFAULT ''"),
     ("users", "client_pc", "TEXT NOT NULL DEFAULT ''"),
     ("users", "client_seen", "REAL"),
+    # 1.12.0: a room's picture (0 = none; the file is avatars/room_<id>.img)
+    ("rooms", "avatar_ver", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 POST_MIGRATION_INDEXES = """
@@ -985,6 +987,9 @@ class Database:
             self._exec("UPDATE rooms SET name=? WHERE id=?", name, room_id)
         if topic is not None:
             self._exec("UPDATE rooms SET topic=? WHERE id=?", topic.strip()[:300], room_id)
+
+    def set_room_avatar_ver(self, room_id: int, ver: int):
+        self._exec("UPDATE rooms SET avatar_ver=? WHERE id=?", ver, room_id)
 
     def delete_room(self, room_id: int):
         self._exec("UPDATE rooms SET deleted=1 WHERE id=?", room_id)

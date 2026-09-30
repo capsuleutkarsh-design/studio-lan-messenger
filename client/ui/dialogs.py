@@ -76,13 +76,13 @@ def person_icon(store, uid, status=None, size=28):
     return QIcon(pm)
 
 
-def room_icon(name, size=24):
-    """A room's rounded-square avatar, as in the chat list."""
+def room_icon(name, size=24, conv=None):
+    """A room's rounded-square avatar, as in the chat list (its picture when conv is given and it has one)."""
     pm = QPixmap(size * 2, size * 2)
     pm.setDevicePixelRatio(2)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
-    paint_avatar(p, QRect(0, 0, size, size), name, name, room=True)
+    paint_avatar(p, QRect(0, 0, size, size), name, conv or name, room=True)
     p.end()
     return QIcon(pm)
 
@@ -336,6 +336,37 @@ class RoomInfoDialog(Dialog):
         me = store.my_id
         self.auto = bool(room.get("auto"))
         self.can_manage = (room["owner_id"] == me or store.me.get("is_admin")) and not self.auto
+        # the picture: the owner or an admin; an automatic room has no owner, so there only an admin
+        self.can_picture = bool(store.me.get("is_admin")) or (room["owner_id"] == me and not self.auto)
+
+        if self.can_picture or room.get("avatar"):
+            top = QHBoxLayout()
+            top.setSpacing(14)
+            self.avatar = Avatar(64)
+            self.avatar.set(room["name"], P.room_conv(room["id"]), room=True)
+            top.addWidget(self.avatar)
+            if self.can_picture:
+                col = QVBoxLayout()
+                col.setSpacing(4)
+                col.addStretch(1)
+                btns = QHBoxLayout()
+                btns.setSpacing(6)
+                change = QPushButton(" Change picture...")
+                change.setIcon(icon("image", T.TEXT, 16))
+                change.clicked.connect(self.change_picture)
+                self.b_unpicture = QPushButton("Remove")
+                self.b_unpicture.clicked.connect(self.remove_picture)
+                self.b_unpicture.setVisible(bool(room.get("avatar")))
+                btns.addWidget(change)
+                btns.addWidget(self.b_unpicture)
+                btns.addStretch(1)
+                col.addLayout(btns)
+                col.addWidget(hint("Everyone in the room sees it in their chat list."))
+                col.addStretch(1)
+                top.addLayout(col, 1)
+            else:
+                top.addStretch(1)
+            self.lay.addLayout(top)
 
         form = QFormLayout()
         self.name = QLineEdit(room["name"])
@@ -437,6 +468,41 @@ class RoomInfoDialog(Dialog):
     def save(self):
         self._update(name=self.name.text().strip(), topic=self.topic.text().strip())
         self.accept()
+
+    # ------------------------------------------------------------ picture
+    def _set_picture(self, data):
+        room_id = self.room["id"]
+
+        def done(reply):
+            if not reply.get("ok"):
+                QMessageBox.warning(self, "Room picture", reply.get("error", "Not saved"))
+                return
+            ver = reply["avatar"]
+            room = self.ctx.store.rooms.get(room_id)
+            if room is not None:
+                room["avatar"] = ver
+            self.room["avatar"] = ver
+            if avatars.cache:
+                avatars.cache.put(avatars.cache.room_key(room_id), ver, data or b"")
+            self.b_unpicture.setVisible(bool(ver))
+            self.avatar.update()
+        self.ctx.conn.request("set_room_avatar", done, room_id=room_id,
+                              data=base64.b64encode(data).decode() if data else None)
+
+    def change_picture(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a room picture", "",
+                                              "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if not path:
+            return
+        try:
+            data = avatars.prepare(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Room picture", str(e))
+            return
+        self._set_picture(data)
+
+    def remove_picture(self):
+        self._set_picture(None)
 
     def add_people(self):
         dlg = AddMembersDialog(self, self.ctx.store, exclude=set(self.room["members"]))
@@ -1329,7 +1395,7 @@ class ForwardDialog(Dialog):
                     store.users.get(target, {}).get("status", "offline")
                 ic = person_icon(store, target, status, 24)
             else:
-                ic = room_icon(store.title(conv), 24)
+                ic = room_icon(store.title(conv), 24, conv)
             it = QListWidgetItem(ic, store.title(conv))
             it.setData(Qt.UserRole, conv)
             self.list.addItem(it)

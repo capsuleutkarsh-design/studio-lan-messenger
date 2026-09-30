@@ -192,6 +192,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
             "screen_stop": self.h_screen_stop,
             "set_avatar": self.h_set_avatar,
             "get_avatar": self.h_get_avatar,
+            "set_room_avatar": self.h_set_room_avatar,
+            "get_room_avatar": self.h_get_room_avatar,
             "create_poll": self.h_create_poll,
             "vote": self.h_vote,
             "close_poll": self.h_close_poll,
@@ -814,7 +816,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
     def room_public(self, row) -> dict:
         return {"id": row["id"], "name": row["name"], "topic": row["topic"],
                 "owner_id": row["owner_id"], "members": self.db.room_member_ids(row["id"]),
-                "auto": bool(row["auto_key"]), "file_retention_days": row["file_retention_days"]}
+                "auto": bool(row["auto_key"]), "file_retention_days": row["file_retention_days"],
+                "avatar": row["avatar_ver"] or 0}
 
     # ---------------------------------------------------------- organisation
     @property
@@ -1359,11 +1362,8 @@ class ServerCore(PlannerMixin, CalendarMixin):
         """'Check for updates' in the client: what the server offers right now (None = nothing)."""
         return {"update": self.update_info()}
 
-    def h_set_avatar(self, s, req):
-        data = req.get("data")
-        if data is None:
-            self._store_avatar(s.user_id, None)
-            return {"avatar": 0}
+    def _check_picture(self, data):
+        """The raw bytes of a PNG / JPEG sent as base64, or a ClientError."""
         try:
             raw = base64.b64decode(str(data), validate=True)
         except (ValueError, binascii.Error):
@@ -1372,21 +1372,31 @@ class ServerCore(PlannerMixin, CalendarMixin):
             raise ClientError("Picture too large (max 400 KB)")
         if not (raw.startswith(b"\x89PNG\r\n\x1a\n") or raw.startswith(b"\xff\xd8\xff")):
             raise ClientError("Only PNG or JPEG pictures")
-        return {"avatar": self._store_avatar(s.user_id, raw)}
+        return raw
 
-    def _store_avatar(self, uid, raw):
-        path = self._avatar_path(uid)
+    def h_set_avatar(self, s, req):
+        data = req.get("data")
+        if data is None:
+            self._store_avatar(s.user_id, None)
+            return {"avatar": 0}
+        return {"avatar": self._store_avatar(s.user_id, self._check_picture(data))}
+
+    @staticmethod
+    def _write_picture(path, raw):
+        """Save (or with raw=None delete) a picture file; returns its new version number (0 = none)."""
         if raw is None:
             if os.path.exists(path):
                 os.remove(path)
-            ver = 0
-        else:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(raw)
-            replace_file(tmp, path)
-            ver = int(time.time() * 1000) % 2_000_000_000
+            return 0
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        replace_file(tmp, path)
+        return int(time.time() * 1000) % 2_000_000_000
+
+    def _store_avatar(self, uid, raw):
+        ver = self._write_picture(self._avatar_path(uid), raw)
         self.db.set_avatar_ver(uid, ver)
         self._org_user_changed(uid, avatar_ver=ver)
         self._push_user(uid)
@@ -1413,6 +1423,40 @@ class ServerCore(PlannerMixin, CalendarMixin):
             raise ClientError("No picture")
         with open(path, "rb") as f:
             return {"user_id": uid, "ver": row["avatar_ver"], "data": base64.b64encode(f.read()).decode()}
+
+    # room pictures live next to the profile photos, so backups and the safe copy take them along
+    def _room_avatar_path(self, room_id):
+        return os.path.join(self.config.data_dir, "avatars", f"room_{int(room_id)}.img")
+
+    def h_set_room_avatar(self, s, req):
+        """The room owner or an admin sets (data) or removes (data=None) the room's picture.
+        Automatic department / section rooms have no owner: only admins can give them a picture."""
+        room_id = int(req.get("room_id") or 0)
+        room = self._require_room(room_id, s.user_id)
+        is_admin = bool(self.db.get_user(s.user_id)["is_admin"])
+        if room["auto_key"] and not is_admin:
+            raise ClientError("Only an admin can change the picture of an automatic room")
+        if not (is_admin or room["owner_id"] == s.user_id):
+            raise ClientError("Only the room owner can change the room picture")
+        data = req.get("data")
+        raw = None if data is None else self._check_picture(data)
+        if raw is None and not room["avatar_ver"]:
+            return {"avatar": 0}
+        ver = self._write_picture(self._room_avatar_path(room_id), raw)
+        self.db.set_room_avatar_ver(room_id, ver)
+        self._push_room(room_id)
+        what = "changed the room picture" if ver else "removed the room picture"
+        self._room_system_message(room_id, s.user_id, f"{self._user_name(s.user_id)} {what}")
+        return {"avatar": ver}
+
+    def h_get_room_avatar(self, s, req):
+        room_id = int(req.get("room_id") or 0)
+        room = self._require_room(room_id, s.user_id)
+        path = self._room_avatar_path(room_id)
+        if not room or not room["avatar_ver"] or not os.path.exists(path):
+            raise ClientError("No picture")
+        with open(path, "rb") as f:
+            return {"room_id": room_id, "ver": room["avatar_ver"], "data": base64.b64encode(f.read()).decode()}
 
     def admin_remove_avatar(self, uid):
         row = self.db.get_user(int(uid))
