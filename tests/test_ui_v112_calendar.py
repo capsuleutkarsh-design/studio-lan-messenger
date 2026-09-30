@@ -383,6 +383,32 @@ class CalendarV112Test(unittest.TestCase):
         self.assertEqual(opened, [day.date()])
         mv.close()
 
+    def test_a_busy_month_scrolls_instead_of_squeezing(self):
+        from PySide6.QtCore import QPointF
+        from client.ui.calendar_views import Entry, MonthScroll, MonthView
+        mv = MonthView()
+        area = MonthScroll(mv)
+        area.resize(700, 640)
+        area.show()
+        settle(self.app, 0.1)
+        mv.set_data(dt.date(2026, 9, 1), [], set())
+        settle(self.app, 0.1)
+        self.assertLessEqual(mv.height(), area.viewport().height() + 2, "a quiet month fits: nothing to scroll")
+        day = dt.datetime(2026, 9, 16, 9)
+        entries = [Entry(i, "meeting", f"M{i}", day + dt.timedelta(minutes=i), day + dt.timedelta(minutes=i + 30),
+                         False) for i in range(5)]
+        mv.set_data(dt.date(2026, 9, 1), entries, set())
+        settle(self.app, 0.1)
+        self.assertGreater(mv.height(), area.viewport().height(), "a busy week grows and the month scrolls")
+        mv.grab()
+        self.assertFalse([t for r, d, t in mv._hits if t == MonthView.MORE], "five items all show: no '+N more'")
+        area.verticalScrollBar().setValue(area.verticalScrollBar().maximum())
+        settle(self.app, 0.1)
+        top = mv.visibleRegion().boundingRect().top()
+        self.assertGreater(top, 0)
+        self.assertEqual(mv._hit(QPointF(50, top + 10)), (None, None), "the day names stay on top")
+        area.close()
+
     def test_week_day_names_open_the_day(self):
         cal = self.cal
         cal.set_view("week")

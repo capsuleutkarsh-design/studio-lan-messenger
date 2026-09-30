@@ -200,18 +200,24 @@ def month_rows(month):
 # ======================================================================= month
 class MonthView(QWidget):
     """The weeks of one month, Monday first. Click a day to pick it, double-click (or '+N more') to open it,
-    click an item for details."""
+    click an item for details. In a MonthScroll a quiet week fills its share of the page and a busy one
+    grows tall enough to list its items, and the month scrolls; the day names stay on top."""
     day_clicked = Signal(object)          # date
     day_activated = Signal(object)        # date (double click, or '+N more')
     entry_clicked = Signal(object)        # Entry
 
     HEAD = 30
     MORE = "more"                         # the '+N more' line of a day, in _hits
+    MIN_ROW = 96                          # room for three items: a busy month scrolls rather than squeezing
+    LINE = 20                             # one item line (18 + 2 apart)
+    MAX_LINES = 6                         # more items than this in a day: '+N more' opens the day
 
     def __init__(self):
         super().__init__()
         self.setMouseTracking(True)
-        self.setMinimumSize(300, 300)     # it shrinks with the window (the day panel folds away first)
+        self.setMinimumWidth(300)         # it shrinks with the window (the day panel folds away first)
+        self._view_h = None               # the scroll area's height, once it is in a MonthScroll
+        self._tops, self._hs = [], []     # top and height of each week row
         self.month = datetime.date.today().replace(day=1)
         self.selected = datetime.date.today()
         self.days = {}
@@ -223,7 +229,7 @@ class MonthView(QWidget):
         self.month = month.replace(day=1)
         self.days = by_day(entries)
         self.holidays = holidays
-        self.update()
+        self.relayout()
 
     def first_day(self):
         return self.month - datetime.timedelta(days=self.month.weekday())
@@ -231,23 +237,57 @@ class MonthView(QWidget):
     def rows(self):
         return month_rows(self.month)
 
+    def _need(self, n):
+        """Height of a week row whose busiest day has n items."""
+        lines = min(n, self.MAX_LINES) + (1 if n > self.MAX_LINES else 0)
+        return 30 + lines * self.LINE + 6
+
+    def relayout(self):
+        """Row heights: quiet weeks share the space, a busy week grows so its items show (and the month
+        scrolls). On its own (no MonthScroll) the rows just share the widget's height."""
+        rows = self.rows()
+        scrolling = self._view_h is not None
+        avail = (self._view_h if scrolling and self._view_h else self.height()) - self.HEAD
+        first = self.first_day()
+        if scrolling:
+            base = max(self.MIN_ROW, avail / rows)
+            self._hs = []
+            for r in range(rows):
+                n = max(len(self.days.get(first + datetime.timedelta(days=r * 7 + c), [])) for c in range(7))
+                self._hs.append(max(base, self._need(n)))
+        else:
+            self._hs = [max(1.0, avail / rows)] * rows
+        self._tops, y = [], self.HEAD
+        for h in self._hs:
+            self._tops.append(y)
+            y += h
+        if scrolling:
+            self.setMinimumHeight(int(y) + 2)
+        self.update()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._view_h is None:
+            self.relayout()
+
+    def _head_top(self):
+        """Where the day names are drawn: the top of what is visible, so they stay on top while scrolling."""
+        return max(0, self.visibleRegion().boundingRect().top()) if self._view_h is not None else 0
+
     def _cell(self, i):
-        w, h = self.width(), self.height() - self.HEAD
-        cw, ch = w / 7, h / self.rows()
-        return QRectF((i % 7) * cw, self.HEAD + (i // 7) * ch, cw, ch)
+        if len(self._tops) != self.rows():
+            self.relayout()
+        row = i // 7
+        cw = self.width() / 7
+        return QRectF((i % 7) * cw, self._tops[row], cw, self._hs[row])
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.fillRect(self.rect(), QColor(T.BG))         # the page colour between the days (the scroll area has none)
         self._hits = []
         today = datetime.date.today()
-        p.setFont(_font(8, True))
-        for i, name in enumerate(DAY_NAMES):
-            r = self._cell(i)
-            p.setPen(QColor(T.META if i in WEEKEND else T.MUTED))
-            p.drawText(QRectF(r.x() + 10, 0, r.width() - 10, self.HEAD), Qt.AlignVCenter | Qt.AlignLeft,
-                       name.upper())
         first = self.first_day()
         fm = QFontMetrics(_font(8.5))
         for i in range(self.rows() * 7):
@@ -327,9 +367,20 @@ class MonthView(QWidget):
                 p.setFont(_font(8, True))
                 p.drawText(more.adjusted(3, 0, 0, 0), Qt.AlignVCenter, f"+{len(items) - len(shown)} more")
                 self._hits.append((more, day, self.MORE))
+        # the day names last, on the page colour, so the weeks scrolling under them are hidden
+        off = self._head_top()
+        p.fillRect(QRectF(0, off, self.width(), self.HEAD), QColor(T.BG))
+        p.setFont(_font(8, True))
+        for i, name in enumerate(DAY_NAMES):
+            r = self._cell(i)
+            p.setPen(QColor(T.META if i in WEEKEND else T.MUTED))
+            p.drawText(QRectF(r.x() + 10, off, r.width() - 10, self.HEAD), Qt.AlignVCenter | Qt.AlignLeft,
+                       name.upper())
         p.end()
 
     def _hit(self, pos):
+        if pos.y() < self._head_top() + self.HEAD:          # the day names, over whatever scrolled under them
+            return None, None
         best = None
         for rect, day, target in self._hits:
             if rect.contains(pos):
@@ -662,6 +713,30 @@ def _columns(timed, end_of=lambda e: e.end):
             group.append(e)
             group_end = max(group_end, end_of(e)) if group_end else end_of(e)
     return out
+
+
+class MonthScroll(QScrollArea):
+    """The month view in a scroll area: the wheel scrolls through a month whose busy weeks are tall."""
+
+    def __init__(self, view):
+        super().__init__()
+        self.view = view
+        view._view_h = 0
+        self.setWidget(view)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setStyleSheet("QScrollArea { background: transparent; }")
+        # the day names stay on top: repaint the whole month on scroll, not just the part that moved in
+        self.verticalScrollBar().valueChanged.connect(lambda _v: view.update())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.view._view_h = self.viewport().height()
+        self.view.relayout()
+
+    def to_top(self):
+        self.verticalScrollBar().setValue(0)
 
 
 class TimeGridView(QScrollArea):

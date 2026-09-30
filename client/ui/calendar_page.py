@@ -17,7 +17,7 @@ from client.ui.calendar_dialogs import (
     EventDialog, HolidaysDialog, ItemDialog, LeaveDialog, can_lead, can_manage_holidays, default_start, import_ics,
 )
 from client.ui.calendar_views import (
-    KIND_ICONS, KINDS, AgendaView, MonthView, TimeGridView, by_day, entries_from, entry_tip, kind_color,
+    KIND_ICONS, KINDS, AgendaView, MonthScroll, MonthView, TimeGridView, by_day, entries_from, entry_tip, kind_color,
     kind_icon_color, kind_text_color,
 )
 from client.ui.widgets import ElidedLabel, IconButton, popup_pos, ui_font
@@ -207,10 +207,11 @@ class CalendarPage(QWidget):
         body.setSpacing(16)
         self.stack = QStackedWidget()
         self.month = MonthView()
+        self.month_area = MonthScroll(self.month)
         self.week = TimeGridView()
         self.day = TimeGridView()
         self.agenda = AgendaView()
-        for w in (self.month, self.week, self.day, self.agenda):
+        for w in (self.month_area, self.week, self.day, self.agenda):
             self.stack.addWidget(w)
         self.month.day_clicked.connect(self.pick_day)
         self.month.day_activated.connect(self.open_day)
@@ -422,8 +423,11 @@ class CalendarPage(QWidget):
         hol = self._holidays()
         first, _last = self._range()
         if self.view == "month":
+            new_month = self.anchor.replace(day=1) != self.month.month
             self.month.selected = self.selected
             self.month.set_data(self.anchor, entries, hol)
+            if new_month:
+                self.month_area.to_top()
         elif self.view in ("week", "day"):
             view = self.week if self.view == "week" else self.day
             view.grid.set_data(first if self.view == "week" else self.anchor, 7 if self.view == "week" else 1,
